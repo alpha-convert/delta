@@ -15,7 +15,8 @@ data Prefix =
     | SumPA Prefix
     | SumPB Prefix
     deriving (Eq, Ord, Show)
-  
+
+ 
 emptyPrefix :: Ty -> Prefix
 emptyPrefix t = undefined
 

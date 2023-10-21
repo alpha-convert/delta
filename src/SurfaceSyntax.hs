@@ -1,18 +1,14 @@
 module SurfaceSyntax where
-
-data Var = Var String
-
-data Lit = LInt Int | LBool Bool
+import Values ( Lit(..))
+import Var(Var(..))
 
 data Term =
       TmLitR Lit
     | TmEpsR
-    | TmVar Var
-    | TmCatL (Maybe Var) (Maybe Var) Term Term
+    | TmVar Var.Var
+    | TmCatL (Maybe Var.Var) (Maybe Var.Var) Var.Var Term
     | TmCatR Term Term
     | TmInl Term
     | TmInr Term
-    | TmPlusCase Term (Maybe Var) Term (Maybe Var) Term
-    | TmNil
-    | TmCons Term Term
-    | TmStarCase Term Term (Maybe Var) (Maybe Var) Term
+    | TmPlusCase Var.Var (Maybe Var.Var) Term (Maybe Var.Var) Term
+    deriving (Eq,Ord,Show)
