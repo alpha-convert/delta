@@ -1,5 +1,4 @@
 module Typecheck where
 
-import SurfaceSyntax
+import ElabSyntax
 import CoreSyntax
-

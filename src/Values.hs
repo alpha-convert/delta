@@ -18,10 +18,21 @@ data Prefix =
 
  
 emptyPrefix :: Ty -> Prefix
-emptyPrefix t = undefined
+emptyPrefix TyInt = LitPEmp
+emptyPrefix TyBool = LitPEmp
+emptyPrefix TyEps = EpsP
+emptyPrefix (TyCat s _) = CatPA (emptyPrefix s)
+emptyPrefix (TyPlus _ _) = SumPEmp
 
 isMaximal :: Prefix -> Bool
-isMaximal p = undefined
+isMaximal LitPEmp = False
+isMaximal (LitPFull _) = True
+isMaximal EpsP = True
+isMaximal (CatPA _) = False
+isMaximal (CatPB _ p) = isMaximal p
+isMaximal SumPEmp = False
+isMaximal (SumPA p) = isMaximal p
+isMaximal (SumPB p) = isMaximal p
 
 data Env v = Env (M.Map v Prefix) deriving (Eq, Ord, Show)
 
