@@ -15,9 +15,6 @@ data Term =
     | TmPlusCase (Env Var) Ty Var Var Term Var Term
     deriving (Eq, Ord, Show)
 
-freshen :: Term -> Term
-freshen = undefined
-
 -- substVar e x y = e[x/y]
 substVar :: Term -> Var -> Var -> Term
 substVar = undefined

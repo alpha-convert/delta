@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 module ElabSyntax where
 
 import Values ( Lit(..) )
@@ -11,7 +12,6 @@ data Term =
       TmLitR Lit
     | TmEpsR
     | TmVar Var
-    | TmElabVar Var
     | TmCatL Var Var Var Term
     | TmCatR Term Term
     | TmInl Term
