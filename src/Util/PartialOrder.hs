@@ -3,7 +3,7 @@
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE DeriveFoldable #-}
 
-module PartialOrder
+module Util.PartialOrder
     ( Partial
     , checkDisjoint
     , concat

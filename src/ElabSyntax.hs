@@ -20,15 +20,15 @@ data Term =
     | TmCut Var Term Term
     deriving (Eq, Ord, Show)
 
-data ElabState = ES { n :: Int }
+data ElabState = ES { nextVar :: Int }
 
 class (MonadState ElabState m) => ElabM m where
 
 freshElabVar :: (ElabM m) => m Var
 freshElabVar = do
-    (ES n) <- get
-    put $ ES (n + 1)
-    return $ Var.Var $ "__x" ++ show n
+    es <- get
+    put $ ES (nextVar es + 1)
+    return $ Var.Var $ "__x" ++ show (nextVar es)
 
 elabMaybeVar :: (ElabM m) => Maybe Var -> m Var
 elabMaybeVar Nothing = freshElabVar
@@ -60,3 +60,4 @@ elab (Surf.TmPlusCase e mx e1 my e2) = do
     y <- elabMaybeVar my
     return $ TmCut z e' (TmPlusCase z x e1' y e2')
 
+{-TODO: ensure that fundefs have unique vars-}

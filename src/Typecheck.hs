@@ -13,7 +13,7 @@ import Control.Monad.Reader (MonadReader (ask, local), asks)
 import Var (Var)
 import Values (Lit(..), Env(..), emptyPrefix)
 import qualified Data.Map as M
-import qualified PartialOrder as P
+import qualified Util.PartialOrder as P
 
 data TckErr = VarNotFound Var
             | OutOfOrder Var Var
