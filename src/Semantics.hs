@@ -4,11 +4,12 @@ module Semantics where
 import qualified CoreSyntax as Core
 import qualified Data.Map as M
 import Control.Monad.Reader
+    ( Monad(return), sequence, MonadReader(ask, local) )
 import Control.Monad.Identity ()
-import Control.Monad.Except
+import Control.Monad.Except ( MonadError(throwError) )
 import Prelude
-import Types
-import Values (Prefix (..), Env (..), isMaximal, bindAll, emptyPrefix, bind)
+import Types (emptyPrefix)
+import Values (Prefix (..), Env (..), isMaximal, bindAll, bind)
 import Data.Map (Map, unionWith)
 import Control.Applicative (Applicative(liftA2))
 

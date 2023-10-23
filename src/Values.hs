@@ -1,8 +1,6 @@
 module Values where
 
-import Types
 import qualified Data.Map as M
-
 data Lit = LInt Int | LBool Bool deriving (Eq, Ord, Show)
 
 data Prefix =
@@ -16,13 +14,6 @@ data Prefix =
     | SumPB Prefix
     deriving (Eq, Ord, Show)
 
- 
-emptyPrefix :: Ty -> Prefix
-emptyPrefix TyInt = LitPEmp
-emptyPrefix TyBool = LitPEmp
-emptyPrefix TyEps = EpsP
-emptyPrefix (TyCat s _) = CatPA (emptyPrefix s)
-emptyPrefix (TyPlus _ _) = SumPEmp
 
 isMaximal :: Prefix -> Bool
 isMaximal LitPEmp = False
@@ -34,10 +25,21 @@ isMaximal SumPEmp = False
 isMaximal (SumPA p) = isMaximal p
 isMaximal (SumPB p) = isMaximal p
 
+isEmpty :: Prefix -> Bool
+isEmpty LitPEmp = True
+isEmpty (LitPFull _) = False
+isEmpty EpsP = True
+isEmpty (CatPA p) = isEmpty p
+isEmpty (CatPB _ _) = False
+isEmpty SumPEmp = True
+isEmpty (SumPA _) = False
+isEmpty (SumPB _) = False
+
 data Env v = Env (M.Map v Prefix) deriving (Eq, Ord, Show)
 
+
 composeEnv :: (Ord v) => Env v -> Env v -> Env v
-composeEnv (Env m) (Env m') = Env (M.unionWith (flip const) m m')
+composeEnv (Env m) (Env m') = Env (M.unionWith (\ _ x -> x) m m')
 
 singletonEnv :: v -> Prefix -> Env v
 singletonEnv x p = Env (M.singleton x p)

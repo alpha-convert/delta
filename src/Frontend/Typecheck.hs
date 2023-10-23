@@ -10,7 +10,7 @@ import Control.Monad.Except (MonadError (throwError), runExceptT, ExceptT)
 import Types
 import Control.Monad.Reader (MonadReader (ask, local), asks)
 import Var (Var)
-import Values (Lit(..), Env(..), emptyPrefix)
+import Values (Lit(..), Env(..), Prefix)
 import qualified Data.Map as M
 import qualified Util.PartialOrder as P
 
@@ -28,13 +28,12 @@ data TckErr = VarNotFound Var
             | WrongTypeInr Elab.Term Ty
             | ImpossibleCut Var Core.Term Core.Term
 
+newtype TckCtx = TckCtx { mp :: M.Map Var.Var Ty }
 
-newtype Ctx = Ctx { mp :: M.Map Var Ty }
+emptyEnv :: TckCtx -> Env Var
+emptyEnv (TckCtx m) = Env (emptyPrefix <$> m)
 
-emptyEnv :: Ctx -> Env Var
-emptyEnv (Ctx m) = Env (emptyPrefix <$> m)
-
-class (MonadError TckErr m, MonadReader Ctx m) => TckM m where
+class (MonadError TckErr m, MonadReader TckCtx m) => TckM m where
 
 lookupTy :: (TckM m) => Var -> m Ty
 lookupTy x = do
@@ -56,13 +55,13 @@ lookupTyPlus x = do
         _ -> throwError (ExpectedTyPlus x s')
 
 withUnbind :: (TckM m) => Var -> m a -> m a
-withUnbind x = local (Ctx . M.delete x . mp)
+withUnbind x = local (TckCtx . M.delete x . mp)
 
 withBind :: (TckM m) => Var -> Ty -> m a -> m a
-withBind x s = local (Ctx . M.insert x s . mp)
+withBind x s = local (TckCtx . M.insert x s . mp)
 
 withBindAll :: (TckM m) => [(Var,Ty)] -> m a -> m a
-withBindAll xs = local (Ctx . foldr (\(x,s) -> (M.insert x s .)) id xs . mp)
+withBindAll xs = local (TckCtx . foldr (\(x,s) -> (M.insert x s .)) id xs . mp)
 
 guard :: (TckM m) => Bool -> TckErr -> m ()
 guard b e = if b then return () else throwError e

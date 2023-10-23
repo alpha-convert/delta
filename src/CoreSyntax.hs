@@ -1,4 +1,4 @@
-module CoreSyntax (Var, Term(..), Lit(..), substVar) where
+module CoreSyntax (Var, Term(..), substVar) where
 
 import Types ( Ty )
 import Values ( Lit(..), Env(..) )
