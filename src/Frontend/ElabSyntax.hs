@@ -1,12 +1,12 @@
 {-# LANGUAGE FlexibleContexts #-}
-module ElabSyntax where
+module Frontend.ElabSyntax where
 
 import Values ( Lit(..) )
 import Var (Var(..))
 import Control.Monad.State (MonadState (put), get)
 import Control.Monad.Except (MonadError)
 
-import qualified SurfaceSyntax as Surf
+import qualified Frontend.SurfaceSyntax as Surf
 
 data Term =
       TmLitR Lit

@@ -2,13 +2,12 @@
 
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
-module Typecheck where
+module Frontend.Typecheck where
 
-import qualified ElabSyntax as Elab
+import qualified Frontend.ElabSyntax as Elab
 import qualified CoreSyntax as Core
 import Control.Monad.Except (MonadError (throwError), runExceptT, ExceptT)
 import Types
-import ElabSyntax (Term(TmLitR))
 import Control.Monad.Reader (MonadReader (ask, local), asks)
 import Var (Var)
 import Values (Lit(..), Env(..), emptyPrefix)

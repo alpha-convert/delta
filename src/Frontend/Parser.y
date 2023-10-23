@@ -1,6 +1,6 @@
 {
-module Parser(parseSurfaceSyntax, parseFunDef, lexer) where
-import SurfaceSyntax(Term(..), FunDef(..))
+module Frontend.Parser(parseSurfaceSyntax, parseFunDef, lexer) where
+import Frontend.SurfaceSyntax(Term(..), FunDef(..))
 import Values ( Lit(..))
 import Var(Var(..))
 import Types

@@ -1,4 +1,4 @@
-module SurfaceSyntax(Term(..), FunDef(..)) where
+module Frontend.SurfaceSyntax(Term(..), FunDef(..)) where
 import Values ( Lit(..))
 import Var(Var(..))
 import Types
