@@ -2,6 +2,9 @@ module Automata.Compile where
 
 import CoreSyntax
 import Automata.Automata (Autom)
+import Automata.Event (Event)
+import Control.Monad.Identity (Identity)
 
-class (Monad m) => CompileM m where
+import Control.Monad.State (StateT (runStateT), State)
 
+data AutomState = AS {}

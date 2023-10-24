@@ -1,6 +1,6 @@
-{-# LANGUAGE  MultiParamTypeClasses #-}
+{-# LANGUAGE  MultiParamTypeClasses, FlexibleInstances #-}
 module Automata.Event where
-import Values (Lit(..))
+import Values (Lit(..), Prefix(..))
 import Types ( Ty(..), TypeLike(..), ValueLike(..), ValueLikeErr(..))
 import Control.Monad.Except(ExceptT, MonadError (..), withExceptT)
 import Util.ErrUtil(guard)
@@ -46,11 +46,14 @@ instance ValueLike Event Ty where
 
     deriv p@(CatEvA _) t = throwError (IllTyped p t)
 
+promote xs = withExceptT (errCons xs)
+errCons xs (IllTyped x t) = IllTyped (x:xs) t
 
 instance ValueLike [Event] Ty where
-    hasType :: (Monad m) => [Event] -> Ty -> ExceptT (ValueLikeErr [Event] Ty) m ()
     hasType [] _ = return ()
-    hasType (x:xs) t = promote (hasType x t) >> promote (deriv x t) >>= hasType xs
-        where
-            promote = withExceptT (errCons xs)
-            errCons xs (IllTyped x t) = IllTyped (x:xs) t
+    hasType (x:xs) t = promote xs (hasType x t) >> promote xs (deriv x t) >>= hasType xs
+
+    deriv [] s = return s
+    deriv (x:xs) s = do
+        s' <- promote xs (deriv x s)
+        deriv xs s'
