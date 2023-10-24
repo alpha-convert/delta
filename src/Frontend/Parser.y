@@ -1,5 +1,5 @@
 {
-module Frontend.Parser(parseSurfaceSyntax, parseFunDef, lexer) where
+module Frontend.Parser(parseSurfaceSyntax, parseFunDef, parseProgram, lexer) where
 import Frontend.SurfaceSyntax(Term(..), FunDef(..))
 import Values ( Lit(..))
 import Var(Var(..))
@@ -11,6 +11,7 @@ import Data.Char ( isDigit, isAlpha, isSpace )
 %name parseSurfaceSyntax Exp
 %name parseTy Ty
 %name parseFunDef FunDef
+%name parseProgram Pgm
 %tokentype { Token }
 %error { parseError }
 
@@ -74,9 +75,12 @@ Ty2   : tyInt                                                     { TyInt }
 
 FunDef      : fun var '(' Args ')' ':' Ty '=' Exp                      { FD $2 $4 $7 $9 }
 
-Args  : {-empty-}                                                 { [] }
-      | Var ':' Ty                                                { [($1,$3)] }
-      | Var ':' Ty ';' Args                                       { ($1,$3):$5 }
+Args  : {-empty-}                                                 { EmpCtx }
+      | Var ':' Ty                                                { SngCtx $1 $3 }
+      | Var ':' Ty ';' Args                                       { SemicCtx (SngCtx $1 $3) $5 }
+
+Pgm   : {-empty-}                                                 { [] }
+      | FunDef Pgm                                                { $1 : $2 }
 
 {
 

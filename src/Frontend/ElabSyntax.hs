@@ -1,12 +1,14 @@
-{-# LANGUAGE FlexibleContexts #-}
-module Frontend.ElabSyntax where
+{-# LANGUAGE FlexibleContexts, FlexibleInstances #-}
+module Frontend.ElabSyntax (doElab, Term(..)) where
 
 import Values ( Lit(..) )
 import Var (Var(..))
-import Control.Monad.State (MonadState (put), get)
+import Control.Monad.State (MonadState (put), get, StateT (runStateT))
 import Control.Monad.Except (MonadError)
 
 import qualified Frontend.SurfaceSyntax as Surf
+import Control.Monad.Identity (Identity (runIdentity))
+import Util.PrettyPrint (PrettyPrint(..))
 
 data Term =
       TmLitR Lit
@@ -19,6 +21,20 @@ data Term =
     | TmPlusCase Var Var Term Var Term
     | TmCut Var Term Term
     deriving (Eq, Ord, Show)
+
+instance PrettyPrint Term where
+    pp = go False
+        where
+            go _ (TmLitR l) = pp l
+            go _ TmEpsR = "sink"
+            go _ (TmVar (Var x)) = x
+            go _ (TmCatR e1 e2) = concat ["(",go False e1,";",go False e2,")"]
+            go True e = concat ["(", go False e, ")"]
+            go False (TmCatL (Var x) (Var y) (Var z) e) = concat ["let (",x,";",y,") = ",z," in ",go False e]
+            go False (TmInl e) = "inl " ++ go True e
+            go False (TmInr e) = "inl " ++ go True e
+            go False (TmPlusCase (Var z) (Var x) e1 (Var y) e2) = concat ["case ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
+            go False (TmCut (Var x) e1 e2) = concat ["let ",x," = ",go True e1," in ",go True e2]
 
 data ElabState = ES { nextVar :: Int }
 
@@ -61,3 +77,8 @@ elab (Surf.TmPlusCase e mx e1 my e2) = do
     return $ TmCut z e' (TmPlusCase z x e1' y e2')
 
 {-TODO: ensure that fundefs have unique vars-}
+
+instance ElabM (StateT ElabState Identity) where
+
+doElab :: Surf.Term -> IO Term
+doElab e = return . fst . runIdentity $ runStateT (elab e) (ES 0)

@@ -2,8 +2,9 @@ module CoreSyntax (Var, Term(..), substVar) where
 
 import Types ( Ty )
 import Values ( Lit(..), Env(..) )
-import Var (Var)
+import Var (Var (..))
 import qualified Data.Map as M
+import Util.PrettyPrint (PrettyPrint(..))
 
 data Term =
       TmLitR Lit
@@ -15,6 +16,20 @@ data Term =
     | TmInr Term
     | TmPlusCase (Env Var) Ty Var Var Term Var Term
     deriving (Eq, Ord, Show)
+
+
+instance PrettyPrint Term where
+    pp = go False
+        where
+            go _ (TmLitR l) = pp l
+            go _ TmEpsR = "sink"
+            go _ (TmVar (Var x)) = x
+            go _ (TmCatR e1 e2) = concat ["(",go False e1,";",go False e2,")"]
+            go True e = concat ["(", go False e, ")"]
+            go False (TmCatL t (Var x) (Var y) (Var z) e) = concat ["let_{",pp t,"} (",x,";",y,") = ",z," in ",go False e]
+            go False (TmInl e) = "inl " ++ go True e
+            go False (TmInr e) = "inl " ++ go True e
+            go False (TmPlusCase _ _ (Var z) (Var x) e1 (Var y) e2) = concat ["case ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
 
 -- substVar e x y = e[x/y]
 -- Requires e be fully alpha-distinct (no shadowing.)

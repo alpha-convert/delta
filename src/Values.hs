@@ -1,7 +1,12 @@
 module Values where
 
 import qualified Data.Map as M
+import Util.PrettyPrint (PrettyPrint(..))
 data Lit = LInt Int | LBool Bool deriving (Eq, Ord, Show)
+
+instance PrettyPrint Lit where
+  pp (LInt n) = show n
+  pp (LBool b) = show b
 
 data Prefix =
       LitPEmp

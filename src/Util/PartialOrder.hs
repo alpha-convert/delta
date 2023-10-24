@@ -19,6 +19,7 @@ module Util.PartialOrder
     , substSing
     , substSingAll
     , union
+    , consistentWith
     ) where
 
 import Control.Monad
@@ -29,6 +30,9 @@ import GHC.Stack
 import Prelude             hiding (concat, map)
 import Control.Monad.Except
 import Data.Set (Set)
+import Control.Monad.State.Strict (StateT (runStateT))
+import Data.Coerce (coerce)
+import Control.Monad.RWS.Strict (MonadState(state))
 
 newtype Partial a
   = Partial { unPartial :: Set (a, a) }
@@ -121,3 +125,8 @@ subOrder :: (Ord a) => Partial a -> Partial a -> Maybe (Partial a)
 subOrder (Partial sub) (Partial super) =
   let d = Set.difference sub super in
     if null d then Nothing else Just (Partial d)
+
+consistentWith :: (Ord a, Monad m) => Partial a -> [a] -> ExceptT (a,a) m ()
+consistentWith _ [] = return ()
+consistentWith _ [_] = return ()
+consistentWith p (x:y:xs) = if not (lessThan p y x) then consistentWith p (y:xs) else throwError (x,y)

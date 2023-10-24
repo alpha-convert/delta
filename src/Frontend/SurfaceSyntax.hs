@@ -1,5 +1,6 @@
-module Frontend.SurfaceSyntax(Term(..), FunDef(..)) where
-import Values ( Lit(..))
+{-# LANGUAGE DeriveTraversable, DeriveFoldable, DeriveFunctor #-}
+module Frontend.SurfaceSyntax(Term(..), FunDef(..), Program(..)) where
+import Values ( Lit(..), Prefix)
 import Var(Var(..))
 import Types
 
@@ -14,4 +15,6 @@ data Term =
     | TmPlusCase Term (Maybe Var.Var) Term (Maybe Var.Var) Term
     deriving (Eq,Ord,Show)
 
-data FunDef = FD String [(Var.Var,Ty)] Ty Term deriving (Eq,Ord,Show)
+data FunDef a = FD String (Ctx Var.Var) Ty a deriving (Eq,Ord,Show, Functor, Foldable, Traversable)
+
+type Program a = [FunDef a]

@@ -1,0 +1,10 @@
+fun foo (u : Int ; v : Bool) : Int = u
+
+fun bar (u : Int ; v : Bool) : Bool = v
+
+fun baz (u : Int ; v : Bool) : Int . Bool = (u ; v)
+
+fun quux (u : Int ; v : Int) : Int . Int = (v ; u)
+
+fun qz (z : Int . Bool) : Int . Bool =
+    let (x;y) = z in (x;y)

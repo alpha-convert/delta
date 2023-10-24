@@ -1,14 +1,37 @@
 {-# LANGUAGE DeriveFoldable, DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies #-}
-module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix) where
+module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars) where
 
 import qualified Data.Map as M
 import Control.Monad.Except (ExceptT, throwError, runExceptT, withExceptT, MonadError)
 import Values (Prefix(..), Env(..), Lit(..), isMaximal, isEmpty)
 import Util.ErrUtil(guard)
+import Util.PrettyPrint
 
 data Ty = TyEps | TyInt | TyBool | TyCat Ty Ty | TyPlus Ty Ty deriving (Eq,Ord,Show)
 
-data Ctx v = EmpCtx | SngCtx v Ty | SemicCtx (Ctx v) (Ctx v) deriving (Functor, Foldable, Traversable)
+instance PrettyPrint Ty where
+  pp TyEps = "Eps"
+  pp TyInt = "Int"
+  pp TyBool = "Bool"
+  pp (TyCat s t) = concat ["(", pp s," . ", pp t, ")"]
+  pp (TyPlus s t) = concat ["(", pp s," + ", pp t, ")"]
+
+data Ctx v = EmpCtx | SngCtx v Ty | SemicCtx (Ctx v) (Ctx v) deriving (Eq,Ord,Show,Functor, Foldable, Traversable)
+
+ctxBindings :: (Ord v) => Ctx v -> M.Map v Ty
+ctxBindings EmpCtx = M.empty
+ctxBindings (SngCtx x t) = M.singleton x t
+ctxBindings (SemicCtx g g') = M.union (ctxBindings g) (ctxBindings g')
+
+ctxVars :: Ctx v -> [v]
+ctxVars EmpCtx = []
+ctxVars (SngCtx x _) = [x]
+ctxVars (SemicCtx g g') = ctxVars g ++ ctxVars g'
+
+instance PrettyPrint v => PrettyPrint (Ctx v) where
+  pp EmpCtx = "(.)"
+  pp (SngCtx v t) = concat ["[",pp v," : ", pp t,"]"]
+  pp (SemicCtx g g') = concat ["(", pp g, " ; ", pp g', ")"]
 
 
 class TypeLike t where
