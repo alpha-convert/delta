@@ -20,7 +20,7 @@ data TckErr = VarNotFound Var
             | ExpectedTyCat Var Ty
             | ExpectedTyPlus Var Ty
             | CheckTermInferPos Elab.Term
-            | UnequalReturnTypes Ty Ty
+            | UnequalReturnTypes Ty Ty Elab.Term
             | WrongTypeLit Lit Ty
             | WrongTypeEpsR Ty
             | WrongTypeVar Var Ty Ty
@@ -32,7 +32,19 @@ data TckErr = VarNotFound Var
 instance PrettyPrint TckErr where
     pp (VarNotFound (Var x)) = concat ["Variable ",x," not found"]
     pp (OutOfOrder (Var x) (Var y) e) = concat ["Variable ",y," came before ",x," in term ",pp e," but expected the other order. CHECK THIS?"]
-    pp (ExpectedTyCat (Var x) t) = concat ["Variable ",x," expected to be of concatenation type, but it was of type", pp t]
+    pp (ExpectedTyCat (Var x) t) = concat ["Variable ",x," expected to be of concatenation type, but it has type", pp t]
+    pp (ExpectedTyPlus (Var x) t) = concat ["Variable ",x," expected to be of sum type, but it has type", pp t]
+    pp (CheckTermInferPos e) = concat ["The type of the term ",pp e," cannot be inferred"]
+    pp (UnequalReturnTypes t1 t2 e) = concat ["Different types ",pp t1," and ",pp t2," inferred for the branches of the term ", pp e]
+    pp (WrongTypeLit l t) = concat ["Literal ", pp l, " does not have type ", pp t]
+    pp (WrongTypeEpsR t) = concat ["sink does not have type ", pp t]
+    pp (WrongTypeVar (Var x) t s) = concat ["Variable ",x," has type ",pp s," but expected ", pp t]
+    pp (WrongTypeCatR e1 e2 t) = concat ["Term ", pp (Elab.TmCatR e1 e2), " has concatenation type, but checking against ", pp t]
+    pp (WrongTypeInl e t) = concat ["Term ", pp (Elab.TmInl e), " has sum type, but checking against ", pp t]
+    pp (WrongTypeInr e t) = concat ["Term ", pp (Elab.TmInr e), " has sum type, but checking against ", pp t]
+    pp (ImpossibleCut x e1 e2) = concat ["Impossible cut term ", ppCut x e1 e2, " detected. This is a bug -- please tell Joe."]
+        where
+            ppCut (Var x) e e' = concat ["let ",x,"= (",pp e,") in (",pp e',")"]
 
 newtype TckCtx = TckCtx { mp :: M.Map Var.Var Ty }
 
@@ -172,7 +184,7 @@ infer e@(Elab.TmPlusCase z x e1 y e2) = do
     (s,t) <- lookupTyPlus z
     IR r1 p1 e1' <- withBind x s $ withUnbind z $ infer e1
     IR r2 p2 e2' <- withBind y t $ withUnbind z $ infer e2
-    guard (r1 == r2) (UnequalReturnTypes r1 r2)
+    guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
     rho <- asks emptyEnv
     return $ IR r1 p' (Core.TmPlusCase rho r1 z x e1' y e2')
