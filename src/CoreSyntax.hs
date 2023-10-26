@@ -1,10 +1,20 @@
-module CoreSyntax (Var, Term(..), substVar, Program, FunDef(..), RunCmd(..)) where
+{-# LANGUAGE FlexibleContexts, FlexibleInstances #-}
+module CoreSyntax (
+  Var,
+  Term(..),
+  substVar,
+  Program, FunDef(..),
+  RunCmd(..),
+  cut,
+  sinkTm
+) where
 
 import Types ( Ty , Ctx )
-import Values ( Lit(..), Env, lookupEnv, bindEnv, unbindEnv, Prefix)
+import Values ( Lit(..), Env, lookupEnv, bindEnv, unbindEnv, Prefix (..))
 import Var (Var (..))
 import qualified Data.Map as M
 import Util.PrettyPrint (PrettyPrint(..))
+import Control.Monad.Except (MonadError (throwError))
 
 data Term =
       TmLitR Lit
@@ -17,7 +27,7 @@ data Term =
     | TmPlusCase (Env Var) Ty Var Var Term Var Term
     | TmNil
     | TmCons Term Term
-    | TmStarCase (Env Var) Ty Var Term Var Var Term
+    | TmStarCase (Env Var) Ty Ty Var Term Var Var Term {- first return type, then star type -}
     deriving (Eq, Ord, Show)
 
 data FunDef = FD String (Ctx Var.Var) Ty Term deriving (Eq,Ord,Show)
@@ -40,7 +50,7 @@ instance PrettyPrint Term where
             go _ (TmInr e) = "inl " ++ go True e
             go _ (TmPlusCase _ _ (Var z) (Var x) e1 (Var y) e2) = concat ["case ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
             go _ (TmCons e1 e2) = concat [go True e1," :: ",go True e2]
-            go _ (TmStarCase _ _ (Var z) e1 (Var x) (Var xs) e2) = concat ["case ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
+            go _ (TmStarCase _ _ _ (Var z) e1 (Var x) (Var xs) e2) = concat ["case ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
 
 -- substVar e x y = e[x/y]
 -- Requires e be fully alpha-distinct (no shadowing.)
@@ -63,4 +73,63 @@ substVar (TmPlusCase rho r z x' e1 y' e2) x y = TmPlusCase rho r z x' (substVar 
 
 substVar TmNil _ _ = TmNil
 substVar (TmCons e1 e2) x y = TmCons (substVar e1 x y) (substVar e2 x y)
-substVar (TmStarCase rho r z e1 x' xs' e2) x y = TmStarCase rho r z (substVar e1 x y) x' xs' (substVar e2 x y)
+substVar (TmStarCase rho r s z e1 x' xs' e2) x y = TmStarCase rho r s z (substVar e1 x y) x' xs' (substVar e2 x y)
+
+cut :: (MonadError (Var,Term,Term) m) => Var -> Term -> Term -> m Term
+cut _ _ e'@(TmLitR _) = return e'
+cut _ _ e'@TmEpsR = return e'
+cut _ _ e'@TmNil = return e'
+cut x e e'@(TmVar y) = if x == y then return e else return e'
+
+cut x (TmCatL t' x'' y'' z' e'') e' = TmCatL t' x'' y'' z' <$> cut x e'' e'
+cut x (TmPlusCase rho r z x'' e1 y'' e2) e' = do
+    e1' <- cut x e1 e'
+    e2' <- cut x e2 e'
+    -- FIXME: Is this "rho" correct here? I think it might not be.
+    return (TmPlusCase rho r z x'' e1' y'' e2')
+
+cut x e                     (TmCatL t x' y' z e') | x /= z = TmCatL t x' y' z <$> cut x e e'
+cut _ (TmVar z)        (TmCatL t x' y' _ e') = return (TmCatL t  x' y' z e')
+cut _ (TmCatR e1 e2)   (TmCatL _ x' y' _ e') = cut x' e1 e' >>= cut y' e2
+cut x e                     e'@(TmCatL {}) = throwError (x,e,e')
+
+cut x e                 (TmPlusCase rho t z x' e1 y' e2) | x /= z = do
+    e1' <- cut x e e1
+    e2' <- cut x e e2
+    return (TmPlusCase rho t z x' e1' y' e2')
+cut _ (TmVar z)    (TmPlusCase rho t _ x' e1 y' e2) = return (TmPlusCase rho t z x' e1 y' e2)
+cut _ (TmInl e)    (TmPlusCase _ _ _ x' e1 _ _) = cut x' e e1
+cut _ (TmInr e)    (TmPlusCase _ _ _ _ _ y' e2) = cut y' e e2
+cut x e                 e'@(TmPlusCase {}) = throwError (x,e,e')
+
+cut x e (TmCatR e1 e2) = TmCatR <$> cut x e e1 <*> cut x e e2
+cut x e (TmInl e') = TmInl <$> cut x e e'
+cut x e (TmInr e') = TmInr <$> cut x e e'
+
+cut x e (TmCons e1 e2) = TmCons <$> cut x e e1 <*> cut x e e2
+
+cut x e                     (TmStarCase rho t s z e1 y ys e2) | x /= z = do
+    e1' <- cut x e e1
+    e2' <- cut x e e2
+    return (TmStarCase rho t s z e1' y ys e2')
+
+cut _ (TmVar z)        (TmStarCase rho t s _ e1 y ys e2) = return (TmStarCase rho t s z e1 y ys e2)
+cut _ TmNil            (TmStarCase _ _ _ _ e1 _ _ _) = return e1
+cut _ (TmCons eh et)   (TmStarCase _ _ _ _ _ y ys e2) = cut y eh e2 >>= cut ys et
+cut x e                     e'@(TmStarCase {}) = throwError (x,e,e')
+
+-- Throws p if p is not maximal. if p : s and p maximal, the sinkTm : d_p s.
+-- At the moment (without par), this returns only TmEpsR
+sinkTm :: (MonadError Prefix m) => Prefix -> m Term
+sinkTm p@LitPEmp = throwError p
+sinkTm (LitPFull _) = return TmEpsR
+sinkTm EpsP = return TmEpsR
+sinkTm p@(CatPA _) = throwError p
+sinkTm (CatPB _ p) = sinkTm p
+sinkTm p@SumPEmp = throwError p
+sinkTm (SumPA p) = sinkTm p
+sinkTm (SumPB p) = sinkTm p
+sinkTm p@StpEmp = throwError p
+sinkTm StpDone = return TmEpsR
+sinkTm p@(StpA _) = throwError p
+sinkTm (StpB _ p) = sinkTm p

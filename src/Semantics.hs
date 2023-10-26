@@ -4,11 +4,11 @@ module Semantics where
 import qualified CoreSyntax as Core
 import qualified Data.Map as M
 import Control.Monad.Reader
-    ( Monad(return), sequence, MonadReader(ask, local), ReaderT (runReaderT) )
+    ( Monad(return), sequence, MonadReader(ask, local), ReaderT (runReaderT), guard )
 import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.Except ( ExceptT, runExceptT, MonadError(throwError) )
 import Prelude
-import Types (emptyPrefix)
+import Types (emptyPrefix, Ty (..), Ctx, ValueLike (..))
 import Values (Prefix (..), Env, isMaximal, bindAllEnv, bindEnv, bindAllEnv, lookupEnv, prefixConcat, concatEnv)
 import Data.Map (Map, unionWith)
 import Control.Applicative (Applicative(liftA2))
@@ -16,14 +16,23 @@ import Control.Monad.State (runStateT, StateT, modify', gets, get, lift)
 import Util.PrettyPrint (PrettyPrint (pp))
 
 import qualified Var (Var(..))
+import Frontend.Typecheck (doCheckCoreTm)
 
-data SemError = VarLookupFailed Var.Var | NotCatPrefix Var.Var Prefix | NotPlusPrefix Var.Var Prefix | ConcatError Prefix Prefix
+data SemError =
+      VarLookupFailed Var.Var
+    | NotCatPrefix Var.Var Prefix
+    | NotPlusPrefix Var.Var Prefix
+    | ConcatError Prefix Prefix
+    | RuntimeCutError Var.Var Core.Term Core.Term
+    | SinkError Var.Var Prefix
 
 instance PrettyPrint SemError where
     pp (VarLookupFailed (Var.Var x)) = concat ["Variable ",x," is unbound. This is a compiler bug."]
     pp (NotCatPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a cat-prefix. Instead got: ",pp p]
     pp (NotPlusPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a plus-prefix. Instead got: ",pp p]
     pp (ConcatError p p') = concat ["Tried to concatenate prefixes ", pp p," and ",pp p']
+    pp (RuntimeCutError x e e') = concat ["Error occurred when trying to cut ",pp x," = ",pp e, " in ", pp e',". This is a bug."]
+    pp (SinkError x p) = concat ["Tried to build sink term for prefix ", pp p, "while substituting for ", pp x, ". This is a bug."]
 
 class (MonadReader (Env Var.Var) m, MonadError SemError m) => EvalM m where
 
@@ -66,7 +75,10 @@ eval (Core.TmCatL t x y z e) = do
             return (p',Core.TmCatL t x y z e')
         CatPB p1 p2 -> do
             (p',e') <- withEnv (bindAllEnv [(x,p1),(y,p2)]) (eval e)
-            return (p', Core.substVar e' z y)
+            let e'' = Core.substVar e' z y
+            sink <- reThrow (SinkError x) (Core.sinkTm p1)
+            e''' <- reThrow handleRuntimeCutError (Core.cut x sink e'')
+            return (p', e''')
         _ -> throwError (NotCatPrefix z p)
 
 eval (Core.TmCatR e1 e2) = do
@@ -100,21 +112,66 @@ eval (Core.TmPlusCase rho' r z x e1 y e2) = do
                 return (p'', Core.substVar e2' z y)
             _ -> throwError (NotPlusPrefix z p))
 
-type TopLevel = M.Map String Core.Term
+eval Core.TmNil = return (StpDone,Core.TmEpsR)
 
-doRun :: Core.Program -> IO ()
-doRun p = do
+eval (Core.TmCons e1 e2) = do
+    (p,e1') <- eval e1
+    if not (isMaximal p) then
+        return (StpA p, Core.TmCatR e1' e2)
+    else do
+        (p',e2') <- eval e2
+        return (StpB p p',e2')
+
+eval (Core.TmStarCase rho' r s z e1 x xs e2) = do
+    withEnvM (reThrow (uncurry ConcatError) . concatEnv rho') $ do
+        p <- lookupVar z
+        (case p of
+            StpEmp -> do
+                rho'' <- ask
+                return (emptyPrefix r, Core.TmStarCase rho'' r s z e1 x xs e2)
+            StpDone -> eval e1
+            StpA p' -> do
+                (p'',e2') <- withEnv (bindAllEnv [(x,p'),(xs,StpEmp)]) (eval e2)
+                return (p'', Core.TmCatL (TyStar s) x xs z e2')
+            StpB p1 p2 -> do
+                (p'',e2') <- withEnv (bindAllEnv [(x,p1),(xs,p2)]) (eval e2)
+                return (p'', Core.substVar e2' z xs)
+                {-FIXME: this is probably incorrect??
+                    I think the following program should break this:
+
+                    (z : Int*) |- case z of
+                                   nil => 0
+                                   x::_ => x
+                    
+                    Figure out how you should cut into x to replace it with sink :)
+                -}
+            _ -> throwError (NotPlusPrefix z p))
+
+handleRuntimeCutError :: (Var.Var, Core.Term, Core.Term) -> SemError
+handleRuntimeCutError (x,e,e') = RuntimeCutError x e e'
+
+
+type TopLevel = M.Map String (Core.Term, Ctx Var.Var, Ty)
+
+doRunPgm :: Core.Program -> IO ()
+doRunPgm p = do
     !_ <- runStateT (mapM go p) M.empty
     return ()
     where
         go :: Either Core.FunDef Core.RunCmd -> StateT TopLevel IO ()
-        go (Left (Core.FD f _ _ e)) = modify' (M.insert f e)
+        go (Left (Core.FD f g s e)) = modify' (M.insert f (e,g,s))
         go (Right (Core.RC f rho)) = do
             tl <- get
             case M.lookup f tl of
-                Just e -> case runIdentity $ runExceptT $ runReaderT (eval e) rho of
-                            Right (p',e') -> do
-                                lift (print p')
-                                lift (print e')
-                            Left err -> error $ "Runtime Error: " ++ pp err
+                Just (e,g,s) -> case runIdentity $ runExceptT $ runReaderT (eval e) rho of
+                                    Right (p',e') -> do
+                                        lift (print $ "Result of executing " ++ f)
+                                        lift (print p')
+                                        lift (print e')
+                                        () <- hasTypeB p' s >>= guard
+                                        g' <- doDeriv rho g 
+                                        s' <- doDeriv p' s
+                                        -- () <- doCheckCoreTm g' s' e'
+                                        return ()
+                                    Left err -> error $ "Runtime Error: " ++ pp err
                 Nothing -> error ("Runtime Error: Tried to execute unbound function " ++ f)

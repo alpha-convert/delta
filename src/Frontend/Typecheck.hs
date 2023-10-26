@@ -1,7 +1,11 @@
 -- AUTHORS: Emeka Nkurumeh, Joe Cutler
 
 {-# LANGUAGE FlexibleContexts, FlexibleInstances #-}
-module Frontend.Typecheck (doCheck) where
+module Frontend.Typecheck(
+    doCheckElabPgm,
+    doCheckCoreTm,
+    doCheckElabTm
+) where
 
 import qualified Frontend.ElabSyntax as Elab
 import qualified CoreSyntax as Core
@@ -16,9 +20,11 @@ import Control.Monad.Identity (Identity (runIdentity))
 import Util.PrettyPrint (PrettyPrint,pp)
 import Control.Monad.State.Strict (StateT(runStateT), MonadState (put, get), MonadTrans (lift))
 import qualified Frontend.SurfaceSyntax as Surf
+import Control.Monad.IO.Class (MonadIO)
 
 data TckErr = VarNotFound Var
             | OutOfOrder Var Var Elab.Term
+            | OutOfOrderCore Var Var Core.Term
             | ExpectedTyCat Var Ty
             | ExpectedTyPlus Var Ty
             | ExpectedTyStar Var Ty
@@ -36,7 +42,8 @@ data TckErr = VarNotFound Var
 
 instance PrettyPrint TckErr where
     pp (VarNotFound (Var x)) = concat ["Variable ",x," not found"]
-    pp (OutOfOrder (Var x) (Var y) e) = concat ["Variable ",y," came before ",x," in term ",pp e," but expected the other order. CHECK THIS?"]
+    pp (OutOfOrder (Var x) (Var y) e) = concat ["Variable ",y," came before ",x," in term ",pp e," but expected the other order."]
+    pp (OutOfOrderCore (Var x) (Var y) e) = concat ["Variable ",y," came before ",x," in term ",pp e," but expected the other order."]
     pp (ExpectedTyCat (Var x) t) = concat ["Variable ",x," expected to be of concatenation type, but it has type", pp t]
     pp (ExpectedTyPlus (Var x) t) = concat ["Variable ",x," expected to be of sum type, but it has type", pp t]
     pp (ExpectedTyStar (Var x) t) = concat ["Variable ",x," expected to be of star type, but it has type", pp t]
@@ -107,188 +114,157 @@ reThrow k x = runExceptT x >>= either (throwError . k) return
 handleOutOfOrder :: Elab.Term -> (Var,Var) -> TckErr
 handleOutOfOrder e (x,y) = OutOfOrder x y e
 
-data InferResult = IR { ty :: Ty, iusages :: P.Partial Var, itm :: Core.Term }
+handleImpossibleCut :: (Var, Core.Term, Core.Term) -> TckErr
+handleImpossibleCut (x,e,e') = ImpossibleCut x e e'
 
-data CheckResult = CR { cusages :: P.Partial Var, ctm :: Core.Term }
+data InferElabResult = IR { ty :: Ty, iusages :: P.Partial Var, itm :: Core.Term }
 
-check :: (TckM m) => Ty -> Elab.Term -> m CheckResult
-check TyInt (Elab.TmLitR l@(LInt _)) = return $ CR P.empty (Core.TmLitR l)
-check TyBool (Elab.TmLitR l@(LBool _)) = return $ CR P.empty (Core.TmLitR l)
-check t (Elab.TmLitR l) = throwError (WrongTypeLit l t)
-check TyEps Elab.TmEpsR = return $ CR P.empty Core.TmEpsR
-check t Elab.TmEpsR = throwError (WrongTypeEpsR t)
+data CheckElabResult = CR { cusages :: P.Partial Var, ctm :: Core.Term }
 
-check t (Elab.TmVar x) = do
+checkElab :: (TckM m) => Ty -> Elab.Term -> m CheckElabResult
+checkElab TyInt (Elab.TmLitR l@(LInt _)) = return $ CR P.empty (Core.TmLitR l)
+checkElab TyBool (Elab.TmLitR l@(LBool _)) = return $ CR P.empty (Core.TmLitR l)
+checkElab t (Elab.TmLitR l) = throwError (WrongTypeLit l t)
+checkElab TyEps Elab.TmEpsR = return $ CR P.empty Core.TmEpsR
+checkElab t Elab.TmEpsR = throwError (WrongTypeEpsR t)
+
+checkElab t (Elab.TmVar x) = do
     s <- lookupTy x
     guard (s == t) (WrongTypeVar x t s)
     return $ CR (P.singleton x) (Core.TmVar x)
 
-check r (Elab.TmCatL x y z e) = do
+checkElab r (Elab.TmCatL x y z e) = do
     (s,t) <- lookupTyCat z
-    (CR p e') <- withBindAll [(x,s),(y,t)] $ withUnbind z (check r e)
+    (CR p e') <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkElab r e)
     -- Ensure that x and y are used in order in e: y cannot be before x.
     guard (not $ P.lessThan p y x) (OutOfOrder x y e)
     -- Replace x and y with z in the output
     p' <- reThrow (handleOutOfOrder e) $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return $ CR p' (Core.TmCatL t x y z e')
 
-check (TyCat s t) (Elab.TmCatR e1 e2) = do
-    CR p1 e1' <- check s e1
-    CR p2 e2' <- check t e2
+checkElab (TyCat s t) (Elab.TmCatR e1 e2) = do
+    CR p1 e1' <- checkElab s e1
+    CR p2 e2' <- checkElab t e2
     p' <- reThrow (handleOutOfOrder (Elab.TmCatR e1 e2)) $ P.concat p1 p2
     return $ CR p' (Core.TmCatR e1' e2')
-check t (Elab.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
+checkElab t (Elab.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
 
-check (TyPlus s _) (Elab.TmInl e) = do
-    CR p e' <- check s e
+checkElab (TyPlus s _) (Elab.TmInl e) = do
+    CR p e' <- checkElab s e
     return $ CR p (Core.TmInl e')
-check t (Elab.TmInl e) = throwError (WrongTypeInl e t)
+checkElab t (Elab.TmInl e) = throwError (WrongTypeInl e t)
 
-check (TyPlus _ t) (Elab.TmInr e) = do
-    CR p e' <- check t e
+checkElab (TyPlus _ t) (Elab.TmInr e) = do
+    CR p e' <- checkElab t e
     return $ CR p (Core.TmInr e')
-check t (Elab.TmInr e) = throwError (WrongTypeInr e t)
+checkElab t (Elab.TmInr e) = throwError (WrongTypeInr e t)
 
-check r e@(Elab.TmPlusCase z x e1 y e2) = do
+checkElab r e@(Elab.TmPlusCase z x e1 y e2) = do
     (s,t) <- lookupTyPlus z
-    CR p1 e1' <- withBind x s $ withUnbind z $ check r e1
-    CR p2 e2' <- withBind y t $ withUnbind z $ check r e2
+    CR p1 e1' <- withBind x s $ withUnbind z $ checkElab r e1
+    CR p2 e2' <- withBind y t $ withUnbind z $ checkElab r e2
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
     rho <- asks emptyEnvOfType
     return $ CR p' (Core.TmPlusCase rho r z x e1' y e2')
 
-check (TyStar _) Elab.TmNil = return (CR P.empty Core.TmNil)
-check t Elab.TmNil = throwError (WrongTypeNil t)
+checkElab (TyStar _) Elab.TmNil = return (CR P.empty Core.TmNil)
+checkElab t Elab.TmNil = throwError (WrongTypeNil t)
 
-check (TyStar s) (Elab.TmCons e1 e2) = do
-    CR p1 e1' <- check s e1
-    CR p2 e2' <- check (TyStar s) e2
+checkElab (TyStar s) (Elab.TmCons e1 e2) = do
+    CR p1 e1' <- checkElab s e1
+    CR p2 e2' <- checkElab (TyStar s) e2
     p' <- reThrow (handleOutOfOrder (Elab.TmCatR e1 e2)) $ P.concat p1 p2
     return $ CR p' (Core.TmCons e1' e2')
 
-check t (Elab.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
+checkElab t (Elab.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
 
-check r e@(Elab.TmStarCase z e1 x xs e2) = do
+checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
     s <- lookupTyStar z
-    CR p1 e1' <- withUnbind z (check r e1)
-    CR p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (check r e2)
+    CR p1 e1' <- withUnbind z (checkElab r e1)
+    CR p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkElab r e2)
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
     rho <- asks emptyEnvOfType
-    return $ CR p' (Core.TmStarCase rho r z e1' x xs e2')
+    return $ CR p' (Core.TmStarCase rho r s z e1' x xs e2')
 
-check r (Elab.TmCut x e1 e2) = do
-    IR s p e1' <- infer e1
-    CR p' e2' <- withBind x s $ check r e2
-    e <- cut x e1' e2'
+checkElab r (Elab.TmCut x e1 e2) = do
+    IR s p e1' <- inferElab e1
+    CR p' e2' <- withBind x s $ checkElab r e2
+    e <- reThrow handleImpossibleCut (Core.cut x e1' e2')
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     return (CR p'' e)
 
 
 
-infer :: (TckM m) => Elab.Term -> m InferResult
-infer (Elab.TmLitR (LInt n)) = return $ IR TyInt P.empty (Core.TmLitR (LInt n))
-infer (Elab.TmLitR (LBool b)) = return $ IR TyBool P.empty (Core.TmLitR (LBool b))
-infer Elab.TmEpsR = return $ IR TyEps P.empty Core.TmEpsR
 
-infer (Elab.TmVar x) = do
+inferElab :: (TckM m) => Elab.Term -> m InferElabResult
+inferElab (Elab.TmLitR (LInt n)) = return $ IR TyInt P.empty (Core.TmLitR (LInt n))
+inferElab (Elab.TmLitR (LBool b)) = return $ IR TyBool P.empty (Core.TmLitR (LBool b))
+inferElab Elab.TmEpsR = return $ IR TyEps P.empty Core.TmEpsR
+
+inferElab (Elab.TmVar x) = do
     s <- lookupTy x
     return $ IR s (P.singleton x) (Core.TmVar x)
 
-infer (Elab.TmCatL x y z e) = do
+inferElab (Elab.TmCatL x y z e) = do
     -- Find the type for x and y
     (s,t) <- lookupTyCat z
     -- Bind x:s,y:t, unbind z, and recursively check 
-    (IR r p e') <- withBindAll [(x,s),(y,t)] $ withUnbind z (infer e)
+    (IR r p e') <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferElab e)
     -- Ensure that x and y are used in order in e: y cannot be before x.
     guard (not $ P.lessThan p y x) (OutOfOrder x y e)
     -- Replace x and y with z in the output
     p' <- reThrow (handleOutOfOrder e) $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return $ IR r p' (Core.TmCatL t x y z e')
 
-infer e@(Elab.TmCatR e1 e2) = do
-    IR s p1 e1' <- infer e1
-    IR t p2 e2' <- infer e2
+inferElab e@(Elab.TmCatR e1 e2) = do
+    IR s p1 e1' <- inferElab e1
+    IR t p2 e2' <- inferElab e2
     p' <- reThrow (handleOutOfOrder e) $ P.concat p1 p2
     return $ IR (TyCat s t) p' (Core.TmCatR e1' e2')
 
-infer e@(Elab.TmInl {}) = throwError (CheckTermInferPos e)
-infer e@(Elab.TmInr {}) = throwError (CheckTermInferPos e)
+inferElab e@(Elab.TmInl {}) = throwError (CheckTermInferPos e)
+inferElab e@(Elab.TmInr {}) = throwError (CheckTermInferPos e)
 
-infer e@(Elab.TmPlusCase z x e1 y e2) = do
+inferElab e@(Elab.TmPlusCase z x e1 y e2) = do
     (s,t) <- lookupTyPlus z
-    IR r1 p1 e1' <- withBind x s $ withUnbind z $ infer e1
-    IR r2 p2 e2' <- withBind y t $ withUnbind z $ infer e2
+    IR r1 p1 e1' <- withBind x s $ withUnbind z $ inferElab e1
+    IR r2 p2 e2' <- withBind y t $ withUnbind z $ inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
     rho <- asks emptyEnvOfType
     return $ IR r1 p' (Core.TmPlusCase rho r1 z x e1' y e2')
 
-infer e@Elab.TmNil = throwError (CheckTermInferPos e)
+inferElab e@Elab.TmNil = throwError (CheckTermInferPos e)
 
-infer e@(Elab.TmCons e1 e2) = do
-    IR s p1 e1' <- infer e1
-    CR p2 e2' <- check (TyStar s) e2
+inferElab e@(Elab.TmCons e1 e2) = do
+    IR s p1 e1' <- inferElab e1
+    CR p2 e2' <- checkElab (TyStar s) e2
     p' <- reThrow (handleOutOfOrder e) $ P.concat p1 p2
     return $ IR (TyStar s) p' (Core.TmCons e1' e2')
 
-infer e@(Elab.TmStarCase z e1 x xs e2) = do
+inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
     s <- lookupTyStar z
-    IR r1 p1 e1' <- withUnbind z $ infer e1
-    IR r2 p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z $ infer e2
+    IR r1 p1 e1' <- withUnbind z $ inferElab e1
+    IR r2 p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z $ inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
     rho <- asks emptyEnvOfType
-    return $ IR r1 p' (Core.TmStarCase rho r1 z e1' x xs e2')
+    return $ IR r1 p' (Core.TmStarCase rho r1 s z e1' x xs e2')
 
-infer (Elab.TmCut x e1 e2) = do
-    IR s p e1' <- infer e1
-    IR t p' e2' <- withBind x s $ infer e2
-    e <- cut x e1' e2'
+inferElab (Elab.TmCut x e1 e2) = do
+    IR s p e1' <- inferElab e1
+    IR t p' e2' <- withBind x s $ inferElab e2
+    e <- reThrow handleImpossibleCut (Core.cut x e1' e2')
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     return (IR t p'' e)
 
-cut :: (TckM m) => Var -> Core.Term -> Core.Term -> m Core.Term
-cut _ _ e'@(Core.TmLitR _) = return e'
-cut _ _ e'@Core.TmEpsR = return e'
-cut _ _ e'@Core.TmNil = return e'
-cut x e e'@(Core.TmVar y) = if x == y then return e else return e'
 
-cut x (Core.TmCatL t' x'' y'' z' e'') e' = Core.TmCatL t' x'' y'' z' <$> cut x e'' e'
-cut x (Core.TmPlusCase rho r z x'' e1 y'' e2) e' = do
-    e1' <- cut x e1 e'
-    e2' <- cut x e2 e'
-    -- FIXME: Is this "rho" correct here? I think it might not be.
-    return (Core.TmPlusCase rho r z x'' e1' y'' e2')
 
-cut x e                     (Core.TmCatL t x' y' z e') | x /= z = Core.TmCatL t x' y' z <$> cut x e e'
-cut _ (Core.TmVar z)        (Core.TmCatL t x' y' _ e') = return (Core.TmCatL t  x' y' z e')
-cut _ (Core.TmCatR e1 e2)   (Core.TmCatL _ x' y' _ e') = cut x' e1 e' >>= cut y' e2
-cut x e                     e'@(Core.TmCatL {}) = throwError (ImpossibleCut x e e')
+checkCore :: (TckM m) => Ty -> Core.Term -> m (P.Partial Var.Var)
+checkCore = undefined
 
-cut x e                 (Core.TmPlusCase rho t z x' e1 y' e2) | x /= z = do
-    e1' <- cut x e e1
-    e2' <- cut x e e2
-    return (Core.TmPlusCase rho t z x' e1' y' e2')
-cut _ (Core.TmVar z)    (Core.TmPlusCase rho t _ x' e1 y' e2) = return (Core.TmPlusCase rho t z x' e1 y' e2)
-cut _ (Core.TmInl e)    (Core.TmPlusCase _ _ _ x' e1 _ _) = cut x' e e1
-cut _ (Core.TmInr e)    (Core.TmPlusCase _ _ _ _ _ y' e2) = cut y' e e2
-cut x e                 e'@(Core.TmPlusCase {}) = throwError (ImpossibleCut x e e')
-
-cut x e (Core.TmCatR e1 e2) = Core.TmCatR <$> cut x e e1 <*> cut x e e2
-cut x e (Core.TmInl e') = Core.TmInl <$> cut x e e'
-cut x e (Core.TmInr e') = Core.TmInr <$> cut x e e'
-
-cut x e (Core.TmCons e1 e2) = Core.TmCons <$> cut x e e1 <*> cut x e e2
-
-cut x e                     (Core.TmStarCase rho t z e1 y ys e2) | x /= z = do
-    e1' <- cut x e e1
-    e2' <- cut x e e2
-    return (Core.TmStarCase rho t z e1' y ys e2')
-
-cut _ (Core.TmVar z)        (Core.TmStarCase rho t _ e1 y ys e2) = return (Core.TmStarCase rho t z e1 y ys e2)
-cut _ Core.TmNil            (Core.TmStarCase _ _ _ e1 _ _ _) = return e1
-cut _ (Core.TmCons eh et)   (Core.TmStarCase _ _ _ _ y ys e2) = cut y eh e2 >>= cut ys et
-cut x e                     e'@(Core.TmStarCase {}) = throwError (ImpossibleCut x e e')
+inferCore :: (TckM m) => Ty -> Core.Term -> m (P.Partial Var.Var,Ty)
+inferCore = undefined
 
 data PrefixCheckErr = WrongType Ty Surf.UntypedPrefix | OrderIssue Prefix Prefix | NotDisjointCtx Var Prefix Prefix | OrderIssueCtx (Env Var) (Env Var) | IllegalStp Prefix deriving (Eq, Ord, Show)
 
@@ -344,9 +320,9 @@ checkUntypedPrefixCtx (SemicCtx g g') m = do
 
 type FileInfo = M.Map String (Ctx Var, Ty)
 
-doCheckTm :: Ctx Var -> Ty -> Elab.Term -> IO Core.Term
-doCheckTm g t e = do
-    let ck = runIdentity $ runExceptT $ runReaderT (check t e :: (ReaderT TckCtx (ExceptT TckErr Identity) CheckResult)) (TckCtx $ ctxBindings g)
+doCheckElabTm :: (MonadIO m) => Ctx Var -> Ty -> Elab.Term -> m Core.Term
+doCheckElabTm g t e = do
+    let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e :: (ReaderT TckCtx (ExceptT TckErr Identity) CheckElabResult)) (TckCtx $ ctxBindings g)
     case ck of
         Left err -> error (pp err)
         Right (CR usages tm) -> do
@@ -355,12 +331,23 @@ doCheckTm g t e = do
                 Left (x,y) -> error $ pp $ OutOfOrder x y e
                 Right _ -> return tm
 
-doCheck :: Elab.Program -> IO Core.Program
-doCheck xs = fst <$> runStateT (mapM go xs) M.empty
+doCheckCoreTm :: (MonadIO m) => Ctx Var -> Ty -> Core.Term -> m ()
+doCheckCoreTm g t e = do
+    let ck = runIdentity $ runExceptT $ runReaderT (checkCore t e :: (ReaderT TckCtx (ExceptT TckErr Identity) (P.Partial Var))) (TckCtx $ ctxBindings g)
+    case ck of
+        Left err -> error (pp err)
+        Right usages -> do
+            usageConsist <- runExceptT (P.consistentWith usages (ctxVars g))
+            case usageConsist of
+                Left (x,y) -> error $ pp $ OutOfOrderCore x y e
+                Right _ -> return ()
+
+doCheckElabPgm :: (MonadIO m) => Elab.Program -> m Core.Program
+doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
     where
-        go :: Either Elab.FunDef Elab.RunCmd -> StateT FileInfo IO (Either Core.FunDef Core.RunCmd)
+        go :: (MonadIO m) => Either Elab.FunDef Elab.RunCmd -> StateT FileInfo m (Either Core.FunDef Core.RunCmd)
         go (Left (Elab.FD f g t e)) = do
-            e' <- lift $ doCheckTm g t e
+            e' <- lift $ doCheckElabTm g t e
             fi <- get
             put (M.insert f (g,t) fi)
             return (Left (Core.FD f g t e'))

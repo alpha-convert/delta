@@ -20,6 +20,7 @@ import qualified Data.Map as M
 import Util.PrettyPrint (PrettyPrint(..))
 import Control.Monad.Except
 import Data.IntMap (unionWith)
+import Data.List (intersperse)
 
 data Lit = LInt Int | LBool Bool deriving (Eq, Ord, Show)
 
@@ -139,6 +140,9 @@ isEmpty (StpA _) = False
 isEmpty (StpB {}) = False
 
 data Env v = Env (M.Map v Prefix) deriving (Eq, Ord, Show)
+
+instance PrettyPrint v => PrettyPrint (Env v) where
+  pp (Env m) = "{" ++ intersperse ',' (M.foldMapWithKey (\x p -> pp x ++ " = " ++ pp p) m) ++ "}"
 
 lookupEnv :: (Ord v) => v -> Env v -> Maybe Prefix
 lookupEnv x (Env m) = M.lookup x m

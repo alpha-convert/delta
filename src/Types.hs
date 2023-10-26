@@ -2,10 +2,11 @@
 module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars) where
 
 import qualified Data.Map as M
-import Control.Monad.Except (ExceptT, throwError, withExceptT)
+import Control.Monad.Except (ExceptT, throwError, withExceptT, runExceptT)
 import Values (Prefix(..), Env, Lit(..), isMaximal, isEmpty, bindEnv, emptyEnv, lookupEnv)
 import Util.ErrUtil(guard)
 import Util.PrettyPrint
+import Control.Monad.IO.Class (MonadIO)
 
 data Ty = TyEps | TyInt | TyBool | TyCat Ty Ty | TyPlus Ty Ty | TyStar Ty deriving (Eq,Ord,Show)
 
@@ -56,6 +57,13 @@ promotePrefixDerivErr x (IllTyped p' t') = IllTyped (bindEnv x p' emptyEnv) (Sng
 class TypeLike t => ValueLike a t where
   hasType :: (Monad m) => a -> t -> ExceptT (ValueLikeErr a t) m ()
   deriv :: (Monad m) => a -> t -> ExceptT (ValueLikeErr a t) m t
+
+  hasTypeB :: (Monad m) => a -> t -> m Bool
+  hasTypeB v t = runExceptT (hasType v t) >>= either (const (return False)) (const (return True))
+
+  doDeriv :: (PrettyPrint a, PrettyPrint t, MonadIO m) => a -> t -> m t
+  doDeriv v t = runExceptT (deriv v t) >>= either (\(IllTyped v' t' ) -> error $ concat ["Tried to take the derivative of ", pp t', " with respect to ", pp v',". This is bug."]) return
+
 
 instance ValueLike Prefix Ty where
   hasType LitPEmp TyInt = return ()
