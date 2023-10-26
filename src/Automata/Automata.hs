@@ -1,4 +1,4 @@
-module Automata.Automata where
+module Automata.Automata(Autom, fromState) where
 import Control.Monad.State (StateT (runStateT))
 
 newtype Autom m f a b = A (a -> m (f b, Autom m f a b))

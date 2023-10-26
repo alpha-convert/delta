@@ -1,7 +1,7 @@
-module CoreSyntax (Var, Term(..), substVar) where
+module CoreSyntax (Var, Term(..), substVar, Program, FunDef(..), RunCmd(..)) where
 
-import Types ( Ty )
-import Values ( Lit(..), Env(..) )
+import Types ( Ty , Ctx )
+import Values ( Lit(..), Env, lookupEnv, bindEnv, unbindEnv, Prefix)
 import Var (Var (..))
 import qualified Data.Map as M
 import Util.PrettyPrint (PrettyPrint(..))
@@ -17,6 +17,11 @@ data Term =
     | TmPlusCase (Env Var) Ty Var Var Term Var Term
     deriving (Eq, Ord, Show)
 
+data FunDef = FD String (Ctx Var.Var) Ty Term deriving (Eq,Ord,Show)
+
+data RunCmd = RC String (Env Var)
+
+type Program = [Either FunDef RunCmd]
 
 instance PrettyPrint Term where
     pp = go False
@@ -43,9 +48,9 @@ substVar (TmCatL t x' y' z e) x y = TmCatL t x' y' z (substVar e x y) {- FIXME: 
 substVar (TmCatR e1 e2) x y = TmCatR (substVar e1 x y) (substVar e2 x y)
 substVar (TmInl e) x y = TmInl (substVar e x y)
 substVar (TmInr e) x y = TmInr (substVar e x y)
-substVar (TmPlusCase (Env m) r z x' e1 y' e2) x y | y == z = TmPlusCase (Env m') r x x' (substVar e1 x y) y' (substVar e2 x y)
+substVar (TmPlusCase rho r z x' e1 y' e2) x y | y == z = TmPlusCase rho' r x x' (substVar e1 x y) y' (substVar e2 x y)
   where
-    m' = case M.lookup z m of
+    rho' = case Values.lookupEnv z rho of
            Nothing -> error "Impossible"
-           Just p -> M.insert x p (M.delete z m)
+           Just p -> bindEnv x p (unbindEnv z rho)
 substVar (TmPlusCase rho r z x' e1 y' e2) x y = TmPlusCase rho r z x' (substVar e1 x y) y' (substVar e2 x y)

@@ -1,0 +1,4 @@
+fun foo(x : Int; y : Bool . Int) : Bool = 
+    let (u;v) = y in v
+
+exec foo (x = 3; y = (false;emp))

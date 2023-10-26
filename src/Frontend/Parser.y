@@ -1,6 +1,6 @@
 {
 module Frontend.Parser(parseSurfaceSyntax, parseFunDef, parseProgram, lexer) where
-import Frontend.SurfaceSyntax(Term(..), FunDef(..))
+import Frontend.SurfaceSyntax(Term(..), FunDef(..), UntypedPrefix(..), RunCmd(..))
 import Values ( Lit(..))
 import Var(Var(..))
 import Types
@@ -12,6 +12,7 @@ import Data.Char ( isDigit, isAlpha, isSpace )
 %name parseTy Ty
 %name parseFunDef FunDef
 %name parseProgram Pgm
+%name parsePrefix Pfx
 %tokentype { Token }
 %error { parseError }
 
@@ -30,6 +31,8 @@ import Data.Char ( isDigit, isAlpha, isSpace )
       tyInt           { TokenTyInt }
       tyBool          { TokenTyBool }
       tyEps           { TokenTyEps }
+      emp             { TokenEmp }
+      exec            { TokenExec }
       '='             { TokenEq }
       '('             { TokenOB }
       ')'             { TokenCB }
@@ -80,7 +83,22 @@ Args  : {-empty-}                                                 { EmpCtx }
       | Var ':' Ty ';' Args                                       { SemicCtx (SngCtx $1 $3) $5 }
 
 Pgm   : {-empty-}                                                 { [] }
-      | FunDef Pgm                                                { $1 : $2 }
+      | FunDef Pgm                                                { (Left $1) : $2 }
+      | RunCmd Pgm                                                { (Right $1) : $2 }
+
+Pfx   : '(' Pfx ';' ')'                                           { CatPA $2 }
+      | '(' Pfx ';' Pfx ')'                                       { CatPB $2 $4 }
+      | emp                                                       { EmpP }
+      | inl '(' Pfx ')'                                           { SumPA $3 }
+      | inr '(' Pfx ')'                                           { SumPB $3 }
+      | int                                                       { LitP (LInt $1) }
+      | bool                                                      { LitP (LBool $1) }
+
+Bindings : {- empty -}                                            { [] }
+          | Var '=' Pfx                                           { [($1,$3)] }
+          | Var '=' Pfx ';' Bindings                              { ($1,$3) : $5 }
+
+RunCmd : exec var '(' Bindings ')'                                { RC $2 $4 }
 
 {
 
@@ -111,6 +129,8 @@ data Token
       | TokenOS
       | TokenCS
       | TokenDot
+      | TokenEmp
+      | TokenExec
       | TokenPlus
       | TokenTyInt
       | TokenTyBool
@@ -141,7 +161,7 @@ lexNum cs = TokenInt (read num) : lexer rest
       where (num,rest) = span isDigit cs
 
 lexVar cs =
-   case span isAlpha cs of
+   case span (\c -> isAlpha c || c == '\'') cs of
       ("let",rest) -> TokenLet : lexer rest
       ("in",rest)  -> TokenIn : lexer rest
       ("sink",rest)  -> TokenSink : lexer rest
@@ -150,8 +170,10 @@ lexVar cs =
       ("inl",rest)  -> TokenInl : lexer rest
       ("inr",rest)  -> TokenInr : lexer rest
       ("fun",rest)  -> TokenFun : lexer rest
+      ("emp",rest)  -> TokenEmp : lexer rest
       ("true",rest)  -> TokenBool True : lexer rest
       ("false",rest)  -> TokenBool False : lexer rest
+      ("exec",rest)  -> TokenExec : lexer rest
       ("Eps",rest)  -> TokenTyEps : lexer rest
       ("Int",rest)  -> TokenTyInt : lexer rest
       ("Bool",rest)  -> TokenTyBool : lexer rest

@@ -4,7 +4,25 @@ fun bar (u : Int ; v : Bool) : Bool = v
 
 fun baz (u : Int ; v : Bool) : Int . Bool = (u ; v)
 
-fun quux (u : Int ; v : Int) : Int . Int = (v ; u)
-
 fun qz (z : Int . Bool) : Int . Bool =
     let (x;y) = z in (x;y)
+
+fun bot (x : Int + Bool ; y : Bool) : (Int . Bool) + (Bool . Bool) =
+    case x of
+      inl x' => inl (x' ; y)
+    | inr x' => inr (x' ; y)
+    
+exec bot (x = emp)
+exec bot (x = inl(emp))
+exec bot (x = inl(3))
+exec bot (x = inl(3); y = false)
+
+fun delaycase(y : Bool; x : Int + Bool) : (Bool . Int) + (Bool . Bool) =
+  case x of
+    inl x' => inl (y ; x')
+  | inr x' => inr (y ; x')
+
+exec delaycase (y = emp)
+exec delaycase (y = false)
+exec delaycase (y = false; x = inl(emp))
+exec delaycase (y = false; x = inl(3))

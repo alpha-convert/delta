@@ -2,8 +2,8 @@
 module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars) where
 
 import qualified Data.Map as M
-import Control.Monad.Except (ExceptT, throwError, runExceptT, withExceptT, MonadError)
-import Values (Prefix(..), Env(..), Lit(..), isMaximal, isEmpty)
+import Control.Monad.Except (ExceptT, throwError, withExceptT)
+import Values (Prefix(..), Env, Lit(..), isMaximal, isEmpty, bindEnv, emptyEnv, lookupEnv)
 import Util.ErrUtil(guard)
 import Util.PrettyPrint
 
@@ -45,8 +45,11 @@ instance TypeLike (Ctx v) where
 
 data ValueLikeErr a t = IllTyped a t
 
-promotePrefixTypeErr x (IllTyped p' t') = IllTyped (Env (M.singleton x p')) (SngCtx x t')
-promotePrefixDerivErr x (IllTyped p' t') = IllTyped (Env (M.singleton x p')) (SngCtx x t')
+promotePrefixTypeErr :: Ord v => v -> ValueLikeErr Prefix Ty -> ValueLikeErr (Env v) (Ctx v)
+promotePrefixTypeErr x (IllTyped p' t') = IllTyped (bindEnv x p' emptyEnv) (SngCtx x t')
+
+promotePrefixDerivErr :: Ord v => v -> ValueLikeErr Prefix Ty -> ValueLikeErr (Env v) (Ctx v)
+promotePrefixDerivErr x (IllTyped p' t') = IllTyped (bindEnv x p' emptyEnv) (SngCtx x t')
 
 
 class TypeLike t => ValueLike a t where
@@ -113,21 +116,21 @@ instance ValueLike Prefix Ty where
 
 
 instance (Ord v) => ValueLike (Env v) (Ctx v) where
-  hasType (Env m) = go
+  hasType rho = go
     where
       go EmpCtx = return ()
-      go (SngCtx x t) = case M.lookup x m of
+      go (SngCtx x t) = case Values.lookupEnv x rho of
                           Nothing -> return ()
                           Just p -> withExceptT (promotePrefixTypeErr x) (hasType p t)
       go (SemicCtx g g') = do
-        go g >> go g' >> guard (all maximal g || all empty g') (IllTyped (Env m) (SemicCtx g g'))
+        go g >> go g' >> guard (all maximal g || all empty g') (IllTyped rho (SemicCtx g g'))
 
-      maximal x = maybe False isMaximal (M.lookup x m)
-      empty x = maybe False isEmpty (M.lookup x m)
+      maximal x = maybe False isMaximal (Values.lookupEnv x rho)
+      empty x = maybe False isEmpty (Values.lookupEnv x rho)
 
   deriv _ EmpCtx = return EmpCtx
-  deriv (Env m) (SngCtx x s) = case M.lookup x m of
-                                 Nothing -> throwError (IllTyped (Env m) (SngCtx x s))
+  deriv rho (SngCtx x s) = case Values.lookupEnv x rho of
+                                 Nothing -> throwError (IllTyped rho (SngCtx x s))
                                  Just p -> withExceptT (promotePrefixDerivErr x) (SngCtx x <$> deriv p s)
   deriv rho (SemicCtx g g') = SemicCtx <$> deriv rho g <*> deriv rho g'
 

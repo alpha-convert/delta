@@ -30,9 +30,6 @@ import GHC.Stack
 import Prelude             hiding (concat, map)
 import Control.Monad.Except
 import Data.Set (Set)
-import Control.Monad.State.Strict (StateT (runStateT))
-import Data.Coerce (coerce)
-import Control.Monad.RWS.Strict (MonadState(state))
 
 newtype Partial a
   = Partial { unPartial :: Set (a, a) }
@@ -68,7 +65,7 @@ transClosure p =
       transClosure p'
     else p'
   where
-    transClosure1 p = p <> foldMap trans (Set.cartesianProduct p p)
+    transClosure1 p' = p' <> foldMap trans (Set.cartesianProduct p' p')
     trans ((a, b), (c, d))
       | b == c = Set.singleton (a, d)
       | otherwise = Set.empty

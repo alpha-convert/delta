@@ -6,14 +6,16 @@ module Frontend.Typecheck (doCheck) where
 import qualified Frontend.ElabSyntax as Elab
 import qualified CoreSyntax as Core
 import Control.Monad.Except (MonadError (throwError), runExceptT, ExceptT)
-import Types (Ctx, Ty(..), ctxBindings, ctxVars, emptyPrefix)
+import Types (Ctx (..), Ty(..), ctxBindings, ctxVars, emptyPrefix)
 import Control.Monad.Reader (MonadReader (ask, local), asks, ReaderT (runReaderT))
 import Var (Var (Var))
-import Values (Lit(..), Env(..), Prefix)
+import Values (Lit(..), Env, Prefix (..), emptyEnv, bindEnv, isMaximal, isEmpty, allEnv, unionDisjointEnv)
 import qualified Data.Map as M
 import qualified Util.PartialOrder as P
 import Control.Monad.Identity (Identity (runIdentity))
 import Util.PrettyPrint (PrettyPrint,pp)
+import Control.Monad.State.Strict (StateT(runStateT), MonadState (put, get), MonadTrans (lift))
+import qualified Frontend.SurfaceSyntax as Surf
 
 data TckErr = VarNotFound Var
             | OutOfOrder Var Var Elab.Term
@@ -44,12 +46,12 @@ instance PrettyPrint TckErr where
     pp (WrongTypeInr e t) = concat ["Term ", pp (Elab.TmInr e), " has sum type, but checking against ", pp t]
     pp (ImpossibleCut x e1 e2) = concat ["Impossible cut term ", ppCut x e1 e2, " detected. This is a bug -- please tell Joe."]
         where
-            ppCut (Var x) e e' = concat ["let ",x,"= (",pp e,") in (",pp e',")"]
+            ppCut (Var x') e e' = concat ["let ",x',"= (",pp e,") in (",pp e',")"]
 
 newtype TckCtx = TckCtx { mp :: M.Map Var.Var Ty }
 
-emptyEnv :: TckCtx -> Env Var
-emptyEnv (TckCtx m) = Env (emptyPrefix <$> m)
+emptyEnvOfType :: TckCtx -> Env Var
+emptyEnvOfType (TckCtx m) = M.foldrWithKey (\x t -> bindEnv x (emptyPrefix t)) emptyEnv m
 
 class (MonadError TckErr m, MonadReader TckCtx m) => TckM m where
 
@@ -139,7 +141,7 @@ check r e@(Elab.TmPlusCase z x e1 y e2) = do
     CR p1 e1' <- withBind x s $ withUnbind z $ check r e1
     CR p2 e2' <- withBind y t $ withUnbind z $ check r e2
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
-    rho <- asks emptyEnv
+    rho <- asks emptyEnvOfType
     return $ CR p' (Core.TmPlusCase rho r z x e1' y e2')
 
 check r (Elab.TmCut x e1 e2) = do
@@ -186,7 +188,7 @@ infer e@(Elab.TmPlusCase z x e1 y e2) = do
     IR r2 p2 e2' <- withBind y t $ withUnbind z $ infer e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
-    rho <- asks emptyEnv
+    rho <- asks emptyEnvOfType
     return $ IR r1 p' (Core.TmPlusCase rho r1 z x e1' y e2')
 
 infer (Elab.TmCut x e1 e2) = do
@@ -226,8 +228,49 @@ cut x e (Core.TmCatR e1 e2) = Core.TmCatR <$> cut x e e1 <*> cut x e e2
 cut x e (Core.TmInl e') = Core.TmInl <$> cut x e e'
 cut x e (Core.TmInr e') = Core.TmInr <$> cut x e e'
 
-doCheck :: Ctx Var -> Ty -> Elab.Term -> IO Core.Term
-doCheck g t e = do
+data PrefixCheckErr = WrongType Ty Surf.UntypedPrefix | OrderIssue Prefix Prefix | NotDisjointCtx Var Prefix Prefix | OrderIssueCtx (Env Var) (Env Var) deriving (Eq, Ord, Show)
+
+checkUntypedPrefix :: (Monad m) => Ty -> Surf.UntypedPrefix -> ExceptT PrefixCheckErr m Prefix
+checkUntypedPrefix t Surf.EmpP = return (emptyPrefix t)
+checkUntypedPrefix t@TyEps p = throwError $ WrongType t p
+checkUntypedPrefix TyInt (Surf.LitP l@(LInt _)) = return (LitPFull l)
+checkUntypedPrefix t@TyInt p = throwError $ WrongType t p
+checkUntypedPrefix TyBool (Surf.LitP l@(LBool _)) = return (LitPFull l)
+checkUntypedPrefix t@TyBool p = throwError $ WrongType t p
+checkUntypedPrefix (TyCat s _) (Surf.CatPA p) = do
+    p' <- checkUntypedPrefix s p
+    return (CatPA p')
+checkUntypedPrefix (TyCat s t) (Surf.CatPB p1 p2) = do
+    p1' <- checkUntypedPrefix s p1
+    p2' <- checkUntypedPrefix t p2
+    if isMaximal p1' || isEmpty p2' then return (CatPB p1' p2')
+    else throwError $ OrderIssue p1' p2'
+checkUntypedPrefix t@(TyCat {}) p = throwError $ WrongType t p
+
+checkUntypedPrefix (TyPlus s _) (Surf.SumPA p) = do
+    p' <- checkUntypedPrefix s p
+    return (SumPA p')
+checkUntypedPrefix (TyPlus _ t) (Surf.SumPB p) = do
+    p' <- checkUntypedPrefix t p
+    return (SumPB p')
+checkUntypedPrefix t@(TyPlus {}) p = throwError $ WrongType t p
+
+checkUntypedPrefixCtx :: (Monad m) => Ctx Var -> M.Map Var Surf.UntypedPrefix -> ExceptT PrefixCheckErr m (Env Var)
+checkUntypedPrefixCtx EmpCtx _ = return emptyEnv
+checkUntypedPrefixCtx (SngCtx x s) m = do
+    p' <- maybe (return (emptyPrefix s)) (checkUntypedPrefix s) (M.lookup x m)
+    return (bindEnv x p' emptyEnv)
+checkUntypedPrefixCtx (SemicCtx g g') m = do
+    rho <- checkUntypedPrefixCtx g m
+    rho' <- checkUntypedPrefixCtx g' m
+    if allEnv isMaximal rho || allEnv isEmpty rho' then
+        runExceptT (unionDisjointEnv rho rho') >>= either (\(v,p,p') -> throwError (NotDisjointCtx v p p')) return
+    else throwError (OrderIssueCtx rho rho') 
+
+type FileInfo = M.Map String (Ctx Var, Ty)
+
+doCheckTm :: Ctx Var -> Ty -> Elab.Term -> IO Core.Term
+doCheckTm g t e = do
     let ck = runIdentity $ runExceptT $ runReaderT (check t e :: (ReaderT TckCtx (ExceptT TckErr Identity) CheckResult)) (TckCtx $ ctxBindings g)
     case ck of
         Left err -> error (pp err)
@@ -236,4 +279,23 @@ doCheck g t e = do
             case usageConsist of
                 Left (x,y) -> error $ pp $ OutOfOrder x y e
                 Right _ -> return tm
+
+doCheck :: Elab.Program -> IO Core.Program
+doCheck xs = fst <$> runStateT (mapM go xs) M.empty
+    where
+        go :: Either Elab.FunDef Elab.RunCmd -> StateT FileInfo IO (Either Core.FunDef Core.RunCmd)
+        go (Left (Elab.FD f g t e)) = do
+            e' <- lift $ doCheckTm g t e
+            fi <- get
+            put (M.insert f (g,t) fi) 
+            return (Left (Core.FD f g t e'))
+        go (Right (Elab.RC f p)) = do
+            fi <- get
+            case M.lookup f fi of
+                Nothing -> error ""
+                Just (g,_) -> do
+                    mps <- lift (runExceptT (checkUntypedPrefixCtx g p))
+                    case mps of
+                        Left err -> lift (error (show err))
+                        Right ps -> return (Right (Core.RC f ps))
 

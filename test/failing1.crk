@@ -1,0 +1,1 @@
+fun quux (u : Int ; v : Int) : Int . Int = (v ; u)

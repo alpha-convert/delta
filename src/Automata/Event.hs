@@ -1,5 +1,6 @@
 {-# LANGUAGE  MultiParamTypeClasses, FlexibleInstances #-}
-module Automata.Event where
+module Automata.Event() where
+
 import Values (Lit(..), Prefix(..))
 import Types ( Ty(..), TypeLike(..), ValueLike(..), ValueLikeErr(..))
 import Control.Monad.Except(ExceptT, MonadError (..), withExceptT)
