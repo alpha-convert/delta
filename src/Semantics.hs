@@ -113,8 +113,8 @@ doRun p = do
             tl <- get
             case M.lookup f tl of
                 Just e -> case runIdentity $ runExceptT $ runReaderT (eval e) rho of
-                            Right (p,e') -> do
-                                lift (print p)
+                            Right (p',e') -> do
+                                lift (print p')
                                 lift (print e')
                             Left err -> error $ "Runtime Error: " ++ pp err
                 Nothing -> error ("Runtime Error: Tried to execute unbound function " ++ f)

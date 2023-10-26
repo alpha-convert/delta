@@ -21,6 +21,7 @@ data TckErr = VarNotFound Var
             | OutOfOrder Var Var Elab.Term
             | ExpectedTyCat Var Ty
             | ExpectedTyPlus Var Ty
+            | ExpectedTyStar Var Ty
             | CheckTermInferPos Elab.Term
             | UnequalReturnTypes Ty Ty Elab.Term
             | WrongTypeLit Lit Ty
@@ -29,6 +30,8 @@ data TckErr = VarNotFound Var
             | WrongTypeCatR Elab.Term Elab.Term Ty
             | WrongTypeInl Elab.Term Ty
             | WrongTypeInr Elab.Term Ty
+            | WrongTypeNil Ty
+            | WrongTypeCons Elab.Term Elab.Term Ty
             | ImpossibleCut Var Core.Term Core.Term
 
 instance PrettyPrint TckErr where
@@ -36,6 +39,7 @@ instance PrettyPrint TckErr where
     pp (OutOfOrder (Var x) (Var y) e) = concat ["Variable ",y," came before ",x," in term ",pp e," but expected the other order. CHECK THIS?"]
     pp (ExpectedTyCat (Var x) t) = concat ["Variable ",x," expected to be of concatenation type, but it has type", pp t]
     pp (ExpectedTyPlus (Var x) t) = concat ["Variable ",x," expected to be of sum type, but it has type", pp t]
+    pp (ExpectedTyStar (Var x) t) = concat ["Variable ",x," expected to be of star type, but it has type", pp t]
     pp (CheckTermInferPos e) = concat ["The type of the term ",pp e," cannot be inferred"]
     pp (UnequalReturnTypes t1 t2 e) = concat ["Different types ",pp t1," and ",pp t2," inferred for the branches of the term ", pp e]
     pp (WrongTypeLit l t) = concat ["Literal ", pp l, " does not have type ", pp t]
@@ -44,6 +48,8 @@ instance PrettyPrint TckErr where
     pp (WrongTypeCatR e1 e2 t) = concat ["Term ", pp (Elab.TmCatR e1 e2), " has concatenation type, but checking against ", pp t]
     pp (WrongTypeInl e t) = concat ["Term ", pp (Elab.TmInl e), " has sum type, but checking against ", pp t]
     pp (WrongTypeInr e t) = concat ["Term ", pp (Elab.TmInr e), " has sum type, but checking against ", pp t]
+    pp (WrongTypeNil t) = concat ["nil does not have type ", pp t]
+    pp (WrongTypeCons e1 e2 t) = concat ["Term ", pp (Elab.TmCons e1 e2), " has star type, but checking against ", pp t]
     pp (ImpossibleCut x e1 e2) = concat ["Impossible cut term ", ppCut x e1 e2, " detected. This is a bug -- please tell Joe."]
         where
             ppCut (Var x') e e' = concat ["let ",x',"= (",pp e,") in (",pp e',")"]
@@ -75,6 +81,13 @@ lookupTyPlus x = do
     case s' of
         TyPlus s t -> return (s,t)
         _ -> throwError (ExpectedTyPlus x s')
+
+lookupTyStar :: (TckM m) => Var -> m Ty
+lookupTyStar x = do
+    s' <- lookupTy x
+    case s' of
+        TyStar s -> return s
+        _ -> throwError (ExpectedTyStar x s')
 
 withUnbind :: (TckM m) => Var -> m a -> m a
 withUnbind x = local (TckCtx . M.delete x . mp)
@@ -144,6 +157,25 @@ check r e@(Elab.TmPlusCase z x e1 y e2) = do
     rho <- asks emptyEnvOfType
     return $ CR p' (Core.TmPlusCase rho r z x e1' y e2')
 
+check (TyStar _) Elab.TmNil = return (CR P.empty Core.TmNil)
+check t Elab.TmNil = throwError (WrongTypeNil t)
+
+check (TyStar s) (Elab.TmCons e1 e2) = do
+    CR p1 e1' <- check s e1
+    CR p2 e2' <- check (TyStar s) e2
+    p' <- reThrow (handleOutOfOrder (Elab.TmCatR e1 e2)) $ P.concat p1 p2
+    return $ CR p' (Core.TmCons e1' e2')
+
+check t (Elab.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
+
+check r e@(Elab.TmStarCase z e1 x xs e2) = do
+    s <- lookupTyStar z
+    CR p1 e1' <- withUnbind z (check r e1)
+    CR p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (check r e2)
+    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    rho <- asks emptyEnvOfType
+    return $ CR p' (Core.TmStarCase rho r z e1' x xs e2')
+
 check r (Elab.TmCut x e1 e2) = do
     IR s p e1' <- infer e1
     CR p' e2' <- withBind x s $ check r e2
@@ -191,6 +223,23 @@ infer e@(Elab.TmPlusCase z x e1 y e2) = do
     rho <- asks emptyEnvOfType
     return $ IR r1 p' (Core.TmPlusCase rho r1 z x e1' y e2')
 
+infer e@Elab.TmNil = throwError (CheckTermInferPos e)
+
+infer e@(Elab.TmCons e1 e2) = do
+    IR s p1 e1' <- infer e1
+    CR p2 e2' <- check (TyStar s) e2
+    p' <- reThrow (handleOutOfOrder e) $ P.concat p1 p2
+    return $ IR (TyStar s) p' (Core.TmCons e1' e2')
+
+infer e@(Elab.TmStarCase z e1 x xs e2) = do
+    s <- lookupTyStar z
+    IR r1 p1 e1' <- withUnbind z $ infer e1
+    IR r2 p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z $ infer e2
+    guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
+    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    rho <- asks emptyEnvOfType
+    return $ IR r1 p' (Core.TmStarCase rho r1 z e1' x xs e2')
+
 infer (Elab.TmCut x e1 e2) = do
     IR s p e1' <- infer e1
     IR t p' e2' <- withBind x s $ infer e2
@@ -201,6 +250,7 @@ infer (Elab.TmCut x e1 e2) = do
 cut :: (TckM m) => Var -> Core.Term -> Core.Term -> m Core.Term
 cut _ _ e'@(Core.TmLitR _) = return e'
 cut _ _ e'@Core.TmEpsR = return e'
+cut _ _ e'@Core.TmNil = return e'
 cut x e e'@(Core.TmVar y) = if x == y then return e else return e'
 
 cut x (Core.TmCatL t' x'' y'' z' e'') e' = Core.TmCatL t' x'' y'' z' <$> cut x e'' e'
@@ -228,7 +278,19 @@ cut x e (Core.TmCatR e1 e2) = Core.TmCatR <$> cut x e e1 <*> cut x e e2
 cut x e (Core.TmInl e') = Core.TmInl <$> cut x e e'
 cut x e (Core.TmInr e') = Core.TmInr <$> cut x e e'
 
-data PrefixCheckErr = WrongType Ty Surf.UntypedPrefix | OrderIssue Prefix Prefix | NotDisjointCtx Var Prefix Prefix | OrderIssueCtx (Env Var) (Env Var) deriving (Eq, Ord, Show)
+cut x e (Core.TmCons e1 e2) = Core.TmCons <$> cut x e e1 <*> cut x e e2
+
+cut x e                     (Core.TmStarCase rho t z e1 y ys e2) | x /= z = do
+    e1' <- cut x e e1
+    e2' <- cut x e e2
+    return (Core.TmStarCase rho t z e1' y ys e2')
+
+cut _ (Core.TmVar z)        (Core.TmStarCase rho t _ e1 y ys e2) = return (Core.TmStarCase rho t z e1 y ys e2)
+cut _ Core.TmNil            (Core.TmStarCase _ _ _ e1 _ _ _) = return e1
+cut _ (Core.TmCons eh et)   (Core.TmStarCase _ _ _ _ y ys e2) = cut y eh e2 >>= cut ys et
+cut x e                     e'@(Core.TmStarCase {}) = throwError (ImpossibleCut x e e')
+
+data PrefixCheckErr = WrongType Ty Surf.UntypedPrefix | OrderIssue Prefix Prefix | NotDisjointCtx Var Prefix Prefix | OrderIssueCtx (Env Var) (Env Var) | IllegalStp Prefix deriving (Eq, Ord, Show)
 
 checkUntypedPrefix :: (Monad m) => Ty -> Surf.UntypedPrefix -> ExceptT PrefixCheckErr m Prefix
 checkUntypedPrefix t Surf.EmpP = return (emptyPrefix t)
@@ -255,6 +317,19 @@ checkUntypedPrefix (TyPlus _ t) (Surf.SumPB p) = do
     return (SumPB p')
 checkUntypedPrefix t@(TyPlus {}) p = throwError $ WrongType t p
 
+checkUntypedPrefix (TyStar s) (Surf.Stp ps) = checkUntypedStp s ps
+checkUntypedPrefix t@(TyStar _) p = throwError $ WrongType t p
+
+checkUntypedStp :: (Monad m) => Ty -> [Surf.UntypedPrefix] -> ExceptT PrefixCheckErr m Prefix
+checkUntypedStp _ [] = return StpDone
+checkUntypedStp s (p:ps) = do
+    p' <- checkUntypedPrefix s p
+    if isMaximal p' then do
+        p'' <- checkUntypedStp s ps
+        return (StpB p' p'')
+    else if null ps then return (StpA p')
+    else throwError (IllegalStp p')
+
 checkUntypedPrefixCtx :: (Monad m) => Ctx Var -> M.Map Var Surf.UntypedPrefix -> ExceptT PrefixCheckErr m (Env Var)
 checkUntypedPrefixCtx EmpCtx _ = return emptyEnv
 checkUntypedPrefixCtx (SngCtx x s) m = do
@@ -265,7 +340,7 @@ checkUntypedPrefixCtx (SemicCtx g g') m = do
     rho' <- checkUntypedPrefixCtx g' m
     if allEnv isMaximal rho || allEnv isEmpty rho' then
         runExceptT (unionDisjointEnv rho rho') >>= either (\(v,p,p') -> throwError (NotDisjointCtx v p p')) return
-    else throwError (OrderIssueCtx rho rho') 
+    else throwError (OrderIssueCtx rho rho')
 
 type FileInfo = M.Map String (Ctx Var, Ty)
 
@@ -287,7 +362,7 @@ doCheck xs = fst <$> runStateT (mapM go xs) M.empty
         go (Left (Elab.FD f g t e)) = do
             e' <- lift $ doCheckTm g t e
             fi <- get
-            put (M.insert f (g,t) fi) 
+            put (M.insert f (g,t) fi)
             return (Left (Core.FD f g t e'))
         go (Right (Elab.RC f p)) = do
             fi <- get

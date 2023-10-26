@@ -19,6 +19,9 @@ data Term =
     | TmInl Term
     | TmInr Term
     | TmPlusCase Term (Maybe Var.Var) Term (Maybe Var.Var) Term
+    | TmNil
+    | TmCons Term Term
+    | TmStarCase Term Term (Maybe Var.Var) (Maybe Var.Var) Term
     deriving (Eq,Ord,Show)
 
 data UntypedPrefix =
@@ -28,6 +31,7 @@ data UntypedPrefix =
     | CatPB UntypedPrefix UntypedPrefix
     | SumPA UntypedPrefix
     | SumPB UntypedPrefix
+    | Stp [UntypedPrefix]
     deriving (Eq, Ord, Show)
 
 data FunDef = FD String (Ctx Var.Var) Ty Term deriving (Eq,Ord,Show)

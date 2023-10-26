@@ -15,6 +15,9 @@ data Term =
     | TmInl Term
     | TmInr Term
     | TmPlusCase (Env Var) Ty Var Var Term Var Term
+    | TmNil
+    | TmCons Term Term
+    | TmStarCase (Env Var) Ty Var Term Var Var Term
     deriving (Eq, Ord, Show)
 
 data FunDef = FD String (Ctx Var.Var) Ty Term deriving (Eq,Ord,Show)
@@ -30,11 +33,14 @@ instance PrettyPrint Term where
             go _ TmEpsR = "sink"
             go _ (TmVar (Var x)) = x
             go _ (TmCatR e1 e2) = concat ["(",go False e1,";",go False e2,")"]
+            go _ TmNil = "nil"
             go True e = concat ["(", go False e, ")"]
-            go False (TmCatL t (Var x) (Var y) (Var z) e) = concat ["let_{",pp t,"} (",x,";",y,") = ",z," in ",go False e]
-            go False (TmInl e) = "inl " ++ go True e
-            go False (TmInr e) = "inl " ++ go True e
-            go False (TmPlusCase _ _ (Var z) (Var x) e1 (Var y) e2) = concat ["case ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
+            go _ (TmCatL t (Var x) (Var y) (Var z) e) = concat ["let_{",pp t,"} (",x,";",y,") = ",z," in ",go False e]
+            go _ (TmInl e) = "inl " ++ go True e
+            go _ (TmInr e) = "inl " ++ go True e
+            go _ (TmPlusCase _ _ (Var z) (Var x) e1 (Var y) e2) = concat ["case ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
+            go _ (TmCons e1 e2) = concat [go True e1," :: ",go True e2]
+            go _ (TmStarCase _ _ (Var z) e1 (Var x) (Var xs) e2) = concat ["case ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
 
 -- substVar e x y = e[x/y]
 -- Requires e be fully alpha-distinct (no shadowing.)
@@ -54,3 +60,7 @@ substVar (TmPlusCase rho r z x' e1 y' e2) x y | y == z = TmPlusCase rho' r x x' 
            Nothing -> error "Impossible"
            Just p -> bindEnv x p (unbindEnv z rho)
 substVar (TmPlusCase rho r z x' e1 y' e2) x y = TmPlusCase rho r z x' (substVar e1 x y) y' (substVar e2 x y)
+
+substVar TmNil _ _ = TmNil
+substVar (TmCons e1 e2) x y = TmCons (substVar e1 x y) (substVar e2 x y)
+substVar (TmStarCase rho r z e1 x' xs' e2) x y = TmStarCase rho r z (substVar e1 x y) x' xs' (substVar e2 x y)

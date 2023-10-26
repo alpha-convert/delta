@@ -25,6 +25,9 @@ data Term =
     | TmInl Term
     | TmInr Term
     | TmPlusCase Var Var Term Var Term
+    | TmNil
+    | TmCons Term Term
+    | TmStarCase Var Term Var Var Term
     | TmCut Var Term Term
     deriving (Eq, Ord, Show)
 
@@ -34,6 +37,7 @@ instance PrettyPrint Term where
             go _ (TmLitR l) = pp l
             go _ TmEpsR = "sink"
             go _ (TmVar (Var x)) = x
+            go _ TmNil = "nil"
             go _ (TmCatR e1 e2) = concat ["(",go False e1,";",go False e2,")"]
             go True e = concat ["(", go False e, ")"]
             go False (TmCatL (Var x) (Var y) (Var z) e) = concat ["let (",x,";",y,") = ",z," in ",go False e]
@@ -41,6 +45,8 @@ instance PrettyPrint Term where
             go False (TmInr e) = "inl " ++ go True e
             go False (TmPlusCase (Var z) (Var x) e1 (Var y) e2) = concat ["case ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
             go False (TmCut (Var x) e1 e2) = concat ["let ",x," = ",go True e1," in ",go True e2]
+            go False (TmCons e1 e2) = concat [go True e1," :: ", go True e2]
+            go False (TmStarCase (Var z) e1 (Var x) (Var xs) e2) = concat ["case ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
 
 data ElabState = ES { nextVar :: Int }
 
@@ -101,6 +107,14 @@ elab (Surf.TmPlusCase e mx e1 my e2) = do
     (e2',y) <- withUnshadow my $ elab e2
     z <- freshElabVar
     return $ TmCut z e' (TmPlusCase z x e1' y e2')
+elab Surf.TmNil = return TmNil
+elab (Surf.TmCons e1 e2) = TmCons <$> elab e1 <*> elab e2
+elab (Surf.TmStarCase e e1 mx mxs e2) = do
+    e' <- elab e
+    e1' <- elab e1
+    ((e2',xs),x) <- withUnshadow mx $ withUnshadow mxs $ elab e2
+    z <- freshElabVar
+    return $ TmCut z e' (TmStarCase z e1' x xs e2')
 
 {-TODO: ensure that fundefs have unique vars-}
 
@@ -112,7 +126,7 @@ data RunCmd = RC String (M.Map Var.Var Surf.UntypedPrefix)
 
 type Program = [Either FunDef RunCmd]
 
-elabCtx g =
+initShadowMap g =
     let bindings = ctxBindings g in
     let ks = M.keysSet bindings in 
     S.fold (\x -> M.insert x x) M.empty ks
@@ -121,7 +135,6 @@ doElab :: Surf.Program -> IO Program
 doElab = mapM $ \case
                     Right (Surf.RC s xs) -> return (Right (RC s (M.fromList xs)))
                     Left (Surf.FD f g s e) -> do
-                        let initCtxMap = elabCtx g
-                        case runIdentity (runExceptT (runReaderT (runStateT (elab e) (ES 0)) initCtxMap)) of
+                        case runIdentity (runExceptT (runReaderT (runStateT (elab e) (ES 0)) (initShadowMap g))) of
                             Right (e',_) -> return (Left (FD f g s e'))
                             Left err -> error (pp err)

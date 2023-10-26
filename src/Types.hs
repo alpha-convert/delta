@@ -7,7 +7,7 @@ import Values (Prefix(..), Env, Lit(..), isMaximal, isEmpty, bindEnv, emptyEnv, 
 import Util.ErrUtil(guard)
 import Util.PrettyPrint
 
-data Ty = TyEps | TyInt | TyBool | TyCat Ty Ty | TyPlus Ty Ty deriving (Eq,Ord,Show)
+data Ty = TyEps | TyInt | TyBool | TyCat Ty Ty | TyPlus Ty Ty | TyStar Ty deriving (Eq,Ord,Show)
 
 instance PrettyPrint Ty where
   pp TyEps = "Eps"
@@ -15,6 +15,7 @@ instance PrettyPrint Ty where
   pp TyBool = "Bool"
   pp (TyCat s t) = concat ["(", pp s," . ", pp t, ")"]
   pp (TyPlus s t) = concat ["(", pp s," + ", pp t, ")"]
+  pp (TyStar s) = concat ["(", pp s,")*"]
 
 data Ctx v = EmpCtx | SngCtx v Ty | SemicCtx (Ctx v) (Ctx v) deriving (Eq,Ord,Show,Functor, Foldable, Traversable)
 
@@ -72,8 +73,8 @@ instance ValueLike Prefix Ty where
   hasType p@(CatPA _) t = throwError (IllTyped p t)
 
   hasType (CatPB p p') (TyCat s t) = do
-    hasType p s
-    hasType p' t
+    () <- hasType p s
+    () <- hasType p' t
     if isMaximal p then return () else throwError (IllTyped (CatPB p p') (TyCat s t))
   hasType p@(CatPB _ _) t = throwError (IllTyped p t)
 
@@ -85,6 +86,21 @@ instance ValueLike Prefix Ty where
 
   hasType (SumPB p) (TyPlus _ t) = hasType p t
   hasType p@(SumPB _) t = throwError (IllTyped p t)
+
+  hasType StpEmp (TyStar _) = return ()
+  hasType p@StpEmp t = throwError (IllTyped p t)
+
+  hasType StpDone (TyStar _) = return ()
+  hasType p@StpDone t = throwError (IllTyped p t)
+
+  hasType (StpA p) (TyStar s) = hasType p s
+  hasType p@(StpA _) t = throwError (IllTyped p t)
+
+  hasType (StpB p p') (TyStar s) = do
+    () <- hasType p s
+    () <- hasType p' (TyStar s)
+    if isMaximal p then return () else throwError (IllTyped (StpB p p') (TyStar s))
+  hasType p@(StpB {}) t = throwError (IllTyped p t)
 
   deriv LitPEmp TyInt = return TyInt
   deriv LitPEmp TyBool = return TyBool
@@ -114,6 +130,20 @@ instance ValueLike Prefix Ty where
   deriv (SumPB p) (TyPlus _ t) = deriv p t
   deriv p@(SumPB _) t = throwError (IllTyped p t)
 
+  deriv StpEmp (TyStar s) = return (TyStar s)
+  deriv p@StpEmp t = throwError (IllTyped p t)
+
+  deriv StpDone (TyStar _) = return TyEps
+  deriv p@StpDone t = throwError (IllTyped p t)
+
+  deriv (StpA p) (TyStar s) = do
+    s' <- deriv p s
+    return (TyCat s' (TyStar s))
+  deriv p@(StpA _) t = throwError (IllTyped p t)
+
+  deriv (StpB _ p) (TyStar s) = deriv p (TyStar s)
+  deriv p@(StpB {}) t = throwError (IllTyped p t)
+
 
 instance (Ord v) => ValueLike (Env v) (Ctx v) where
   hasType rho = go
@@ -140,3 +170,4 @@ emptyPrefix TyBool = LitPEmp
 emptyPrefix TyEps = EpsP
 emptyPrefix (TyCat s _) = CatPA (emptyPrefix s)
 emptyPrefix (TyPlus _ _) = SumPEmp
+emptyPrefix (TyStar _) = StpEmp

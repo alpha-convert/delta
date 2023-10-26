@@ -36,6 +36,10 @@ data Prefix =
     | SumPEmp
     | SumPA Prefix
     | SumPB Prefix
+    | StpEmp
+    | StpDone
+    | StpA Prefix
+    | StpB Prefix Prefix
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint Prefix where
@@ -47,25 +51,49 @@ instance PrettyPrint Prefix where
   pp SumPEmp = "sumemp"
   pp (SumPA p) = concat ["inl(",pp p,")"]
   pp (SumPB p) = concat ["inr(",pp p,")"]
+  pp StpEmp = "stpemp"
+  pp StpDone = "[]"
+  pp (StpA p) = concat ["[",pp p,";)"]
+  pp (StpB p p') = concat ["[",pp p,";",pp p',";)"]
 
 prefixConcat :: (Monad m) => Prefix -> Prefix -> ExceptT (Prefix,Prefix) m Prefix
 prefixConcat LitPEmp LitPEmp = return LitPEmp
 prefixConcat LitPEmp (LitPFull l) = return (LitPFull l)
+prefixConcat p@LitPEmp p' = throwError (p,p')
 prefixConcat (LitPFull l) EpsP = return (LitPFull l)
+prefixConcat p@(LitPFull _) p' = throwError (p,p')
 prefixConcat EpsP EpsP = return EpsP
+prefixConcat p@EpsP p' = throwError (p,p')
 prefixConcat (CatPA p) (CatPA p') = CatPA <$> prefixConcat p p'
 prefixConcat (CatPA p) (CatPB p1 p2) = do
     p1' <- prefixConcat p p1
     return (CatPB p1' p2)
+prefixConcat p@(CatPA _) p' = throwError (p,p')
 prefixConcat (CatPB p1 p2) p = do
     p2' <- prefixConcat p2 p
     return (CatPB p1 p2')
 prefixConcat SumPEmp SumPEmp = return SumPEmp
 prefixConcat SumPEmp (SumPA p) = return (SumPA p)
 prefixConcat SumPEmp (SumPB p) = return (SumPB p)
+prefixConcat p@SumPEmp p' = throwError (p,p')
 prefixConcat (SumPA p) p' = SumPA <$> prefixConcat p p'
 prefixConcat (SumPB p) p' = SumPB <$> prefixConcat p p'
-prefixConcat p p' = throwError (p,p')
+prefixConcat StpEmp StpEmp = return StpEmp
+prefixConcat StpEmp StpDone = return StpDone
+prefixConcat StpEmp (StpA p) = return (StpA p)
+prefixConcat StpEmp (StpB p p') = return (StpB p p')
+prefixConcat p@StpEmp p' = throwError (p,p')
+prefixConcat StpDone EpsP = return StpDone
+prefixConcat p@StpDone p' = throwError (p,p')
+prefixConcat (StpA p) (CatPA p') = StpA <$> prefixConcat p p'
+prefixConcat (StpA p1) (CatPB p1' p2) = do
+  p1'' <- prefixConcat p1 p1'
+  return (StpB p1'' p2)
+prefixConcat p@(StpA _) p' = throwError (p,p')
+prefixConcat (StpB p1 p2) p' = do
+  p2' <- prefixConcat p2 p'
+  return (StpB p1 p2')
+
 
 
 unionWithM :: (Monad m, Ord k) => (v -> v -> m v) -> M.Map k v -> M.Map k v -> m (M.Map k v)
@@ -87,20 +115,28 @@ isMaximal LitPEmp = False
 isMaximal (LitPFull _) = True
 isMaximal EpsP = True
 isMaximal (CatPA _) = False
-isMaximal (CatPB _ p) = isMaximal p
+isMaximal (CatPB p p') = isMaximal p && isMaximal p'
 isMaximal SumPEmp = False
 isMaximal (SumPA p) = isMaximal p
 isMaximal (SumPB p) = isMaximal p
+isMaximal StpEmp = False
+isMaximal StpDone = True
+isMaximal (StpA _) = False
+isMaximal (StpB p p') = isMaximal p && isMaximal p'
 
 isEmpty :: Prefix -> Bool
 isEmpty LitPEmp = True
 isEmpty (LitPFull _) = False
 isEmpty EpsP = True
 isEmpty (CatPA p) = isEmpty p
-isEmpty (CatPB _ _) = False
+isEmpty (CatPB {}) = False
 isEmpty SumPEmp = True
 isEmpty (SumPA _) = False
 isEmpty (SumPB _) = False
+isEmpty StpEmp = True
+isEmpty StpDone = False
+isEmpty (StpA _) = False
+isEmpty (StpB {}) = False
 
 data Env v = Env (M.Map v Prefix) deriving (Eq, Ord, Show)
 
