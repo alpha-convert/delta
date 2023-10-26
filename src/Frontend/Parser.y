@@ -20,6 +20,7 @@ import Data.Char ( isDigit, isAlpha, isSpace )
       let             { TokenLet }
       in              { TokenIn }
       sink            { TokenSink }
+      nil             { TokenNil }
       case            { TokenCase }
       of              { TokenOf }
       inl             { TokenInl }
@@ -41,11 +42,13 @@ import Data.Char ( isDigit, isAlpha, isSpace )
       ','             { TokenComma }
       ';'             { TokenSemic }
       ':'             { TokenColon }
+      '::'            { TokenCons }
       '_'             { TokenWild }
       '|'             { TokenPipe }
       '=>'            { TokenArr }
       '.'             { TokenDot }
       '+'             { TokenPlus }
+      '*'             { TokenStar }
 
 %%
 
@@ -54,14 +57,19 @@ Var     : var     { Var.Var $1 }
 WildVar : '_'     { Nothing }
         | Var     { Just $1 }
 
-Exp   : let '(' WildVar ';' WildVar ')' '=' Exp in Exp            { TmCatL $3 $5 $8 $10 }
-      | '(' Exp ';' Exp ')'                                       { TmCatR $2 $4 }
-      | inl Exp                                                   { TmInl $2 }
-      | inr Exp                                                   { TmInr $2 }
-      | case Exp of inl WildVar '=>' Exp '|' inr WildVar '=>' Exp { TmPlusCase $2 $5 $7 $10 $12}
-      | int                                                       { TmLitR (LInt $1) }
+Exp   : let '(' WildVar ';' WildVar ')' '=' Exp in Exp             { TmCatL $3 $5 $8 $10 }
+      | '(' Exp ';' Exp ')'                                        { TmCatR $2 $4 }
+      | inl Exp1                                                   { TmInl $2 }
+      | inr Exp1                                                   { TmInr $2 }
+      | case Exp of inl WildVar '=>' Exp '|' inr WildVar '=>' Exp  { TmPlusCase $2 $5 $7 $10 $12}
+      | case Exp of nil '=>' Exp '|' WildVar '::' WildVar '=>' Exp { TmStarCase $2 $6 $8 $10 $12}
+      | Exp1 '::' Exp                                              { TmCons $1 $3 }
+      | Exp1                                                       { $1 }
+
+Exp1  : int                                                       { TmLitR (LInt $1) }
       | bool                                                      { TmLitR (LBool $1) }
       | sink                                                      { TmEpsR }
+      | nil                                                       { TmNil }
       | Var                                                       { TmVar $1 }
       | '(' Exp ')'                                               { $2 }
 
@@ -71,7 +79,10 @@ Ty    : Ty1 '+' Ty1                                               { TyPlus $1 $3
 Ty1   : Ty2 '.' Ty2                                               { TyCat $1 $3 }
       | Ty2                                                       { $1 }
 
-Ty2   : tyInt                                                     { TyInt }
+Ty2   : Ty3 '*'                                                   { TyStar $1 }
+      | Ty3                                                       { $1 }
+
+Ty3   : tyInt                                                     { TyInt }
       | tyBool                                                    { TyBool }
       | tyEps                                                     { TyEps }
       | '(' Ty ')'                                                { $2 }
@@ -93,6 +104,11 @@ Pfx   : '(' Pfx ';' ')'                                           { CatPA $2 }
       | inr '(' Pfx ')'                                           { SumPB $3 }
       | int                                                       { LitP (LInt $1) }
       | bool                                                      { LitP (LBool $1) }
+      | '[' Stp ']'                                               { Stp $2 }
+
+Stp   : {-empty-}                                                 { [] }
+      | Pfx                                                       { [$1] }
+      | Pfx ';' Stp                                               { $1 : $3 }
 
 Bindings : {- empty -}                                            { [] }
           | Var '=' Pfx                                           { [($1,$3)] }
@@ -113,6 +129,7 @@ data Token
       | TokenOf
       | TokenInl
       | TokenInr
+      | TokenNil
       | TokenFun
       | TokenInt Int
       | TokenBool Bool
@@ -121,6 +138,7 @@ data Token
       | TokenComma
       | TokenSemic
       | TokenColon
+      | TokenCons
       | TokenArr
       | TokenWild
       | TokenPipe
@@ -129,6 +147,7 @@ data Token
       | TokenOS
       | TokenCS
       | TokenDot
+      | TokenStar
       | TokenEmp
       | TokenExec
       | TokenPlus
@@ -144,6 +163,7 @@ lexer (c:cs)
       | isAlpha c = lexVar (c:cs)
       | isDigit c = lexNum (c:cs)
 lexer ('=':'>':cs) = TokenArr : lexer cs
+lexer (':':':':cs) = TokenCons : lexer cs
 lexer ('=':cs) = TokenEq : lexer cs
 lexer (',':cs) = TokenComma : lexer cs
 lexer ('.':cs) = TokenDot : lexer cs
@@ -156,6 +176,7 @@ lexer (')':cs) = TokenCB : lexer cs
 lexer ('[':cs) = TokenOS : lexer cs
 lexer (']':cs) = TokenCS : lexer cs
 lexer ('|':cs) = TokenPipe : lexer cs
+lexer ('*':cs) = TokenStar : lexer cs
 
 lexNum cs = TokenInt (read num) : lexer rest
       where (num,rest) = span isDigit cs
@@ -169,6 +190,7 @@ lexVar cs =
       ("of",rest)  -> TokenOf : lexer rest
       ("inl",rest)  -> TokenInl : lexer rest
       ("inr",rest)  -> TokenInr : lexer rest
+      ("nil",rest)  -> TokenNil : lexer rest
       ("fun",rest)  -> TokenFun : lexer rest
       ("emp",rest)  -> TokenEmp : lexer rest
       ("true",rest)  -> TokenBool True : lexer rest

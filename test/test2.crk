@@ -1,4 +1,11 @@
 fun foo(x : Int; y : Bool . Int) : Bool = 
-    let (u;v) = y in v
+    let (u;v) = y in u
 
 exec foo (x = 3; y = (false;emp))
+
+fun head(xs : Int *) : Int =
+    case xs of
+      nil => 0
+    | y :: ys => y
+
+exec head (xs = [3])

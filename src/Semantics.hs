@@ -135,16 +135,9 @@ eval (Core.TmStarCase rho' r s z e1 x xs e2) = do
                 return (p'', Core.TmCatL (TyStar s) x xs z e2')
             StpB p1 p2 -> do
                 (p'',e2') <- withEnv (bindAllEnv [(x,p1),(xs,p2)]) (eval e2)
-                return (p'', Core.substVar e2' z xs)
-                {-FIXME: this is probably incorrect??
-                    I think the following program should break this:
-
-                    (z : Int*) |- case z of
-                                   nil => 0
-                                   x::_ => x
-                    
-                    Figure out how you should cut into x to replace it with sink :)
-                -}
+                sink <- reThrow (SinkError x) (Core.sinkTm p1)
+                e2'' <- reThrow handleRuntimeCutError (Core.cut x sink e2')
+                return (p'', Core.substVar e2'' z xs)
             _ -> throwError (NotPlusPrefix z p))
 
 handleRuntimeCutError :: (Var.Var, Core.Term, Core.Term) -> SemError
