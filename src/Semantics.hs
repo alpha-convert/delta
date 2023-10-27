@@ -164,7 +164,7 @@ doRunPgm p = do
                                         () <- hasTypeB p' s >>= guard
                                         g' <- doDeriv rho g 
                                         s' <- doDeriv p' s
-                                        -- () <- doCheckCoreTm g' s' e'
+                                        () <- doCheckCoreTm g' s' e'
                                         return ()
                                     Left err -> error $ "Runtime Error: " ++ pp err
                 Nothing -> error ("Runtime Error: Tried to execute unbound function " ++ f)
