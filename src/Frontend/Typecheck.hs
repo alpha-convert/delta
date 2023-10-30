@@ -4,7 +4,8 @@
 module Frontend.Typecheck(
     doCheckElabPgm,
     doCheckCoreTm,
-    doCheckElabTm
+    doCheckElabTm,
+    tckTests
 ) where
 
 import qualified Frontend.ElabSyntax as Elab
@@ -23,10 +24,11 @@ import qualified Frontend.SurfaceSyntax as Surf
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Util.PartialOrder (substSingAll)
 import Control.Monad (when)
+import Test.HUnit
 
 data TckErr t = VarNotFound Var
             | OutOfOrder Var Var t
-            | OutOfOrderCore Var Var t
+            | ReUse Var t
             | ExpectedTyCat Var Ty
             | ExpectedTyPlus Var Ty
             | ExpectedTyStar Var Ty
@@ -47,7 +49,7 @@ data TckErr t = VarNotFound Var
 instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (VarNotFound (Var x)) = concat ["Variable ",x," not found"]
     pp (OutOfOrder (Var x) (Var y) e) = concat ["Variable ",y," came before ",x," in term ",pp e," but expected the other order."]
-    pp (OutOfOrderCore (Var x) (Var y) e) = concat ["Variable ",y," came before ",x," in term ",pp e," but expected the other order."]
+    pp (ReUse (Var x) e) = concat ["Variable ",x," was reused in disjoint branches of ", pp e]
     pp (ExpectedTyCat (Var x) t) = concat ["Variable ",x," expected to be of concatenation type, but it has type", pp t]
     pp (ExpectedTyPlus (Var x) t) = concat ["Variable ",x," expected to be of sum type, but it has type", pp t]
     pp (ExpectedTyStar (Var x) t) = concat ["Variable ",x," expected to be of star type, but it has type", pp t]
@@ -125,6 +127,9 @@ reThrow k x = runExceptT x >>= either (throwError . k) return
 handleOutOfOrder :: t -> (Var,Var) -> TckErr t
 handleOutOfOrder e (x,y) = OutOfOrder x y e
 
+handleReUse :: t -> Var -> TckErr t
+handleReUse e x = ReUse x e
+
 handleImpossibleCut :: (Var, Core.Term, Core.Term) -> TckErr t
 handleImpossibleCut (x,e,e') = ImpossibleCut x e e'
 
@@ -159,6 +164,7 @@ checkElab r (Elab.TmCatL x y z e) = do
 checkElab (TyCat s t) (Elab.TmCatR e1 e2) = do
     CR p1 e1' <- checkElab s e1
     CR p2 e2' <- checkElab t e2
+    reThrow (handleReUse (Elab.TmCatR e1 e2)) (P.checkDisjoint p1 p2)
     p' <- reThrow (handleOutOfOrder (Elab.TmCatR e1 e2)) $ P.concat p1 p2
     return $ CR p' (Core.TmCatR e1' e2')
 checkElab t (Elab.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
@@ -188,6 +194,7 @@ checkElab t Elab.TmNil = throwError (WrongTypeNil t)
 checkElab (TyStar s) (Elab.TmCons e1 e2) = do
     CR p1 e1' <- checkElab s e1
     CR p2 e2' <- checkElab (TyStar s) e2
+    reThrow (handleReUse (Elab.TmCons e1 e2)) (P.checkDisjoint p1 p2)
     p' <- reThrow (handleOutOfOrder (Elab.TmCatR e1 e2)) $ P.concat p1 p2
     return $ CR p' (Core.TmCons e1' e2')
 
@@ -206,6 +213,7 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
 checkElab r (Elab.TmCut x e1 e2) = do
     IR s p e1' <- inferElab e1
     CR p' e2' <- withBind x s $ checkElab r e2
+    reThrow (handleReUse (Elab.TmCatR e1 e2)) (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     return (CR p'' (Core.TmCut x e1' e2'))
 
@@ -217,6 +225,7 @@ checkElab r e@(Elab.TmRec es) = do
     es' <- mapM inferElab es -- infer all the arguments
     elabRec (zip g_assoc es')
 
+
 -- Given an assignement of terms to each of the variables in the context for a recursive call,
 -- check that they all have the right type, use variables in the right order, and unfold it into a "cut"
 -- for each variable.
@@ -225,6 +234,7 @@ elabRec [] = return $ CR P.empty Core.TmRec
 elabRec (((x,s),IR s' p e):es) = do
     when (s /= s') $ throwError (error "Here!!")
     CR p' e' <- elabRec es
+    reThrow (error "asdf") (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (error "Arguments use variables inconsistently")) $ P.concat p p'
     return $ CR p'' (Core.TmCut x e e')
 
@@ -253,6 +263,7 @@ inferElab e@(Elab.TmCatR e1 e2) = do
     IR s p1 e1' <- inferElab e1
     IR t p2 e2' <- inferElab e2
     p' <- reThrow (handleOutOfOrder e) $ P.concat p1 p2
+    reThrow (handleReUse e) (P.checkDisjoint p1 p2)
     return $ IR (TyCat s t) p' (Core.TmCatR e1' e2')
 
 inferElab e@(Elab.TmInl {}) = throwError (CheckTermInferPos e)
@@ -272,6 +283,7 @@ inferElab e@Elab.TmNil = throwError (CheckTermInferPos e)
 inferElab e@(Elab.TmCons e1 e2) = do
     IR s p1 e1' <- inferElab e1
     CR p2 e2' <- checkElab (TyStar s) e2
+    reThrow (handleReUse e) (P.checkDisjoint p1 p2)
     p' <- reThrow (handleOutOfOrder e) $ P.concat p1 p2
     return $ IR (TyStar s) p' (Core.TmCons e1' e2')
 
@@ -284,9 +296,10 @@ inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
     rho <- asks emptyEnvOfType
     return $ IR r1 p' (Core.TmStarCase rho r1 s z e1' x xs e2')
 
-inferElab (Elab.TmCut x e1 e2) = do
+inferElab e@(Elab.TmCut x e1 e2) = do
     IR s p e1' <- inferElab e1
     IR t p' e2' <- withBind x s $ inferElab e2
+    reThrow (handleReUse e) (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     return (IR t p'' (Core.TmCut x e1' e2'))
 
@@ -319,9 +332,10 @@ checkCore r e@(Core.TmCatL t' x y z e') = do
     -- Replace x and y with z in the output
     reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
 
-checkCore (TyCat s t) (Core.TmCatR e1 e2) = do
+checkCore (TyCat s t) e@(Core.TmCatR e1 e2) = do
     p1 <- checkCore s e1
     p2 <- checkCore t e2
+    reThrow (handleReUse e) (P.checkDisjoint p1 p2)
     reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
 checkCore t (Core.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
 
@@ -343,9 +357,10 @@ checkCore r e@(Core.TmPlusCase rho r' z x e1 y e2) = do
 checkCore (TyStar _) Core.TmNil = return P.empty
 checkCore t Core.TmNil = throwError (WrongTypeNil t)
 
-checkCore (TyStar s) (Core.TmCons e1 e2) = do
+checkCore (TyStar s) e@(Core.TmCons e1 e2) = do
     p1 <- checkCore s e1
     p2 <- checkCore (TyStar s) e2
+    reThrow (handleReUse e) (P.checkDisjoint p1 p2)
     reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
 
 checkCore t (Core.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
@@ -369,9 +384,10 @@ checkCore r e@Core.TmRec = do
 
 checkCore r (Core.TmFix g s e') = withRecSig g s (checkCore r e')
 
-checkCore r (Core.TmCut x e1 e2) = do
+checkCore r e@(Core.TmCut x e1 e2) = do
     (s,p) <- inferCore e1
     p' <- withBind x s $ checkCore r e2
+    reThrow (handleReUse e) (P.checkDisjoint p p')
     reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
 
 inferCore :: (TckM Core.Term m) => Core.Term -> m (Ty,P.Partial Var.Var)
@@ -452,7 +468,7 @@ doCheckCoreTm g t e = do
         Right usages -> do
             usageConsist <- runExceptT (P.consistentWith usages (ctxVars g))
             case usageConsist of
-                Left (x,y) -> error $ pp $ OutOfOrderCore x y e
+                Left (x,y) -> error $ pp $ OutOfOrder x y e
                 Right _ -> return ()
 
 doCheckElabPgm :: (MonadIO m) => Elab.Program -> m Core.Program
@@ -475,3 +491,8 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
                         Left err -> error (show err)
                         Right ps -> return (Right (Core.RC f ps))
 
+tckTests = TestList []
+--     where
+--         t1 = TestCase $ do
+--             !_ <- doCheckElabTm False (SngCtx (Var.Var "x") TyInt) (TyCat TyInt TyInt) _
+--             _

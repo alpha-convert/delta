@@ -147,8 +147,8 @@ eval (TmCut x e1 e2) = do
         (p',e2') <- eval e2
         return (p',TmCut x e1' e2')
 
-eval (TmFix _ _ e) = do
-    let e' = fixSubst e e -- this is extremely broken, most likeliy.
+eval (TmFix g s e) = do
+    let e' = fixSubst (TmFix g s e) e -- this is extremely broken, most likeliy.
     !_ <- Debug.trace ("Unfolded: " ++ pp e' ++ "\n") (return ())
     eval e'
 eval TmRec = error "Impossible."
