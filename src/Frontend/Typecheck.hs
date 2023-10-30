@@ -10,7 +10,7 @@ module Frontend.Typecheck(
 import qualified Frontend.ElabSyntax as Elab
 import qualified CoreSyntax as Core
 import Control.Monad.Except (MonadError (throwError), runExceptT, ExceptT)
-import Types (Ctx (..), Ty(..), ctxBindings, ctxVars, emptyPrefix)
+import Types (Ctx (..), Ty(..), ctxBindings, ctxVars, emptyPrefix, ctxAssoc)
 import Control.Monad.Reader (MonadReader (ask, local), asks, ReaderT (runReaderT))
 import Var (Var (Var))
 import Values (Lit(..), Env, Prefix (..), emptyEnv, bindEnv, isMaximal, isEmpty, allEnv, unionDisjointEnv)
@@ -20,8 +20,9 @@ import Control.Monad.Identity (Identity (runIdentity))
 import Util.PrettyPrint (PrettyPrint,pp)
 import Control.Monad.State.Strict (StateT(runStateT), MonadState (put, get), MonadTrans (lift))
 import qualified Frontend.SurfaceSyntax as Surf
-import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.IO.Class (MonadIO (liftIO))
 import Util.PartialOrder (substSingAll)
+import Control.Monad (when)
 
 data TckErr t = VarNotFound Var
             | OutOfOrder Var Var t
@@ -41,6 +42,7 @@ data TckErr t = VarNotFound Var
             | WrongTypeCons t t Ty
             | ListedTypeError Ty Ty Core.Term
             | ImpossibleCut Var Core.Term Core.Term
+            | UnsaturatedRecursiveCall Int Elab.Term
 
 instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (VarNotFound (Var x)) = concat ["Variable ",x," not found"]
@@ -63,8 +65,9 @@ instance PrettyPrint t => PrettyPrint (TckErr t) where
         where
             ppCut (Var x') e e' = concat ["let ",x',"= (",pp e,") in (",pp e',")"]
     pp (ListedTypeError t' t e) = concat ["Listed type ", pp t'," in term ", pp e, " did not match type ", pp t]
+    pp (UnsaturatedRecursiveCall n e) = concat ["Expected ", show n, " argments to recursive call ", pp e]
 
-data RecSig = NoRec | Rec (Ctx Var) Ty
+data RecSig = Rec (Ctx Var) Ty
 
 data TckCtx = TckCtx { mp :: M.Map Var.Var Ty, rs :: RecSig }
 
@@ -128,6 +131,9 @@ handleImpossibleCut (x,e,e') = ImpossibleCut x e e'
 data InferElabResult = IR { ty :: Ty, iusages :: P.Partial Var, itm :: Core.Term }
 
 data CheckElabResult = CR { cusages :: P.Partial Var, ctm :: Core.Term }
+
+promoteResult :: Ty -> CheckElabResult -> InferElabResult
+promoteResult t (CR p e) = IR t p e
 
 checkElab :: (TckM Elab.Term m) => Ty -> Elab.Term -> m CheckElabResult
 checkElab TyInt (Elab.TmLitR l@(LInt _)) = return $ CR P.empty (Core.TmLitR l)
@@ -203,7 +209,24 @@ checkElab r (Elab.TmCut x e1 e2) = do
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     return (CR p'' (Core.TmCut x e1' e2'))
 
+checkElab r e@(Elab.TmRec es) = do
+    Rec g r' <- asks rs
+    when (r /= r') $ throwError (UnequalReturnTypes r r' e) -- ensure the return type is the proper one
+    let g_assoc = ctxAssoc g
+    when (length g_assoc /= length es) $ throwError (UnsaturatedRecursiveCall (length g_assoc) e) -- ensure we have the right number of arguments
+    es' <- mapM inferElab es -- infer all the arguments
+    elabRec (zip g_assoc es')
 
+-- Given an assignement of terms to each of the variables in the context for a recursive call,
+-- check that they all have the right type, use variables in the right order, and unfold it into a "cut"
+-- for each variable.
+elabRec :: (TckM Elab.Term m) => [((Var, Ty), InferElabResult)] -> m CheckElabResult
+elabRec [] = return $ CR P.empty Core.TmRec
+elabRec (((x,s),IR s' p e):es) = do
+    when (s /= s') $ throwError (error "Here!!")
+    CR p' e' <- elabRec es
+    p'' <- reThrow (handleOutOfOrder (error "Arguments use variables inconsistently")) $ P.concat p p'
+    return $ CR p'' (Core.TmCut x e e')
 
 
 inferElab :: (TckM Elab.Term m) => Elab.Term -> m InferElabResult
@@ -267,6 +290,12 @@ inferElab (Elab.TmCut x e1 e2) = do
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     return (IR t p'' (Core.TmCut x e1' e2'))
 
+inferElab e@(Elab.TmRec es) = do
+    Rec g r <- asks rs
+    let g_assoc = ctxAssoc g
+    when (length g_assoc /= length es) $ throwError (UnsaturatedRecursiveCall (length g_assoc) e) -- ensure we have the right number of arguments
+    es' <- mapM inferElab es -- infer all the arguments
+    promoteResult r <$> elabRec (zip g_assoc es')
 
 
 
@@ -333,13 +362,10 @@ checkCore r e@(Core.TmStarCase rho r' s' z e1 x xs e2) = do
 
 -- NOTE: this just checks that we have all the binders we expect for the term, not that they arrive in the right order!
 checkCore r e@Core.TmRec = do
-    TckCtx g_bound rs <- ask
-    case rs of
-        NoRec -> error "Unbound recursive call!"
-        Rec g r' -> do
-            guard (r == r') (UnequalReturnTypes r r' e) --return types are the same
-            guard (all (`M.member` g_bound) g) (error "here!") -- we have a binding for everything the recursive call expects.
-            return P.empty
+    TckCtx g_bound (Rec g r') <- ask
+    guard (r == r') (UnequalReturnTypes r r' e) --return types are the same
+    guard (all (`M.member` g_bound) g) (error "here!") -- we have a binding for everything the recursive call expects.
+    return P.empty
 
 checkCore r (Core.TmFix g s e') = withRecSig g s (checkCore r e')
 
@@ -408,18 +434,19 @@ type FileInfo = M.Map String (Ctx Var, Ty)
 -- Doublecheck argument typechecks the resulting term, again.
 doCheckElabTm :: (MonadIO m) => Bool -> Ctx Var -> Ty -> Elab.Term -> m Core.Term
 doCheckElabTm doubleCheck g t e = do
-    let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e :: (ReaderT TckCtx (ExceptT (TckErr Elab.Term) Identity) CheckElabResult)) (TckCtx (ctxBindings g) NoRec)
+    let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e :: (ReaderT TckCtx (ExceptT (TckErr Elab.Term) Identity) CheckElabResult)) (TckCtx (ctxBindings g) (Rec g t))
     case ck of
         Left err -> error (pp err)
         Right (CR usages tm) -> do
             usageConsist <- runExceptT (P.consistentWith usages (ctxVars g))
+            let tm' = Core.TmFix g t tm -- put the ``fix'' on the outside.
             case usageConsist of
                 Left (x,y) -> error $ pp $ OutOfOrder x y e
-                Right _ -> if doubleCheck then doCheckCoreTm g t tm >> return tm else return tm
+                Right _ -> if doubleCheck then doCheckCoreTm g t tm' >> return tm' else return tm'
 
 doCheckCoreTm :: (MonadIO m) => Ctx Var -> Ty -> Core.Term -> m ()
 doCheckCoreTm g t e = do
-    let ck = runIdentity $ runExceptT $ runReaderT (checkCore t e :: (ReaderT TckCtx (ExceptT (TckErr Core.Term) Identity) (P.Partial Var))) (TckCtx (ctxBindings g) NoRec)
+    let ck = runIdentity $ runExceptT $ runReaderT (checkCore t e :: (ReaderT TckCtx (ExceptT (TckErr Core.Term) Identity) (P.Partial Var))) (TckCtx (ctxBindings g) (Rec g t))
     case ck of
         Left err -> error (pp err)
         Right usages -> do
@@ -433,7 +460,8 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
     where
         go :: (MonadIO m) => Either Elab.FunDef Elab.RunCmd -> StateT FileInfo m (Either Core.FunDef Core.RunCmd)
         go (Left (Elab.FD f g t e)) = do
-            e' <- lift $ doCheckElabTm True g t e
+            e' <- lift $ doCheckElabTm False g t e
+            liftIO $ print $ "Function " ++ f ++ " typechecked OK. Core term: " ++ pp e'
             fi <- get
             put (M.insert f (g,t) fi)
             return (Left (Core.FD f g t e'))
@@ -444,6 +472,6 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
                 Just (g,_) -> do
                     mps <- lift (runExceptT (checkUntypedPrefixCtx g p))
                     case mps of
-                        Left err -> lift (error (show err))
+                        Left err -> error (show err)
                         Right ps -> return (Right (Core.RC f ps))
 

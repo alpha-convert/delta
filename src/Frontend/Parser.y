@@ -34,6 +34,7 @@ import Data.Char ( isDigit, isAlpha, isSpace )
       tyEps           { TokenTyEps }
       emp             { TokenEmp }
       exec            { TokenExec }
+      rec             { TokenRec }
       '='             { TokenEq }
       '('             { TokenOB }
       ')'             { TokenCB }
@@ -71,7 +72,12 @@ Exp1  : int                                                       { TmLitR (LInt
       | sink                                                      { TmEpsR }
       | nil                                                       { TmNil }
       | Var                                                       { TmVar $1 }
+      | rec '(' Args ')'                                          { TmRec $3 }
       | '(' Exp ')'                                               { $2 }
+
+Args  : {- empty -}                                               { [] }
+      | Exp                                                       { [$1] }
+      | Exp ';' Args                                              { $1 : $3 }
 
 Ty    : Ty1 '+' Ty1                                               { TyPlus $1 $3 }
       | Ty1                                                       { $1 }
@@ -87,11 +93,11 @@ Ty3   : tyInt                                                     { TyInt }
       | tyEps                                                     { TyEps }
       | '(' Ty ')'                                                { $2 }
 
-FunDef      : fun var '(' Args ')' ':' Ty '=' Exp                      { FD $2 $4 $7 $9 }
+FunDef      : fun var '(' Params ')' ':' Ty '=' Exp                      { FD $2 $4 $7 $9 }
 
-Args  : {-empty-}                                                 { EmpCtx }
-      | Var ':' Ty                                                { SngCtx $1 $3 }
-      | Var ':' Ty ';' Args                                       { SemicCtx (SngCtx $1 $3) $5 }
+Params  : {-empty-}                                                 { EmpCtx }
+        | Var ':' Ty                                                { SngCtx $1 $3 }
+        | Var ':' Ty ';' Params                                       { SemicCtx (SngCtx $1 $3) $5 }
 
 Pgm   : {-empty-}                                                 { [] }
       | FunDef Pgm                                                { (Left $1) : $2 }
@@ -131,6 +137,7 @@ data Token
       | TokenInr
       | TokenNil
       | TokenFun
+      | TokenRec
       | TokenInt Int
       | TokenBool Bool
       | TokenVar Var.Var
@@ -193,6 +200,7 @@ lexVar cs =
       ("nil",rest)  -> TokenNil : lexer rest
       ("fun",rest)  -> TokenFun : lexer rest
       ("emp",rest)  -> TokenEmp : lexer rest
+      ("rec",rest)  -> TokenRec : lexer rest
       ("true",rest)  -> TokenBool True : lexer rest
       ("false",rest)  -> TokenBool False : lexer rest
       ("exec",rest)  -> TokenExec : lexer rest

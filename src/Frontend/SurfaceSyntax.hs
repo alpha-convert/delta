@@ -22,6 +22,7 @@ data Term =
     | TmNil
     | TmCons Term Term
     | TmStarCase Term Term (Maybe Var.Var) (Maybe Var.Var) Term
+    | TmRec [Term]
     deriving (Eq,Ord,Show)
 
 data UntypedPrefix =

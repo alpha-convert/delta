@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveFoldable, DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies #-}
-module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars) where
+module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc) where
 
 import qualified Data.Map as M
 import Control.Monad.Except (ExceptT, throwError, withExceptT, runExceptT)
@@ -21,14 +21,17 @@ instance PrettyPrint Ty where
 data Ctx v = EmpCtx | SngCtx v Ty | SemicCtx (Ctx v) (Ctx v) deriving (Eq,Ord,Show,Functor, Foldable, Traversable)
 
 ctxBindings :: (Ord v) => Ctx v -> M.Map v Ty
-ctxBindings EmpCtx = M.empty
-ctxBindings (SngCtx x t) = M.singleton x t
-ctxBindings (SemicCtx g g') = M.union (ctxBindings g) (ctxBindings g')
+ctxBindings = M.fromList . ctxAssoc
 
 ctxVars :: Ctx v -> [v]
 ctxVars EmpCtx = []
 ctxVars (SngCtx x _) = [x]
 ctxVars (SemicCtx g g') = ctxVars g ++ ctxVars g'
+
+ctxAssoc :: Ctx v -> [(v,Ty)]
+ctxAssoc EmpCtx = []
+ctxAssoc (SngCtx x s) = [(x,s)]
+ctxAssoc (SemicCtx g g') = ctxAssoc g ++ ctxAssoc g'
 
 instance PrettyPrint v => PrettyPrint (Ctx v) where
   pp EmpCtx = "(.)"

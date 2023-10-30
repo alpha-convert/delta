@@ -16,6 +16,7 @@ import qualified Data.Set as S
 import Control.Monad.RWS.Strict (MonadReader (local, ask))
 import Control.Monad.Reader (ReaderT (runReaderT))
 import Test.HUnit
+import Data.List (intercalate)
 
 data Term =
       TmLitR Lit
@@ -30,6 +31,7 @@ data Term =
     | TmCons Term Term
     | TmStarCase Var Term Var Var Term
     | TmCut Var Term Term
+    | TmRec [Term]
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint Term where
@@ -48,6 +50,7 @@ instance PrettyPrint Term where
             go False (TmCut (Var x) e1 e2) = concat ["let ",x," = ",go True e1," in ",go True e2]
             go False (TmCons e1 e2) = concat [go True e1," :: ", go True e2]
             go False (TmStarCase (Var z) e1 (Var x) (Var xs) e2) = concat ["case ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
+            go False (TmRec es) = concat ["rec (", intercalate ";" (map (go False) es), ")"]
 
 data ElabState = ES { nextVar :: Int } deriving (Eq, Ord, Show)
 
@@ -60,7 +63,9 @@ instance PrettyPrint ElabErr where
     pp (UnboundVar (Var x)) = concat ["Variable ",x," not bound. This is a compiler bug."]
     pp (EqualBoundVars x) = concat ["Binding two copies of the same variable ",pp x]
 
-class (MonadState ElabState m, MonadReader (M.Map Var Var) m, MonadError ElabErr m) => ElabM m where
+data ElabInput = EI {renaming :: M.Map Var Var}
+
+class (MonadState ElabState m, MonadReader ElabInput m, MonadError ElabErr m) => ElabM m where
 
 freshElabVar :: (ElabM m) => m Var
 freshElabVar = do
@@ -71,21 +76,21 @@ freshElabVar = do
 withUnshadow :: (ElabM m) => Maybe Var -> m a -> m (a,Var)
 withUnshadow Nothing u = do
     x <- freshElabVar
-    a <- local (M.insert x x) u
+    a <- local (\(EI sm) -> EI (M.insert x x sm)) u
     return (a,x)
 withUnshadow (Just x) u = do
-    sm <- ask
+    EI sm <- ask
     if M.member x sm then do
         y <- freshElabVar
-        a <- local (M.insert x y) u
+        a <- local (\(EI sm) -> EI (M.insert x y sm)) u
         return (a,y)
     else do
-        a <- local (M.insert x x) u
+        a <- local (\(EI sm) -> EI (M.insert x x sm)) u
         return (a,x)
 
 unshadow :: (ElabM m) => Var -> m Var
 unshadow x = do
-    sm <- ask
+    EI sm <- ask
     case M.lookup x sm of
         Just y -> return y
         Nothing -> throwError (UnboundVar x)
@@ -127,10 +132,11 @@ elab (Surf.TmStarCase e e1 mx mxs e2) = do
     ((e2',xs),x) <- withUnshadow mx $ withUnshadow mxs $ elab e2
     z <- freshElabVar
     return $ TmCut z e' (TmStarCase z e1' x xs e2')
+elab (Surf.TmRec xs) = TmRec <$> mapM elab xs
 
 {-TODO: ensure that fundefs have unique vars-}
 
-instance ElabM (StateT ElabState (ReaderT (M.Map Var Var) (ExceptT ElabErr Identity))) where
+instance ElabM (StateT ElabState (ReaderT ElabInput (ExceptT ElabErr Identity))) where
 
 data FunDef = FD String (Ctx Var.Var) Ty Term deriving (Eq,Ord,Show)
 
@@ -145,7 +151,9 @@ initShadowMap g =
 
 
 elabSingle :: Surf.Term -> S.Set Var -> Either ElabErr (Term, ElabState)
-elabSingle e s = runIdentity (runExceptT (runReaderT (runStateT (elab e) (ES 0)) $ S.fold (\x -> M.insert x x) M.empty s))
+elabSingle e s = runIdentity (runExceptT (runReaderT (runStateT (elab e) (ES 0)) $ initInput))
+    where
+        initInput = EI (S.fold (\x -> M.insert x x) M.empty s)
 
 doElab :: Surf.Program -> IO Program
 doElab = mapM $ \case
@@ -175,6 +183,12 @@ elabTests = TestList [
             case elabSingle e (S.fromList $ Var.Var <$> xs) of
                 Right _ -> assertFailure "Expected failure"
                 Left _ -> return ()
+
+-- TODO: add this as a failing test:
+-- fun foo (x : Int*) : Int* =
+--     case xs of
+--       nil => nil
+--     | y::ys => ys
 
 -- >>> elabSingle (Surf.TmCatL (Just (Var.Var "y")) (Just (Var.Var "z")) (Surf.TmVar (Var.Var "z")) (Surf.TmVar (Var.Var "y"))) (S.fromList $ Var.Var <$> ["z"])
 -- Right (TmCut (Var "__x1") (TmVar (Var "z")) (TmCatL (Var "y") (Var "__x0") (Var "__x1") (TmVar (Var "y"))),ES {nextVar = 2})

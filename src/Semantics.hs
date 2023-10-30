@@ -18,6 +18,7 @@ import Util.PrettyPrint (PrettyPrint (pp))
 import qualified Var (Var(..))
 import Frontend.Typecheck (doCheckCoreTm)
 import Test.HUnit
+import qualified Debug.Trace as Debug
 
 data SemError =
       VarLookupFailed Var.Var
@@ -146,7 +147,10 @@ eval (TmCut x e1 e2) = do
         (p',e2') <- eval e2
         return (p',TmCut x e1' e2')
 
-eval (TmFix _ _ e) = eval (fixSubst e e) -- this is extremely broken, most likeliy.
+eval (TmFix _ _ e) = do
+    let e' = fixSubst e e -- this is extremely broken, most likeliy.
+    !_ <- Debug.trace ("Unfolded: " ++ pp e' ++ "\n") (return ())
+    eval e'
 eval TmRec = error "Impossible."
 
 fixSubst :: Term -> Term -> Term
