@@ -64,10 +64,12 @@ instance PrettyPrint t => PrettyPrint (TckErr t) where
             ppCut (Var x') e e' = concat ["let ",x',"= (",pp e,") in (",pp e',")"]
     pp (ListedTypeError t' t e) = concat ["Listed type ", pp t'," in term ", pp e, " did not match type ", pp t]
 
-newtype TckCtx = TckCtx { mp :: M.Map Var.Var Ty }
+data RecSig = NoRec | Rec (Ctx Var) Ty
+
+data TckCtx = TckCtx { mp :: M.Map Var.Var Ty, rs :: RecSig }
 
 emptyEnvOfType :: TckCtx -> Env Var
-emptyEnvOfType (TckCtx m) = M.foldrWithKey (\x t -> bindEnv x (emptyPrefix t)) emptyEnv m
+emptyEnvOfType (TckCtx m _) = M.foldrWithKey (\x t -> bindEnv x (emptyPrefix t)) emptyEnv m
 
 class (MonadError (TckErr t) m, MonadReader TckCtx m) => TckM t m where
 
@@ -100,13 +102,16 @@ lookupTyStar x = do
         _ -> throwError (ExpectedTyStar x s')
 
 withUnbind :: (TckM t m) => Var -> m a -> m a
-withUnbind x = local (TckCtx . M.delete x . mp)
+withUnbind x = local (\t -> TckCtx (M.delete x (mp t)) (rs t))
 
 withBind :: (TckM t m) => Var -> Ty -> m a -> m a
-withBind x s = local (TckCtx . M.insert x s . mp)
+withBind x s = local (\t -> TckCtx (M.insert x s (mp t)) (rs t))
 
 withBindAll :: (TckM t m) => [(Var,Ty)] -> m a -> m a
-withBindAll xs = local (TckCtx . foldr (\(x,s) -> (M.insert x s .)) id xs . mp)
+withBindAll xs = local $ \t -> TckCtx (foldr (\(x,s) -> (M.insert x s .)) id xs (mp t)) (rs t)
+
+withRecSig :: (TckM t m) => Ctx Var -> Ty -> m a -> m a
+withRecSig g s = local $ \t -> TckCtx (mp t) (Rec g s)
 
 guard :: (TckM t m) => Bool -> TckErr t -> m ()
 guard b e = if b then return () else throwError e
@@ -195,9 +200,8 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
 checkElab r (Elab.TmCut x e1 e2) = do
     IR s p e1' <- inferElab e1
     CR p' e2' <- withBind x s $ checkElab r e2
-    e <- reThrow handleImpossibleCut (Core.cut x e1' e2')
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
-    return (CR p'' e)
+    return (CR p'' (Core.TmCut x e1' e2'))
 
 
 
@@ -260,9 +264,11 @@ inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
 inferElab (Elab.TmCut x e1 e2) = do
     IR s p e1' <- inferElab e1
     IR t p' e2' <- withBind x s $ inferElab e2
-    e <- reThrow handleImpossibleCut (Core.cut x e1' e2')
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
-    return (IR t p'' e)
+    return (IR t p'' (Core.TmCut x e1' e2'))
+
+
+
 
 checkCore :: (TckM Core.Term m) => Ty -> Core.Term -> m (P.Partial Var.Var)
 checkCore TyInt (Core.TmLitR (LInt _)) = return P.empty
@@ -325,6 +331,25 @@ checkCore r e@(Core.TmStarCase rho r' s' z e1 x xs e2) = do
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
     reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
 
+-- NOTE: this just checks that we have all the binders we expect for the term, not that they arrive in the right order!
+checkCore r e@Core.TmRec = do
+    TckCtx g_bound rs <- ask
+    case rs of
+        NoRec -> error "Unbound recursive call!"
+        Rec g r' -> do
+            guard (r == r') (UnequalReturnTypes r r' e) --return types are the same
+            guard (all (`M.member` g_bound) g) (error "here!") -- we have a binding for everything the recursive call expects.
+            return P.empty
+
+checkCore r (Core.TmFix g s e') = withRecSig g s (checkCore r e')
+
+checkCore r (Core.TmCut x e1 e2) = do
+    (s,p) <- inferCore e1
+    p' <- withBind x s $ checkCore r e2
+    reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
+
+inferCore :: (TckM Core.Term m) => Core.Term -> m (Ty,P.Partial Var.Var)
+inferCore = undefined
 
 data PrefixCheckErr = WrongType Ty Surf.UntypedPrefix | OrderIssue Prefix Prefix | NotDisjointCtx Var Prefix Prefix | OrderIssueCtx (Env Var) (Env Var) | IllegalStp Prefix deriving (Eq, Ord, Show)
 
@@ -380,20 +405,21 @@ checkUntypedPrefixCtx (SemicCtx g g') m = do
 
 type FileInfo = M.Map String (Ctx Var, Ty)
 
-doCheckElabTm :: (MonadIO m) => Ctx Var -> Ty -> Elab.Term -> m Core.Term
-doCheckElabTm g t e = do
-    let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e :: (ReaderT TckCtx (ExceptT (TckErr Elab.Term) Identity) CheckElabResult)) (TckCtx $ ctxBindings g)
+-- Doublecheck argument typechecks the resulting term, again.
+doCheckElabTm :: (MonadIO m) => Bool -> Ctx Var -> Ty -> Elab.Term -> m Core.Term
+doCheckElabTm doubleCheck g t e = do
+    let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e :: (ReaderT TckCtx (ExceptT (TckErr Elab.Term) Identity) CheckElabResult)) (TckCtx (ctxBindings g) NoRec)
     case ck of
         Left err -> error (pp err)
         Right (CR usages tm) -> do
             usageConsist <- runExceptT (P.consistentWith usages (ctxVars g))
             case usageConsist of
                 Left (x,y) -> error $ pp $ OutOfOrder x y e
-                Right _ -> return tm
+                Right _ -> if doubleCheck then doCheckCoreTm g t tm >> return tm else return tm
 
 doCheckCoreTm :: (MonadIO m) => Ctx Var -> Ty -> Core.Term -> m ()
 doCheckCoreTm g t e = do
-    let ck = runIdentity $ runExceptT $ runReaderT (checkCore t e :: (ReaderT TckCtx (ExceptT (TckErr Core.Term) Identity) (P.Partial Var))) (TckCtx $ ctxBindings g)
+    let ck = runIdentity $ runExceptT $ runReaderT (checkCore t e :: (ReaderT TckCtx (ExceptT (TckErr Core.Term) Identity) (P.Partial Var))) (TckCtx (ctxBindings g) NoRec)
     case ck of
         Left err -> error (pp err)
         Right usages -> do
@@ -407,7 +433,7 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
     where
         go :: (MonadIO m) => Either Elab.FunDef Elab.RunCmd -> StateT FileInfo m (Either Core.FunDef Core.RunCmd)
         go (Left (Elab.FD f g t e)) = do
-            e' <- lift $ doCheckElabTm g t e
+            e' <- lift $ doCheckElabTm True g t e
             fi <- get
             put (M.insert f (g,t) fi)
             return (Left (Core.FD f g t e'))

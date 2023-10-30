@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleContexts, FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
-module Frontend.ElabSyntax (doElab, Term(..), Program, FunDef(..), RunCmd(..)) where
+module Frontend.ElabSyntax (doElab, Term(..), Program, FunDef(..), RunCmd(..), elabTests) where
 
 import Values ( Lit(..) )
 import Var (Var(..))
@@ -15,6 +15,7 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import Control.Monad.RWS.Strict (MonadReader (local, ask))
 import Control.Monad.Reader (ReaderT (runReaderT))
+import Test.HUnit
 
 data Term =
       TmLitR Lit
@@ -48,12 +49,16 @@ instance PrettyPrint Term where
             go False (TmCons e1 e2) = concat [go True e1," :: ", go True e2]
             go False (TmStarCase (Var z) e1 (Var x) (Var xs) e2) = concat ["case ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
 
-data ElabState = ES { nextVar :: Int }
+data ElabState = ES { nextVar :: Int } deriving (Eq, Ord, Show)
 
-data ElabErr = UnboundVar Var
+data ElabErr =
+      UnboundVar Var
+    | EqualBoundVars Var
+    deriving (Eq, Ord, Show)
 
 instance PrettyPrint ElabErr where
     pp (UnboundVar (Var x)) = concat ["Variable ",x," not bound. This is a compiler bug."]
+    pp (EqualBoundVars x) = concat ["Binding two copies of the same variable ",pp x]
 
 class (MonadState ElabState m, MonadReader (M.Map Var Var) m, MonadError ElabErr m) => ElabM m where
 
@@ -84,13 +89,20 @@ unshadow x = do
     case M.lookup x sm of
         Just y -> return y
         Nothing -> throwError (UnboundVar x)
-    
+
+sameBinder :: Maybe Var -> Maybe Var -> Maybe Var
+sameBinder Nothing _ = Nothing
+sameBinder _ Nothing = Nothing
+sameBinder (Just x) (Just y) = if x == y then Just x else Nothing
 
 elab :: (ElabM m) => Surf.Term -> m Term
 elab (Surf.TmLitR l) = return (TmLitR l)
 elab Surf.TmEpsR = return TmEpsR
 elab (Surf.TmVar x) = TmVar <$> unshadow x
 elab (Surf.TmCatL mx my e1 e2) = do
+    case sameBinder mx my of
+        Just x -> throwError (EqualBoundVars x)
+        _ -> return ()
     e1' <- elab e1
     ((e2',y),x) <- withUnshadow mx $ withUnshadow my $ elab e2
     z <- freshElabVar
@@ -128,13 +140,78 @@ type Program = [Either FunDef RunCmd]
 
 initShadowMap g =
     let bindings = ctxBindings g in
-    let ks = M.keysSet bindings in 
+    let ks = M.keysSet bindings in
     S.fold (\x -> M.insert x x) M.empty ks
+
+
+elabSingle :: Surf.Term -> S.Set Var -> Either ElabErr (Term, ElabState)
+elabSingle e s = runIdentity (runExceptT (runReaderT (runStateT (elab e) (ES 0)) $ S.fold (\x -> M.insert x x) M.empty s))
 
 doElab :: Surf.Program -> IO Program
 doElab = mapM $ \case
                     Right (Surf.RC s xs) -> return (Right (RC s (M.fromList xs)))
-                    Left (Surf.FD f g s e) -> do
-                        case runIdentity (runExceptT (runReaderT (runStateT (elab e) (ES 0)) (initShadowMap g))) of
+                    Left (Surf.FD f g s e) ->
+                        case elabSingle e (M.keysSet $ ctxBindings g) of
                             Right (e',_) -> return (Left (FD f g s e'))
                             Left err -> error (pp err)
+
+-- >>> elabSingle (Surf.TmCatL Nothing Nothing (Surf.TmCatR (Surf.TmLitR (LInt 4)) (Surf.TmLitR (LInt 4))) Surf.TmEpsR) (S.fromList [])
+-- Right (TmCut (Var "__x2") (TmCatR (TmLitR (LInt 4)) (TmLitR (LInt 4))) (TmCatL (Var "__x0") (Var "__x1") (Var "__x2") TmEpsR),ES {nextVar = 3})
+
+elabTests :: Test
+elabTests = TestList [
+        elabTest (Surf.TmVar (Var.Var "x")) (TmVar (Var.Var "x")) ["x"],
+        elabTest (Surf.TmCatL Nothing Nothing (Surf.TmCatR (Surf.TmLitR (LInt 4)) (Surf.TmLitR (LInt 4))) Surf.TmEpsR) (TmCut (Var "__x2") (TmCatR (TmLitR (LInt 4)) (TmLitR (LInt 4))) (TmCatL (Var "__x0") (Var "__x1") (Var "__x2") TmEpsR)) [],
+        elabFails (Surf.TmCatL (Just (Var.Var "y")) (Just (Var.Var "y")) (Surf.TmVar $ Var.Var "x") Surf.TmEpsR) ["x"],
+        elabTest (Surf.TmCatL (Just (Var.Var "y")) (Just (Var.Var "z")) (Surf.TmVar (Var.Var "z")) (Surf.TmVar (Var.Var "z"))) (TmCut (Var "__x1") (TmVar (Var "z")) (TmCatL (Var "y") (Var "__x0") (Var "__x1") (TmVar (Var "__x0")))) ["z"],
+        elabFails (Surf.TmCatL (Just (Var.Var "y")) (Just (Var.Var "z")) (Surf.TmVar (Var.Var "z")) (Surf.TmVar (Var.Var "z"))) []
+    ]
+    where
+        elabTest e e'' xs = TestCase $ do
+            case elabSingle e (S.fromList $ Var.Var <$> xs) of
+                Right (e',_) -> assertEqual "" e' e''
+                Left err -> assertFailure (pp err)
+        elabFails e xs = TestCase $ do
+            case elabSingle e (S.fromList $ Var.Var <$> xs) of
+                Right _ -> assertFailure "Expected failure"
+                Left _ -> return ()
+
+-- >>> elabSingle (Surf.TmCatL (Just (Var.Var "y")) (Just (Var.Var "z")) (Surf.TmVar (Var.Var "z")) (Surf.TmVar (Var.Var "y"))) (S.fromList $ Var.Var <$> ["z"])
+-- Right (TmCut (Var "__x1") (TmVar (Var "z")) (TmCatL (Var "y") (Var "__x0") (Var "__x1") (TmVar (Var "y"))),ES {nextVar = 2})
+
+-- Found hole: _ :: Term
+-- In the first argument of `elab', namely `(_)'
+-- In the expression: elab (_)
+-- In an equation for `it_aGCJH': it_aGCJH = elab (_)
+-- Relevant bindings include
+--   it_aGCJH :: m_aGEPa[sk:1] Term
+--     (bound at /Users/jwc/Documents/research/Creek/src/Frontend/ElabSyntax.hs:146:2)
+-- Constraints include
+--   ElabM
+--     m_aGEPa[sk:1] (from /Users/jwc/Documents/research/Creek/src/Frontend/ElabSyntax.hs:146:2-9)
+-- Valid hole fits include
+--   TmEpsR
+--   TmNil
+-- Valid refinement hole fits include
+--   TmInl _
+--   TmInr _
+--   TmLitR _
+--   TmVar _
+--   head _
+--   minimum _
+--   last _
+--   maximum _
+--   id _
+--   ask _
+--   (Some refinement hole fits suppressed; use -fmax-refinement-hole-fits=N or -fno-max-refinement-hole-fits)
+
+-- parseTests = TestList $ [
+--         testParse "x" (Surf.TmVar (Var.Var "x")),
+--         testParse "3" (Surf.TmLitR (LInt 3)),
+--         testParse "true" (Surf.TmLitR (LBool True)),
+--         testParse "x :: 5" (Surf.TmCons (Surf.TmVar $ Var.Var "x") (Surf.TmLitR $ LInt 5)),
+--         testParse "let (x;_) = (5;false) in inl (a :: nil)" (Surf.TmCatL (Just (Var.Var "x")) Nothing (Surf.TmCatR (Surf.TmLitR $ LInt 5) (Surf.TmLitR $ LBool False)) (Surf.TmInl (Surf.TmCons (Surf.TmVar (Var.Var "a")) Surf.TmNil))),
+--         testParse "case (x :: (let (u;v) = l in u) :: ys) of nil => 4 | z :: _ => (z;ys)" (Surf.TmStarCase (Surf.TmCons (Surf.TmVar (Var.Var "x")) (Surf.TmCons (Surf.TmCatL (Just (Var.Var "u")) (Just (Var.Var "v")) (Surf.TmVar (Var.Var "l")) (Surf.TmVar (Var.Var "u"))) (Surf.TmVar (Var.Var "ys")))) (Surf.TmLitR (LInt 4)) (Just $ Var.Var "z") Nothing (Surf.TmCatR (Surf.TmVar (Var.Var "z")) (Surf.TmVar (Var.Var "ys"))))
+--     ]
+--     where
+--         testParse s e = TestCase $ e @?= parseSurfaceSyntax (lexer s)
