@@ -1,0 +1,9 @@
+fun bar (x : Int; ys : Int*) : Int* =
+    case ys of
+      nil => x :: nil
+    | u::us => u :: rec(x;us)
+
+exec bar (x = 3; ys = emp)
+exec bar (x = 3; ys = [emp])
+exec bar (x = 3; ys = [4;emp])
+exec bar (x = 3; ys = [4;5])
