@@ -147,10 +147,7 @@ eval (TmCut x e1 e2) = do
         (p',e2') <- eval e2
         return (p',TmCut x e1' e2')
 
-eval (TmFix g s e) = do
-    let e' = fixSubst (TmFix g s e) e -- this is extremely broken, most likeliy.
-    !_ <- Debug.trace ("Unfolded: " ++ pp e' ++ "\n") (return ())
-    eval e'
+eval (TmFix g s e) = eval $ fixSubst (TmFix g s e) e -- this is extremely broken, most likeliy.
 eval TmRec = error "Impossible."
 
 fixSubst :: Term -> Term -> Term
@@ -190,9 +187,9 @@ doRunPgm p = do
             case M.lookup f tl of
                 Just (e,g,s) -> case runIdentity $ runExceptT $ runReaderT (eval e) rho of
                                     Right (p',e') -> do
-                                        lift (print $ "Result of executing " ++ f)
-                                        lift (print p')
-                                        lift (print e')
+                                        lift (putStrLn $ "Result of executing " ++ f)
+                                        lift (putStrLn $ pp p')
+                                        lift (putStrLn $ pp e')
                                         () <- hasTypeB p' s >>= guard
                                         g' <- doDeriv rho g 
                                         s' <- doDeriv p' s
@@ -239,6 +236,16 @@ semTests = TestList [
                 Left err -> assertFailure (pp err)
                 Right (p',_) -> assertEqual "Prefixes should be equal" p p'
         env xs = bindAllEnv xs emptyEnv
+
+{-
+
+fun bar (x : Int; ys : Int*) : Int* =
+    case ys of
+      nil => x :: nil
+    | u::us => rec(x;ys)
+
+exec bar (x = 3; ys = [emp])
+-}
 
 var = Var.Var
 

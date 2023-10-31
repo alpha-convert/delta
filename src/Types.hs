@@ -1,12 +1,13 @@
-{-# LANGUAGE DeriveFoldable, DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies #-}
+{-# LANGUAGE DeriveFoldable, DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances #-}
 module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc) where
 
 import qualified Data.Map as M
 import Control.Monad.Except (ExceptT, throwError, withExceptT, runExceptT)
-import Values (Prefix(..), Env, Lit(..), isMaximal, isEmpty, bindEnv, emptyEnv, lookupEnv)
+import Values (Prefix(..), Env, Lit(..), isMaximal, isEmpty, bindEnv, emptyEnv, lookupEnv, singletonEnv)
 import Util.ErrUtil(guard)
 import Util.PrettyPrint
 import Control.Monad.IO.Class (MonadIO)
+import Control.Monad (foldM)
 
 data Ty = TyEps | TyInt | TyBool | TyCat Ty Ty | TyPlus Ty Ty | TyStar Ty deriving (Eq,Ord,Show)
 
@@ -43,10 +44,20 @@ class TypeLike t where
   isNull :: t -> Bool
 
 instance TypeLike Ty where
-  isNull = undefined
+  isNull TyInt = False
+  isNull TyBool = False
+  isNull TyEps = True
+  isNull (TyCat _ _) = False
+  isNull (TyPlus _ _) = False
+  isNull (TyStar _) = False
 
 instance TypeLike (Ctx v) where
-  isNull = undefined
+  isNull EmpCtx = True
+  isNull (SngCtx _ s) = isNull s
+  isNull (SemicCtx g g') = isNull g && isNull g'
+
+instance TypeLike (M.Map v Ty) where
+  isNull = all isNull
 
 data ValueLikeErr a t = IllTyped a t
 
@@ -174,6 +185,23 @@ instance (Ord v) => ValueLike (Env v) (Ctx v) where
                                  Nothing -> throwError (IllTyped rho (SngCtx x s))
                                  Just p -> withExceptT (promotePrefixDerivErr x) (SngCtx x <$> deriv p s)
   deriv rho (SemicCtx g g') = SemicCtx <$> deriv rho g <*> deriv rho g'
+
+instance (Ord v) => ValueLike (Env v) (M.Map v Ty) where
+  hasType rho m = M.foldrWithKey go (return ()) m
+    where
+      go x t k = do
+        () <- case lookupEnv x rho of
+                Just p -> withExceptT (\(IllTyped p' t') -> IllTyped (singletonEnv x p') (M.singleton x t')) $ hasType p t
+                Nothing -> throwError (IllTyped rho m)
+        k
+  deriv rho m = M.foldrWithKey go (return M.empty) m
+    where
+      go x t k = do
+        t' <- case lookupEnv x rho of
+                Just p -> withExceptT (\(IllTyped p' t') -> IllTyped (singletonEnv x p') (M.singleton x t')) $ deriv p t
+                Nothing -> throwError (IllTyped rho m)
+        M.insert x t' <$> k
+
 
 emptyPrefix :: Ty -> Prefix
 emptyPrefix TyInt = LitPEmp

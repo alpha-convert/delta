@@ -11,7 +11,7 @@ module Frontend.Typecheck(
 import qualified Frontend.ElabSyntax as Elab
 import qualified CoreSyntax as Core
 import Control.Monad.Except (MonadError (throwError), runExceptT, ExceptT)
-import Types (Ctx (..), Ty(..), ctxBindings, ctxVars, emptyPrefix, ctxAssoc)
+import Types (Ctx (..), Ty(..), ctxBindings, ctxVars, emptyPrefix, ctxAssoc, deriv, ValueLikeErr (IllTyped))
 import Control.Monad.Reader (MonadReader (ask, local), asks, ReaderT (runReaderT))
 import Var (Var (Var))
 import Values (Lit(..), Env, Prefix (..), emptyEnv, bindEnv, isMaximal, isEmpty, allEnv, unionDisjointEnv)
@@ -45,6 +45,7 @@ data TckErr t = VarNotFound Var
             | ListedTypeError Ty Ty Core.Term
             | ImpossibleCut Var Core.Term Core.Term
             | UnsaturatedRecursiveCall Int Elab.Term
+            | DerivErr (Env Var.Var) (M.Map Var.Var Ty)
 
 instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (VarNotFound (Var x)) = concat ["Variable ",x," not found"]
@@ -68,6 +69,7 @@ instance PrettyPrint t => PrettyPrint (TckErr t) where
             ppCut (Var x') e e' = concat ["let ",x',"= (",pp e,") in (",pp e',")"]
     pp (ListedTypeError t' t e) = concat ["Listed type ", pp t'," in term ", pp e, " did not match type ", pp t]
     pp (UnsaturatedRecursiveCall n e) = concat ["Expected ", show n, " argments to recursive call ", pp e]
+    pp (DerivErr rho m) = concat ["Failed to take derivative of type map ",pp m," by ", pp rho]
 
 data RecSig = Rec (Ctx Var) Ty
 
@@ -117,6 +119,15 @@ withBindAll xs = local $ \t -> TckCtx (foldr (\(x,s) -> (M.insert x s .)) id xs 
 
 withRecSig :: (TckM t m) => Ctx Var -> Ty -> m a -> m a
 withRecSig g s = local $ \t -> TckCtx (mp t) (Rec g s)
+
+withCtxDeriv :: (TckM t m) => Env Var -> m a -> m a
+withCtxDeriv rho m = do
+    TckCtx g rs <- ask
+    g' <- reThrow handleDerivErr (deriv rho g)
+    local (const (TckCtx g' rs)) m
+
+handleDerivErr :: Types.ValueLikeErr (Env Var) (M.Map Var Ty) -> TckErr t
+handleDerivErr (IllTyped rho m) = DerivErr rho m
 
 guard :: (TckM t m) => Bool -> TckErr t -> m ()
 guard b e = if b then return () else throwError e
@@ -345,8 +356,8 @@ checkCore t (Core.TmInl e) = throwError (WrongTypeInl e t)
 checkCore (TyPlus _ t) (Core.TmInr e) = checkCore t e
 checkCore t (Core.TmInr e) = throwError (WrongTypeInr e t)
 
-checkCore r e@(Core.TmPlusCase rho r' z x e1 y e2) = do
-    -- TODO: Check rho
+checkCore r e@(Core.TmPlusCase rho r' z x e1 y e2) = withCtxDeriv rho $ do
+    -- TODO: Need to take the derivative of the whole context by rho first!
     (s,t) <- lookupTyPlus z
     guard (r == r') (ListedTypeError r' r e)
     p1 <- withBind x s $ withUnbind z $ checkCore r e1
@@ -362,10 +373,9 @@ checkCore (TyStar s) e@(Core.TmCons e1 e2) = do
     p2 <- checkCore (TyStar s) e2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
     reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
-
-checkCore t (Core.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
-
-checkCore r e@(Core.TmStarCase rho r' s' z e1 x xs e2) = do
+checkCore t e@(Core.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
+    
+checkCore r e@(Core.TmStarCase rho r' s' z e1 x xs e2) = withCtxDeriv rho $ do
     guard (r == r') (ListedTypeError r' r e)
     s <- lookupTyStar z
     guard (s == s') (ListedTypeError s' s e)
@@ -391,7 +401,72 @@ checkCore r e@(Core.TmCut x e1 e2) = do
     reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
 
 inferCore :: (TckM Core.Term m) => Core.Term -> m (Ty,P.Partial Var.Var)
-inferCore = undefined
+inferCore (Core.TmLitR (LInt _)) = return (TyInt,P.empty)
+inferCore (Core.TmLitR (LBool _)) = return (TyBool,P.empty)
+inferCore Core.TmEpsR = return (TyEps,P.empty)
+
+inferCore (Core.TmVar x) = do
+    s <- lookupTy x
+    return (s,P.singleton x)
+
+inferCore e@(Core.TmCatL t' x y z e') = do
+    (s,t) <- lookupTyCat z
+    guard (t == t') (ListedTypeError t' t e)
+    (r,p) <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferCore e')
+    guard (not $ P.lessThan p y x) (OutOfOrder x y e')
+    p'' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    return (r,p'')
+
+inferCore e@(Core.TmCatR e1 e2) = do
+    (s,p1) <- inferCore e1
+    (t,p2) <- inferCore e2
+    reThrow (handleReUse e) (P.checkDisjoint p1 p2)
+    p'' <- reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
+    return (TyCat s t,p'')
+
+inferCore (Core.TmInl e) = undefined
+inferCore (Core.TmInr e) = undefined
+
+inferCore e@(Core.TmPlusCase rho r z x e1 y e2) = do
+    (s,t) <- lookupTyPlus z
+    p1 <- withBind x s $ withUnbind z $ checkCore r e1
+    p2 <- withBind y t $ withUnbind z $ checkCore r e2
+    p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
+    p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
+    return (r,p'')
+
+inferCore Core.TmNil = undefined
+
+inferCore e@(Core.TmCons e1 e2) = do
+    (s,p1) <- inferCore e1
+    p2 <- checkCore (TyStar s) e2
+    reThrow (handleReUse e) (P.checkDisjoint p1 p2)
+    p <- reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
+    return (TyStar s, p)
+
+inferCore e@(Core.TmStarCase rho r s' z e1 x xs e2) = do
+    s <- lookupTyStar z
+    guard (s == s') (ListedTypeError s' s e)
+    p1 <- withUnbind z (checkCore r e1)
+    p2 <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkCore r e2)
+    guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
+    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
+    return (r,p'')
+
+inferCore e@Core.TmRec = do
+    TckCtx g_bound (Rec g r) <- ask
+    guard (all (`M.member` g_bound) g) (error "here!") -- we have a binding for everything the recursive call expects.
+    return (r,P.empty)
+
+inferCore (Core.TmFix g s e') = withRecSig g s (checkCore s e') >> return (s,P.empty) -- TODO: is this right???
+
+inferCore e@(Core.TmCut x e1 e2) = do
+    (s,p) <- inferCore e1
+    (t,p') <- withBind x s $ inferCore e2
+    reThrow (handleReUse e) (P.checkDisjoint p p')
+    p'' <- reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
+    return (t,p'')
 
 data PrefixCheckErr = WrongType Ty Surf.UntypedPrefix | OrderIssue Prefix Prefix | NotDisjointCtx Var Prefix Prefix | OrderIssueCtx (Env Var) (Env Var) | IllegalStp Prefix deriving (Eq, Ord, Show)
 
@@ -492,7 +567,3 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
                         Right ps -> return (Right (Core.RC f ps))
 
 tckTests = TestList []
---     where
---         t1 = TestCase $ do
---             !_ <- doCheckElabTm False (SngCtx (Var.Var "x") TyInt) (TyCat TyInt TyInt) _
---             _

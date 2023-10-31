@@ -9,6 +9,7 @@ module Values(
   lookupEnv,
   emptyEnv,
   composeEnv,
+  singletonEnv,
   unbindEnv,
   prefixConcat,
   concatEnv,
@@ -142,7 +143,9 @@ isEmpty (StpB {}) = False
 data Env v = Env (M.Map v Prefix) deriving (Eq, Ord, Show)
 
 instance PrettyPrint v => PrettyPrint (Env v) where
-  pp (Env m) = "{" ++ intersperse ',' (M.foldMapWithKey (\x p -> pp x ++ " = " ++ pp p) m) ++ "}"
+  pp (Env m) = "{" ++ concat (intersperse "," $ map go $ M.assocs m) ++ "}"
+    where
+      go (x,p) = pp x ++ " = " ++ pp p
 
 lookupEnv :: (Ord v) => v -> Env v -> Maybe Prefix
 lookupEnv x (Env m) = M.lookup x m
