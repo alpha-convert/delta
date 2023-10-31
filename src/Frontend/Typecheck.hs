@@ -11,7 +11,7 @@ module Frontend.Typecheck(
 import qualified Frontend.ElabSyntax as Elab
 import qualified CoreSyntax as Core
 import Control.Monad.Except (MonadError (throwError), runExceptT, ExceptT)
-import Types (Ctx (..), Ty(..), ctxBindings, ctxVars, emptyPrefix, ctxAssoc, deriv, ValueLikeErr (IllTyped), ValueLike (hasType))
+import Types (Ctx (..), Ty(..), ctxBindings, ctxVars, emptyPrefix, ctxAssoc, deriv, ValueLikeErr (IllTyped), ValueLike (hasType), ctxMap)
 import Control.Monad.Reader (MonadReader (ask, local), asks, ReaderT (runReaderT))
 import Var (Var (Var))
 import Values (Lit(..), Env, Prefix (..), emptyEnv, bindEnv, isMaximal, isEmpty, allEnv, unionDisjointEnv)
@@ -25,6 +25,7 @@ import Control.Monad.IO.Class (MonadIO (liftIO))
 import Util.PartialOrder (substSingAll)
 import Control.Monad (when)
 import Test.HUnit
+import Data.Bifunctor
 
 data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
@@ -46,6 +47,7 @@ data TckErr t = VarNotFound Var t
             | ImpossibleCut Var Core.Term Core.Term
             | UnsaturatedRecursiveCall Int Elab.Term
             | HasTypeErr (Env Var.Var Prefix) (M.Map Var.Var Ty)
+            | NonMatchingRecursiveArgs (Ctx Var Ty) (Ctx Var t)
 
 instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (VarNotFound (Var x) e) = concat ["Variable ",x," not found in term ", pp e]
@@ -70,6 +72,7 @@ instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (ListedTypeError t' t e) = concat ["Listed type ", pp t'," in term ", pp e, " did not match type ", pp t]
     pp (UnsaturatedRecursiveCall n e) = concat ["Expected ", show n, " argments to recursive call ", pp e]
     pp (HasTypeErr rho m) = concat ["Environment ",pp rho," does not hav expected types ", pp m]
+    pp (NonMatchingRecursiveArgs g g') = concat ["Recursive arguments ", pp g', " do not match context ", pp g]
 
 data RecSig = Rec (Ctx Var Ty) Ty
 
@@ -239,20 +242,23 @@ checkElab r e@(Elab.TmRec es) = do
     let g_assoc = ctxAssoc g
     when (length g_assoc /= length es) $ throwError (UnsaturatedRecursiveCall (length g_assoc) e) -- ensure we have the right number of arguments
     es' <- mapM inferElab es -- infer all the arguments
-    elabRec (zip g_assoc es')
+    (_,(p,args)) <- elabRec g es'
+    return (CR p (Core.TmRec args))
 
-
--- Given an assignement of terms to each of the variables in the context for a recursive call,
--- check that they all have the right type, use variables in the right order, and unfold it into a "cut"
--- for each variable.
-elabRec :: (TckM Elab.Term m) => [((Var, Ty), InferElabResult)] -> m CheckElabResult
-elabRec [] = return $ CR P.empty Core.TmRec
-elabRec (((x,s),IR s' p e):es) = do
-    when (s /= s') $ throwError (error "Here!!")
-    CR p' e' <- elabRec es
+-- Given a context and a list of inferred terms, return the "context" mapping variables to terms.
+elabRec :: (TckM Elab.Term m) => Ctx Var Ty -> [InferElabResult] -> m ([InferElabResult],(P.Partial Var,Ctx Var Core.Term))
+elabRec EmpCtx [] = return ([],(P.empty,EmpCtx))
+elabRec EmpCtx _ = error "impossible"
+elabRec (SngCtx x s) (IR s' p e : es) = do
+    when (s /= s') $ throwError (error "HERE!!")
+    return (es,(p,SngCtx x e))
+elabRec (SngCtx {}) _ = error "impossible"
+elabRec (SemicCtx g1 g2) es = do
+    (es',(p,g1')) <- elabRec g1 es
+    (es'',(p',g2')) <- elabRec g2 es'
     reThrow (error "asdf") (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (error "Arguments use variables inconsistently")) $ P.concat p p'
-    return $ CR p'' (Core.TmCut x e e')
+    return (es'',(p'',SemicCtx g1' g2'))
 
 
 inferElab :: (TckM Elab.Term m) => Elab.Term -> m InferElabResult
@@ -326,9 +332,8 @@ inferElab e@(Elab.TmRec es) = do
     let g_assoc = ctxAssoc g
     when (length g_assoc /= length es) $ throwError (UnsaturatedRecursiveCall (length g_assoc) e) -- ensure we have the right number of arguments
     es' <- mapM inferElab es -- infer all the arguments
-    promoteResult r <$> elabRec (zip g_assoc es')
-
-
+    (_,(p,args)) <- elabRec g es'
+    return (IR r p (Core.TmRec args))
 
 checkCore :: (TckM Core.Term m) => Ty -> Core.Term -> m (P.Partial Var.Var)
 checkCore TyInt (Core.TmLitR (LInt _)) = return P.empty
@@ -396,19 +401,23 @@ checkCore r e@(Core.TmStarCase m rho r' s' z e1 x xs e2) = do
         reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
 
 -- NOTE: this just checks that we have all the binders we expect for the term, not that they arrive in the right order!
-checkCore r e@Core.TmRec = do
+checkCore r e@(Core.TmRec args) = do
     TckCtx g_bound (Rec g r') <- ask
     guard (r == r') (UnequalReturnTypes r r' e) --return types are the same
-    guard (all (`M.member` g_bound) (ctxVars g)) (error "here!") -- we have a binding for everything the recursive call expects.
-    return P.empty
+    checkRec g args
 
-checkCore r (Core.TmFix g s e') = withRecSig g s (checkCore r e')
+checkCore r e@(Core.TmFix args g s e') = do
+    p <- checkRec g args
+    p' <- withRecSig g s (checkCore r e')
+    reThrow (handleOutOfOrder e) (P.consistentWith p' (ctxVars g))
+    return p
 
 checkCore r e@(Core.TmCut x e1 e2) = do
     (s,p) <- inferCore e1
     p' <- withBind x s $ checkCore r e2
     reThrow (handleReUse e) (P.checkDisjoint p p')
     reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
+
 
 inferCore :: (TckM Core.Term m) => Core.Term -> m (Ty,P.Partial Var.Var)
 inferCore (Core.TmLitR (LInt _)) = return (TyInt,P.empty)
@@ -468,12 +477,15 @@ inferCore e@(Core.TmStarCase m rho r s' z e1 x xs e2) = do
         p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
         return (r,p'')
 
-inferCore e@Core.TmRec = do
-    TckCtx g_bound (Rec g r) <- ask
-    guard (all (`M.member` g_bound) (ctxVars g)) (error "here!") -- we have a binding for everything the recursive call expects.
-    return (r,P.empty)
+inferCore e@(Core.TmRec args) = do
+    TckCtx _ (Rec g r) <- ask
+    p <- checkRec g args
+    return (r,p)
 
-inferCore (Core.TmFix g s e') = withRecSig g s (checkCore s e') >> return (s,P.empty) -- TODO: is this right???
+inferCore (Core.TmFix args g s e') =  do
+    p <- checkRec g args
+    withRecSig g s (checkCore s e')
+    return (s,p)
 
 inferCore e@(Core.TmCut x e1 e2) = do
     (s,p) <- inferCore e1
@@ -481,6 +493,18 @@ inferCore e@(Core.TmCut x e1 e2) = do
     reThrow (handleReUse e) (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
     return (t,p'')
+
+checkRec :: (TckM Core.Term m) => Ctx Var Ty -> Ctx Var Core.Term -> m (P.Partial Var)
+checkRec g g' = go g g'
+    where
+        go EmpCtx EmpCtx = return P.empty
+        go (SngCtx x t) (SngCtx y e) | x == y = checkCore t e
+        go (SemicCtx g1 g2) (SemicCtx g1' g2') = do
+            p1 <- go g1 g1'
+            p2 <- go g2 g2'
+            reThrow (handleReUse (error "ahhhh")) (P.checkDisjoint p1 p2)
+            reThrow (handleOutOfOrder (error "eek")) (P.concat p1 p2)
+        go _ _ = throwError (NonMatchingRecursiveArgs g g')
 
 data PrefixCheckErr = WrongType Ty Surf.UntypedPrefix | OrderIssue Prefix Prefix | NotDisjointCtx Var Prefix Prefix | OrderIssueCtx (Env Var Prefix) (Env Var Prefix) | IllegalStp Prefix deriving (Eq, Ord, Show)
 
@@ -544,7 +568,7 @@ doCheckElabTm doubleCheck g t e = do
         Left err -> error (pp err)
         Right (CR usages tm) -> do
             usageConsist <- runExceptT (P.consistentWith usages (ctxVars g))
-            let tm' = Core.TmFix g t tm -- put the ``fix'' on the outside.
+            let tm' = Core.TmFix (ctxMap (\x _ -> (x,Core.TmVar x)) g) g t tm -- put the ``fix'' on the outside, just pass the inputs along.
             case usageConsist of
                 Left (x,y) -> error $ pp $ OutOfOrder x y e
                 Right _ -> if doubleCheck then doCheckCoreTm g t tm' >> return tm' else return tm'

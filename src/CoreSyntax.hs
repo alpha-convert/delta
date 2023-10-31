@@ -14,6 +14,7 @@ import Var (Var (..))
 import qualified Data.Map as M
 import Util.PrettyPrint (PrettyPrint(..))
 import Control.Monad.Except (MonadError (throwError))
+import Data.Bifunctor
 
 data Term =
       TmLitR Lit
@@ -27,8 +28,8 @@ data Term =
     | TmNil
     | TmCons Term Term
     | TmStarCase (M.Map Var Ty) (Env Var Prefix) Ty Ty Var Term Var Var Term {- first return type, then star type -}
-    | TmFix (Ctx Var Ty) Ty Term
-    | TmRec
+    | TmFix (Ctx Var Term) (Ctx Var Ty) Ty Term
+    | TmRec (Ctx Var Term)
     | TmCut Var Term Term
     deriving (Eq, Ord, Show)
 
@@ -46,9 +47,9 @@ instance PrettyPrint Term where
             go _ (TmVar (Var x)) = x
             go _ (TmCatR e1 e2) = concat ["(",go False e1,";",go False e2,")"]
             go _ TmNil = "nil"
-            go _ TmRec = "rec"
+            go _ (TmRec args) = "rec(" ++ pp args ++ ")"
             go True e = concat ["(", go False e, ")"]
-            go _ (TmFix g s e) = concat ["fix(",go False e,")"]
+            go _ (TmFix args g s e) = concat ["fix(",go False e,")"]
             go _ (TmCatL t (Var x) (Var y) (Var z) e) = concat ["let_{",pp t,"} (",x,";",y,") = ",z," in ",go False e]
             go _ (TmInl e) = "inl " ++ go True e
             go _ (TmInr e) = "inl " ++ go True e
@@ -100,8 +101,8 @@ substVar (TmStarCase m rho r s z e1 x' xs' e2) x y = TmStarCase m' rho r s z (su
            Just p -> M.insert x p (M.delete y m)
 
 -- TODO: are these correct?
-substVar TmRec _ _ = TmRec
-substVar (TmFix g s e) _ _ = TmFix g s e
+substVar (TmRec args) x y = TmRec $ second (\e -> substVar e x y) args
+substVar (TmFix args g s e) x y = TmFix (second (\e' -> substVar e' x y) args) g s e
 
 substVar (TmCut x' e1 e2) x y = TmCut x' (substVar e1 x y) (substVar e2 x y)
 
@@ -147,6 +148,9 @@ substVar (TmCut x' e1 e2) x y = TmCut x' (substVar e1 x y) (substVar e2 x y)
 -- cut _ TmNil            (TmStarCase _ _ _ _ _ e1 _ _ _) = return e1
 -- cut _ (TmCons eh et)   (TmStarCase _ _ _ _ _ _ y ys e2) = cut y eh e2 >>= cut ys et
 -- cut x e                     e'@(TmStarCase {}) = throwError (x,e,e')
+
+-- cut x e (TmFix args g s e') = _
+-- cut x e (TmRec args) = _
 
 -- Throws p if p is not maximal. if p : s and p maximal, the sinkTm : d_p s.
 -- At the moment (without par), this returns only TmEpsR

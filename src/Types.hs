@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveFoldable, DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, FlexibleContexts #-}
-module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc) where
+module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc, ctxMap) where
 
 import qualified Data.Map as M
 import Control.Monad.Except (ExceptT, throwError, withExceptT, runExceptT)
@@ -8,6 +8,7 @@ import Util.ErrUtil(guard)
 import Util.PrettyPrint
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad (foldM)
+import Data.Bifunctor (Bifunctor (..))
 
 data Ty = TyEps | TyInt | TyBool | TyCat Ty Ty | TyPlus Ty Ty | TyStar Ty deriving (Eq,Ord,Show)
 
@@ -20,6 +21,17 @@ instance PrettyPrint Ty where
   pp (TyStar s) = concat ["(", pp s,")*"]
 
 data Ctx v t = EmpCtx | SngCtx v t | SemicCtx (Ctx v t) (Ctx v t) deriving (Eq,Ord,Show,Functor, Foldable, Traversable)
+
+ctxMap :: (v -> t -> (v',t')) -> Ctx v t -> Ctx v' t'
+ctxMap _ EmpCtx = EmpCtx
+ctxMap f (SngCtx x y) = let (x',y') = f x y in SngCtx x' y'
+ctxMap f (SemicCtx g g') = SemicCtx (ctxMap f g) (ctxMap f g')
+
+instance Bifunctor Ctx where
+  bimap _ _ EmpCtx = EmpCtx
+  bimap f g (SngCtx x t) = SngCtx (f x) (g t)
+  bimap f g (SemicCtx l r) = SemicCtx (bimap f g l) (bimap f g r)
+
 
 ctxBindings :: (Ord v) => Ctx v t -> M.Map v t
 ctxBindings = M.fromList . ctxAssoc

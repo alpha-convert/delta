@@ -8,7 +8,7 @@ import Control.Monad.Reader
 import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.Except ( ExceptT, runExceptT, MonadError(throwError) )
 import Prelude
-import Types (emptyPrefix, Ty (..), Ctx (SngCtx), ValueLike (..))
+import Types (emptyPrefix, Ty (..), Ctx (..), ValueLike (..))
 import Values (Prefix (..), Env, isMaximal, bindAllEnv, bindEnv, bindAllEnv, lookupEnv, prefixConcat, concatEnv, emptyEnv, Lit (..))
 import Data.Map (Map, unionWith)
 import Control.Applicative (Applicative(liftA2))
@@ -19,6 +19,7 @@ import qualified Var (Var(..))
 import Frontend.Typecheck (doCheckCoreTm)
 import Test.HUnit
 import qualified Debug.Trace as Debug
+import Debug.Trace (trace)
 
 data SemError =
       VarLookupFailed Var.Var
@@ -147,11 +148,18 @@ eval (TmCut x e1 e2) = do
         (p',e2') <- eval e2
         return (p',TmCut x e1' e2')
 
-eval (TmFix g s e) = eval $ fixSubst (TmFix g s e) e -- this is extremely broken, most likeliy.
-eval TmRec = error "Impossible."
+eval (TmFix args g s e) =
+    let e' = cutAll args (fixSubst g s e e) in
+    let !() = Debug.trace ("Unfolding recursion: " ++ pp e') () in
+    eval e'
+    where
+        cutAll EmpCtx e = e
+        cutAll (SngCtx x e') e = TmCut x e' e
+        cutAll (SemicCtx g g') e = cutAll g (cutAll g' e)
 
-fixSubst :: Term -> Term -> Term
-fixSubst e = go
+eval (TmRec _) = error "Impossible."
+
+fixSubst g s e = go
     where
         go TmEpsR = TmEpsR
         go (TmLitR l) = TmLitR l
@@ -164,8 +172,8 @@ fixSubst e = go
         go TmNil = TmNil
         go (TmCons e1 e2) = TmCons (go e1) (go e2)
         go (TmStarCase m rho r t z e1 y ys e2) = TmStarCase m rho r t z (go e1) y ys (go e2)
-        go (TmFix g s _) = TmFix g s e
-        go TmRec = e
+        go (TmFix {}) = error "Nested fix! Should be impossible."
+        go (TmRec args) = TmFix args g s e
         go (TmCut x e1 e2) = TmCut x (go e1) (go e2)
 
 handleRuntimeCutError :: (Var.Var, Term, Term) -> SemError
