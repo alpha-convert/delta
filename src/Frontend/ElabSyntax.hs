@@ -138,7 +138,7 @@ elab (Surf.TmRec xs) = TmRec <$> mapM elab xs
 
 instance ElabM (StateT ElabState (ReaderT ElabInput (ExceptT ElabErr Identity))) where
 
-data FunDef = FD String (Ctx Var.Var) Ty Term deriving (Eq,Ord,Show)
+data FunDef = FD String (Ctx Var.Var Ty) Ty Term deriving (Eq,Ord,Show)
 
 data RunCmd = RC String (M.Map Var.Var Surf.UntypedPrefix)
 

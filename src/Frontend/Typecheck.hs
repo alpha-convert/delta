@@ -26,12 +26,12 @@ import Util.PartialOrder (substSingAll)
 import Control.Monad (when)
 import Test.HUnit
 
-data TckErr t = VarNotFound Var
+data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
             | ReUse Var t
-            | ExpectedTyCat Var Ty
-            | ExpectedTyPlus Var Ty
-            | ExpectedTyStar Var Ty
+            | ExpectedTyCat Var Ty t
+            | ExpectedTyPlus Var Ty t
+            | ExpectedTyStar Var Ty t
             | CheckTermInferPos t
             | UnequalReturnTypes Ty Ty t
             | WrongTypeLit Lit Ty
@@ -45,15 +45,15 @@ data TckErr t = VarNotFound Var
             | ListedTypeError Ty Ty Core.Term
             | ImpossibleCut Var Core.Term Core.Term
             | UnsaturatedRecursiveCall Int Elab.Term
-            | HasTypeErr (Env Var.Var) (M.Map Var.Var Ty)
+            | HasTypeErr (Env Var.Var Prefix) (M.Map Var.Var Ty)
 
 instance PrettyPrint t => PrettyPrint (TckErr t) where
-    pp (VarNotFound (Var x)) = concat ["Variable ",x," not found"]
+    pp (VarNotFound (Var x) e) = concat ["Variable ",x," not found in term ", pp e]
     pp (OutOfOrder (Var x) (Var y) e) = concat ["Variable ",y," came before ",x," in term ",pp e," but expected the other order."]
     pp (ReUse (Var x) e) = concat ["Variable ",x," was reused in disjoint branches of ", pp e]
-    pp (ExpectedTyCat (Var x) t) = concat ["Variable ",x," expected to be of concatenation type, but it has type", pp t]
-    pp (ExpectedTyPlus (Var x) t) = concat ["Variable ",x," expected to be of sum type, but it has type", pp t]
-    pp (ExpectedTyStar (Var x) t) = concat ["Variable ",x," expected to be of star type, but it has type", pp t]
+    pp (ExpectedTyCat (Var x) t e) = concat ["Variable ",x," expected to be of concatenation type, but it has type ", pp t, " in term ", pp e]
+    pp (ExpectedTyPlus (Var x) t e) = concat ["Variable ",x," expected to be of sum type, but it has type ", pp t, " in term ", pp e]
+    pp (ExpectedTyStar (Var x) t e)= concat ["Variable ",x," expected to be of star type, but it has type ", pp t, " in term ", pp e]
     pp (CheckTermInferPos e) = concat ["The type of the term ",pp e," cannot be inferred"]
     pp (UnequalReturnTypes t1 t2 e) = concat ["Different types ",pp t1," and ",pp t2," inferred for the branches of the term ", pp e]
     pp (WrongTypeLit l t) = concat ["Literal ", pp l, " does not have type ", pp t]
@@ -71,42 +71,42 @@ instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (UnsaturatedRecursiveCall n e) = concat ["Expected ", show n, " argments to recursive call ", pp e]
     pp (HasTypeErr rho m) = concat ["Environment ",pp rho," does not hav expected types ", pp m]
 
-data RecSig = Rec (Ctx Var) Ty
+data RecSig = Rec (Ctx Var Ty) Ty
 
 data TckCtx = TckCtx { mp :: M.Map Var.Var Ty, rs :: RecSig }
 
-emptyEnvOfType :: TckCtx -> Env Var
+emptyEnvOfType :: TckCtx -> Env Var Prefix
 emptyEnvOfType (TckCtx m _) = M.foldrWithKey (\x t -> bindEnv x (emptyPrefix t)) emptyEnv m
 
 class (MonadError (TckErr t) m, MonadReader TckCtx m) => TckM t m where
 
 instance TckM t (ReaderT TckCtx (ExceptT (TckErr t) Identity)) where
 
-lookupTy :: (TckM t m) => Var -> m Ty
-lookupTy x = do
+lookupTy :: (TckM t m) => t -> Var -> m Ty
+lookupTy e x = do
     m <- asks mp
-    maybe (throwError (VarNotFound x)) return (M.lookup x m)
+    maybe (throwError (VarNotFound x e)) return (M.lookup x m)
 
-lookupTyCat :: (TckM t m) => Var -> m (Ty, Ty)
-lookupTyCat x = do
-    s' <- lookupTy x
+lookupTyCat :: (TckM t m) => t -> Var -> m (Ty, Ty)
+lookupTyCat e x = do
+    s' <- lookupTy e x
     case s' of
         TyCat s t -> return (s,t)
-        _ -> throwError (ExpectedTyCat x s')
+        _ -> throwError (ExpectedTyCat x s' e)
 
-lookupTyPlus :: (TckM t m) => Var -> m (Ty, Ty)
-lookupTyPlus x = do
-    s' <- lookupTy x
+lookupTyPlus :: (TckM t m) => t -> Var -> m (Ty, Ty)
+lookupTyPlus e x = do
+    s' <- lookupTy e x
     case s' of
         TyPlus s t -> return (s,t)
-        _ -> throwError (ExpectedTyPlus x s')
+        _ -> throwError (ExpectedTyPlus x s' e)
 
-lookupTyStar :: (TckM t m) => Var -> m Ty
-lookupTyStar x = do
-    s' <- lookupTy x
+lookupTyStar :: (TckM t m) => t -> Var -> m Ty
+lookupTyStar e x = do
+    s' <- lookupTy e x
     case s' of
         TyStar s -> return s
-        _ -> throwError (ExpectedTyStar x s')
+        _ -> throwError (ExpectedTyStar x s' e)
 
 withUnbind :: (TckM t m) => Var -> m a -> m a
 withUnbind x = local (\t -> TckCtx (M.delete x (mp t)) (rs t))
@@ -117,10 +117,10 @@ withBind x s = local (\t -> TckCtx (M.insert x s (mp t)) (rs t))
 withBindAll :: (TckM t m) => [(Var,Ty)] -> m a -> m a
 withBindAll xs = local $ \t -> TckCtx (foldr (\(x,s) -> (M.insert x s .)) id xs (mp t)) (rs t)
 
-withRecSig :: (TckM t m) => Ctx Var -> Ty -> m a -> m a
+withRecSig :: (TckM t m) => Ctx Var Ty -> Ty -> m a -> m a
 withRecSig g s = local $ \t -> TckCtx (mp t) (Rec g s)
 
-withCtxDeriv :: (TckM t m) => Env Var -> m a -> m a
+withCtxDeriv :: (TckM t m) => Env Var Prefix -> m a -> m a
 withCtxDeriv rho m = do
     TckCtx g rs <- ask
     g' <- reThrow handleHasTypeErr (deriv rho g)
@@ -129,7 +129,7 @@ withCtxDeriv rho m = do
 withCtx :: (TckM t m) => M.Map Var Ty -> m a -> m a
 withCtx m = local (\(TckCtx _ rs) -> TckCtx m rs)
 
-handleHasTypeErr :: Types.ValueLikeErr (Env Var) (M.Map Var Ty) -> TckErr t
+handleHasTypeErr :: Types.ValueLikeErr (Env Var Prefix) (M.Map Var Ty) -> TckErr t
 handleHasTypeErr (IllTyped rho m) = HasTypeErr rho m
 
 guard :: (TckM t m) => Bool -> TckErr t -> m ()
@@ -161,19 +161,19 @@ checkElab t (Elab.TmLitR l) = throwError (WrongTypeLit l t)
 checkElab TyEps Elab.TmEpsR = return $ CR P.empty Core.TmEpsR
 checkElab t Elab.TmEpsR = throwError (WrongTypeEpsR t)
 
-checkElab t (Elab.TmVar x) = do
-    s <- lookupTy x
+checkElab t e@(Elab.TmVar x) = do
+    s <- lookupTy e x
     guard (s == t) (WrongTypeVar x t s)
     return $ CR (P.singleton x) (Core.TmVar x)
 
-checkElab r (Elab.TmCatL x y z e) = do
-    (s,t) <- lookupTyCat z
-    (CR p e') <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkElab r e)
+checkElab r e@(Elab.TmCatL x y z e') = do
+    (s,t) <- lookupTyCat e z
+    (CR p e'') <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkElab r e')
     -- Ensure that x and y are used in order in e: y cannot be before x.
-    guard (not $ P.lessThan p y x) (OutOfOrder x y e)
+    guard (not $ P.lessThan p y x) (OutOfOrder x y e')
     -- Replace x and y with z in the output
-    p' <- reThrow (handleOutOfOrder e) $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
-    return $ CR p' (Core.TmCatL t x y z e')
+    p' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    return $ CR p' (Core.TmCatL t x y z e'')
 
 checkElab (TyCat s t) (Elab.TmCatR e1 e2) = do
     CR p1 e1' <- checkElab s e1
@@ -194,7 +194,7 @@ checkElab (TyPlus _ t) (Elab.TmInr e) = do
 checkElab t (Elab.TmInr e) = throwError (WrongTypeInr e t)
 
 checkElab r e@(Elab.TmPlusCase z x e1 y e2) = do
-    (s,t) <- lookupTyPlus z
+    (s,t) <- lookupTyPlus e z
     CR p1 e1' <- withBind x s $ withUnbind z $ checkElab r e1
     CR p2 e2' <- withBind y t $ withUnbind z $ checkElab r e2
     p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
@@ -216,7 +216,7 @@ checkElab (TyStar s) (Elab.TmCons e1 e2) = do
 checkElab t (Elab.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
 
 checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
-    s <- lookupTyStar z
+    s <- lookupTyStar e z
     CR p1 e1' <- withUnbind z (checkElab r e1)
     CR p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkElab r e2)
     guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
@@ -260,20 +260,20 @@ inferElab (Elab.TmLitR (LInt n)) = return $ IR TyInt P.empty (Core.TmLitR (LInt 
 inferElab (Elab.TmLitR (LBool b)) = return $ IR TyBool P.empty (Core.TmLitR (LBool b))
 inferElab Elab.TmEpsR = return $ IR TyEps P.empty Core.TmEpsR
 
-inferElab (Elab.TmVar x) = do
-    s <- lookupTy x
+inferElab e@(Elab.TmVar x) = do
+    s <- lookupTy e x
     return $ IR s (P.singleton x) (Core.TmVar x)
 
-inferElab (Elab.TmCatL x y z e) = do
+inferElab e@(Elab.TmCatL x y z e') = do
     -- Find the type for x and y
-    (s,t) <- lookupTyCat z
+    (s,t) <- lookupTyCat e z
     -- Bind x:s,y:t, unbind z, and recursively check 
-    (IR r p e') <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferElab e)
+    (IR r p e'') <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferElab e')
     -- Ensure that x and y are used in order in e: y cannot be before x.
-    guard (not $ P.lessThan p y x) (OutOfOrder x y e)
+    guard (not $ P.lessThan p y x) (OutOfOrder x y e')
     -- Replace x and y with z in the output
-    p' <- reThrow (handleOutOfOrder e) $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
-    return $ IR r p' (Core.TmCatL t x y z e')
+    p' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    return $ IR r p' (Core.TmCatL t x y z e'')
 
 inferElab e@(Elab.TmCatR e1 e2) = do
     IR s p1 e1' <- inferElab e1
@@ -286,7 +286,7 @@ inferElab e@(Elab.TmInl {}) = throwError (CheckTermInferPos e)
 inferElab e@(Elab.TmInr {}) = throwError (CheckTermInferPos e)
 
 inferElab e@(Elab.TmPlusCase z x e1 y e2) = do
-    (s,t) <- lookupTyPlus z
+    (s,t) <- lookupTyPlus e z
     IR r1 p1 e1' <- withBind x s $ withUnbind z $ inferElab e1
     IR r2 p2 e2' <- withBind y t $ withUnbind z $ inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
@@ -305,7 +305,7 @@ inferElab e@(Elab.TmCons e1 e2) = do
     return $ IR (TyStar s) p' (Core.TmCons e1' e2')
 
 inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
-    s <- lookupTyStar z
+    s <- lookupTyStar e z
     IR r1 p1 e1' <- withUnbind z $ inferElab e1
     IR r2 p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z $ inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
@@ -337,13 +337,13 @@ checkCore t (Core.TmLitR l) = throwError (WrongTypeLit l t)
 checkCore TyEps Core.TmEpsR = return P.empty
 checkCore t Core.TmEpsR = throwError (WrongTypeEpsR t)
 
-checkCore t (Core.TmVar x) = do
-    s <- lookupTy x
+checkCore t e@(Core.TmVar x) = do
+    s <- lookupTy e x
     guard (s == t) (WrongTypeVar x t s)
     return (P.singleton x)
 
 checkCore r e@(Core.TmCatL t' x y z e') = do
-    (s,t) <- lookupTyCat z
+    (s,t) <- lookupTyCat e z
     guard (t == t') (ListedTypeError t' t e)
     p <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkCore r e')
     guard (not $ P.lessThan p y x) (OutOfOrder x y e')
@@ -366,7 +366,7 @@ checkCore t (Core.TmInr e) = throwError (WrongTypeInr e t)
 checkCore r e@(Core.TmPlusCase m rho r' z x e1 y e2) = do
     reThrow handleHasTypeErr (hasType rho m)
     withCtx m $ do
-        (s,t) <- lookupTyPlus z
+        (s,t) <- lookupTyPlus e z
         guard (r == r') (ListedTypeError r' r e)
         p1 <- withBind x s $ withUnbind z $ checkCore r e1
         p2 <- withBind y t $ withUnbind z $ checkCore r e2
@@ -382,12 +382,12 @@ checkCore (TyStar s) e@(Core.TmCons e1 e2) = do
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
     reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
 checkCore t e@(Core.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
-    
+
 checkCore r e@(Core.TmStarCase m rho r' s' z e1 x xs e2) = do
     reThrow handleHasTypeErr (hasType rho m)
     withCtx m $ do
         guard (r == r') (ListedTypeError r' r e)
-        s <- lookupTyStar z
+        s <- lookupTyStar e z
         guard (s == s') (ListedTypeError s' s e)
         p1 <- withUnbind z (checkCore r e1)
         p2 <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkCore r e2)
@@ -399,7 +399,7 @@ checkCore r e@(Core.TmStarCase m rho r' s' z e1 x xs e2) = do
 checkCore r e@Core.TmRec = do
     TckCtx g_bound (Rec g r') <- ask
     guard (r == r') (UnequalReturnTypes r r' e) --return types are the same
-    guard (all (`M.member` g_bound) g) (error "here!") -- we have a binding for everything the recursive call expects.
+    guard (all (`M.member` g_bound) (ctxVars g)) (error "here!") -- we have a binding for everything the recursive call expects.
     return P.empty
 
 checkCore r (Core.TmFix g s e') = withRecSig g s (checkCore r e')
@@ -415,12 +415,12 @@ inferCore (Core.TmLitR (LInt _)) = return (TyInt,P.empty)
 inferCore (Core.TmLitR (LBool _)) = return (TyBool,P.empty)
 inferCore Core.TmEpsR = return (TyEps,P.empty)
 
-inferCore (Core.TmVar x) = do
-    s <- lookupTy x
+inferCore e@(Core.TmVar x) = do
+    s <- lookupTy e x
     return (s,P.singleton x)
 
 inferCore e@(Core.TmCatL t' x y z e') = do
-    (s,t) <- lookupTyCat z
+    (s,t) <- lookupTyCat e z
     guard (t == t') (ListedTypeError t' t e)
     (r,p) <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferCore e')
     guard (not $ P.lessThan p y x) (OutOfOrder x y e')
@@ -440,7 +440,7 @@ inferCore (Core.TmInr e) = undefined
 inferCore e@(Core.TmPlusCase m rho r z x e1 y e2) = do
     reThrow handleHasTypeErr (hasType rho m)
     withCtx m $ do
-        (s,t) <- lookupTyPlus z
+        (s,t) <- lookupTyPlus e z
         p1 <- withBind x s $ withUnbind z $ checkCore r e1
         p2 <- withBind y t $ withUnbind z $ checkCore r e2
         p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
@@ -459,7 +459,7 @@ inferCore e@(Core.TmCons e1 e2) = do
 inferCore e@(Core.TmStarCase m rho r s' z e1 x xs e2) = do
     reThrow handleHasTypeErr (hasType rho m)
     withCtx m $ do
-        s <- lookupTyStar z
+        s <- lookupTyStar e z
         guard (s == s') (ListedTypeError s' s e)
         p1 <- withUnbind z (checkCore r e1)
         p2 <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkCore r e2)
@@ -470,7 +470,7 @@ inferCore e@(Core.TmStarCase m rho r s' z e1 x xs e2) = do
 
 inferCore e@Core.TmRec = do
     TckCtx g_bound (Rec g r) <- ask
-    guard (all (`M.member` g_bound) g) (error "here!") -- we have a binding for everything the recursive call expects.
+    guard (all (`M.member` g_bound) (ctxVars g)) (error "here!") -- we have a binding for everything the recursive call expects.
     return (r,P.empty)
 
 inferCore (Core.TmFix g s e') = withRecSig g s (checkCore s e') >> return (s,P.empty) -- TODO: is this right???
@@ -482,7 +482,7 @@ inferCore e@(Core.TmCut x e1 e2) = do
     p'' <- reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
     return (t,p'')
 
-data PrefixCheckErr = WrongType Ty Surf.UntypedPrefix | OrderIssue Prefix Prefix | NotDisjointCtx Var Prefix Prefix | OrderIssueCtx (Env Var) (Env Var) | IllegalStp Prefix deriving (Eq, Ord, Show)
+data PrefixCheckErr = WrongType Ty Surf.UntypedPrefix | OrderIssue Prefix Prefix | NotDisjointCtx Var Prefix Prefix | OrderIssueCtx (Env Var Prefix) (Env Var Prefix) | IllegalStp Prefix deriving (Eq, Ord, Show)
 
 checkUntypedPrefix :: (Monad m) => Ty -> Surf.UntypedPrefix -> ExceptT PrefixCheckErr m Prefix
 checkUntypedPrefix t Surf.EmpP = return (emptyPrefix t)
@@ -522,7 +522,7 @@ checkUntypedStp s (p:ps) = do
     else if null ps then return (StpA p')
     else throwError (IllegalStp p')
 
-checkUntypedPrefixCtx :: (Monad m) => Ctx Var -> M.Map Var Surf.UntypedPrefix -> ExceptT PrefixCheckErr m (Env Var)
+checkUntypedPrefixCtx :: (Monad m) => Ctx Var Ty -> M.Map Var Surf.UntypedPrefix -> ExceptT PrefixCheckErr m (Env Var Prefix)
 checkUntypedPrefixCtx EmpCtx _ = return emptyEnv
 checkUntypedPrefixCtx (SngCtx x s) m = do
     p' <- maybe (return (emptyPrefix s)) (checkUntypedPrefix s) (M.lookup x m)
@@ -534,10 +534,10 @@ checkUntypedPrefixCtx (SemicCtx g g') m = do
         runExceptT (unionDisjointEnv rho rho') >>= either (\(v,p,p') -> throwError (NotDisjointCtx v p p')) return
     else throwError (OrderIssueCtx rho rho')
 
-type FileInfo = M.Map String (Ctx Var, Ty)
+type FileInfo = M.Map String (Ctx Var Ty, Ty)
 
 -- Doublecheck argument typechecks the resulting term, again.
-doCheckElabTm :: (MonadIO m) => Bool -> Ctx Var -> Ty -> Elab.Term -> m Core.Term
+doCheckElabTm :: (MonadIO m) => Bool -> Ctx Var Ty -> Ty -> Elab.Term -> m Core.Term
 doCheckElabTm doubleCheck g t e = do
     let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e :: (ReaderT TckCtx (ExceptT (TckErr Elab.Term) Identity) CheckElabResult)) (TckCtx (ctxBindings g) (Rec g t))
     case ck of
@@ -549,11 +549,11 @@ doCheckElabTm doubleCheck g t e = do
                 Left (x,y) -> error $ pp $ OutOfOrder x y e
                 Right _ -> if doubleCheck then doCheckCoreTm g t tm' >> return tm' else return tm'
 
-doCheckCoreTm :: (MonadIO m) => Ctx Var -> Ty -> Core.Term -> m ()
+doCheckCoreTm :: (MonadIO m) => Ctx Var Ty -> Ty -> Core.Term -> m ()
 doCheckCoreTm g t e = do
     let ck = runIdentity $ runExceptT $ runReaderT (checkCore t e :: (ReaderT TckCtx (ExceptT (TckErr Core.Term) Identity) (P.Partial Var))) (TckCtx (ctxBindings g) (Rec g t))
     case ck of
-        Left err -> error (pp err)
+        Left err -> error ("ERROR: " ++ pp err ++ " while checking " ++ pp e ++ " against type " ++ pp t ++ " in context " ++ pp g)
         Right usages -> do
             usageConsist <- runExceptT (P.consistentWith usages (ctxVars g))
             case usageConsist of
@@ -571,7 +571,7 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
             put (M.insert f (g,t) fi)
             return (Left (Core.FD f g t e'))
         go (Right (Elab.RC f p)) = do
-            fi <- get
+            fi <- get -- Get the current file information
             case M.lookup f fi of
                 Nothing -> error ""
                 Just (g,_) -> do

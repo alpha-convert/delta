@@ -35,7 +35,7 @@ data UntypedPrefix =
     | Stp [UntypedPrefix]
     deriving (Eq, Ord, Show)
 
-data FunDef = FD String (Ctx Var.Var) Ty Term deriving (Eq,Ord,Show)
+data FunDef = FD String (Ctx Var.Var Ty) Ty Term deriving (Eq,Ord,Show)
 
 data RunCmd = RC String [(Var.Var,UntypedPrefix)]
 

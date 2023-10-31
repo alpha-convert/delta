@@ -37,17 +37,17 @@ instance PrettyPrint SemError where
     pp (RuntimeCutError x e e') = concat ["Error occurred when trying to cut ",pp x," = ",pp e, " in ", pp e',". This is a bug."]
     pp (SinkError x p) = concat ["Tried to build sink term for prefix ", pp p, "while substituting for ", pp x, ". This is a bug."]
 
-class (MonadReader (Env Var.Var) m, MonadError SemError m) => EvalM m where
+class (MonadReader (Env Var.Var Prefix) m, MonadError SemError m) => EvalM m where
 
-instance EvalM (ReaderT (Env Var.Var) (ExceptT SemError Identity)) where
+instance EvalM (ReaderT (Env Var.Var Prefix) (ExceptT SemError Identity)) where
 
 reThrow :: (EvalM m) => (e -> SemError) -> ExceptT e m a -> m a
 reThrow k x = runExceptT x >>= either (throwError . k) return
 
-withEnv :: (EvalM m) => (Env Var.Var -> Env Var.Var) -> m a -> m a
+withEnv :: (EvalM m) => (Env Var.Var Prefix -> Env Var.Var Prefix) -> m a -> m a
 withEnv = local
 
-withEnvM :: (EvalM m) => (Env Var.Var -> m (Env Var.Var)) -> m a -> m a
+withEnvM :: (EvalM m) => (Env Var.Var Prefix -> m (Env Var.Var Prefix)) -> m a -> m a
 withEnvM f m = do
     e <- ask
     e' <- f e
@@ -172,7 +172,7 @@ handleRuntimeCutError :: (Var.Var, Term, Term) -> SemError
 handleRuntimeCutError (x,e,e') = RuntimeCutError x e e'
 
 
-type TopLevel = M.Map String (Term, Ctx Var.Var, Ty)
+type TopLevel = M.Map String (Term, Ctx Var.Var Ty, Ty)
 
 
 doRunPgm :: Program -> IO ()
@@ -188,7 +188,7 @@ doRunPgm p = do
                 Just (e,g,s) -> case runIdentity $ runExceptT $ runReaderT (eval e) rho of
                                     Right (p',e') -> do
                                         lift (putStrLn $ "Result of executing " ++ f ++ ": " ++ pp p')
-                                        lift (putStrLn $ pp e')
+                                        -- lift (putStrLn $ pp e')
                                         () <- hasTypeB p' s >>= guard
                                         g' <- doDeriv rho g 
                                         s' <- doDeriv p' s

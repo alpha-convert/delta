@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveFoldable, DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances #-}
+{-# LANGUAGE DeriveFoldable, DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, FlexibleContexts #-}
 module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc) where
 
 import qualified Data.Map as M
@@ -19,22 +19,20 @@ instance PrettyPrint Ty where
   pp (TyPlus s t) = concat ["(", pp s," + ", pp t, ")"]
   pp (TyStar s) = concat ["(", pp s,")*"]
 
-data Ctx v = EmpCtx | SngCtx v Ty | SemicCtx (Ctx v) (Ctx v) deriving (Eq,Ord,Show,Functor, Foldable, Traversable)
+data Ctx v t = EmpCtx | SngCtx v t | SemicCtx (Ctx v t) (Ctx v t) deriving (Eq,Ord,Show,Functor, Foldable, Traversable)
 
-ctxBindings :: (Ord v) => Ctx v -> M.Map v Ty
+ctxBindings :: (Ord v) => Ctx v t -> M.Map v t
 ctxBindings = M.fromList . ctxAssoc
 
-ctxVars :: Ctx v -> [v]
-ctxVars EmpCtx = []
-ctxVars (SngCtx x _) = [x]
-ctxVars (SemicCtx g g') = ctxVars g ++ ctxVars g'
+ctxVars :: Ctx v t -> [v]
+ctxVars = map fst . ctxAssoc
 
-ctxAssoc :: Ctx v -> [(v,Ty)]
+ctxAssoc :: Ctx v t -> [(v,t)]
 ctxAssoc EmpCtx = []
 ctxAssoc (SngCtx x s) = [(x,s)]
 ctxAssoc (SemicCtx g g') = ctxAssoc g ++ ctxAssoc g'
 
-instance PrettyPrint v => PrettyPrint (Ctx v) where
+instance (PrettyPrint v, PrettyPrint t) => PrettyPrint (Ctx v t) where
   pp EmpCtx = "(.)"
   pp (SngCtx v t) = concat ["[",pp v," : ", pp t,"]"]
   pp (SemicCtx g g') = concat ["(", pp g, " ; ", pp g', ")"]
@@ -51,20 +49,20 @@ instance TypeLike Ty where
   isNull (TyPlus _ _) = False
   isNull (TyStar _) = False
 
-instance TypeLike (Ctx v) where
+instance TypeLike t => TypeLike (Ctx v t) where
   isNull EmpCtx = True
   isNull (SngCtx _ s) = isNull s
   isNull (SemicCtx g g') = isNull g && isNull g'
 
-instance TypeLike (M.Map v Ty) where
+instance TypeLike t => TypeLike (M.Map v t) where
   isNull = all isNull
 
 data ValueLikeErr a t = IllTyped a t
 
-promotePrefixTypeErr :: Ord v => v -> ValueLikeErr Prefix Ty -> ValueLikeErr (Env v) (Ctx v)
+promotePrefixTypeErr :: Ord v => v -> ValueLikeErr p t -> ValueLikeErr (Env v p) (Ctx v t)
 promotePrefixTypeErr x (IllTyped p' t') = IllTyped (bindEnv x p' emptyEnv) (SngCtx x t')
 
-promotePrefixDerivErr :: Ord v => v -> ValueLikeErr Prefix Ty -> ValueLikeErr (Env v) (Ctx v)
+promotePrefixDerivErr :: Ord v => v -> ValueLikeErr p t -> ValueLikeErr (Env v p) (Ctx v t)
 promotePrefixDerivErr x (IllTyped p' t') = IllTyped (bindEnv x p' emptyEnv) (SngCtx x t')
 
 
@@ -167,7 +165,7 @@ instance ValueLike Prefix Ty where
   deriv p@(StpB {}) t = throwError (IllTyped p t)
 
 
-instance (Ord v) => ValueLike (Env v) (Ctx v) where
+instance (Ord v, ValueLike Prefix Ty) => ValueLike (Env v Prefix) (Ctx v Ty) where
   hasType rho = go
     where
       go EmpCtx = return ()
@@ -175,7 +173,7 @@ instance (Ord v) => ValueLike (Env v) (Ctx v) where
                           Nothing -> return ()
                           Just p -> withExceptT (promotePrefixTypeErr x) (hasType p t)
       go (SemicCtx g g') = do
-        go g >> go g' >> guard (all maximal g || all empty g') (IllTyped rho (SemicCtx g g'))
+        go g >> go g' >> guard (all maximal (ctxVars g) || all empty (ctxVars g')) (IllTyped rho (SemicCtx g g'))
 
       maximal x = maybe False isMaximal (Values.lookupEnv x rho)
       empty x = maybe False isEmpty (Values.lookupEnv x rho)
@@ -186,7 +184,7 @@ instance (Ord v) => ValueLike (Env v) (Ctx v) where
                                  Just p -> withExceptT (promotePrefixDerivErr x) (SngCtx x <$> deriv p s)
   deriv rho (SemicCtx g g') = SemicCtx <$> deriv rho g <*> deriv rho g'
 
-instance (Ord v) => ValueLike (Env v) (M.Map v Ty) where
+instance (Ord v, ValueLike p t) => ValueLike (Env v p) (M.Map v t) where
   hasType rho m = M.foldrWithKey go (return ()) m
     where
       go x t k = do

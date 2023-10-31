@@ -106,10 +106,10 @@ unionWithM f m m' = sequence (M.unionWith (bindM2 f) (return <$> m) (return <$> 
 unionWithkM :: (Monad m, Ord k) => (k -> v -> v -> m v) -> M.Map k v -> M.Map k v -> m (M.Map k v)
 unionWithkM f m m' = sequence (M.unionWithKey (\k a b -> do {x <- a; y <- b; f k x y}) (return <$> m) (return <$> m'))
 
-concatEnv :: (Monad m, Ord v) => Env v -> Env v -> ExceptT (Prefix,Prefix) m (Env v)
+concatEnv :: (Monad m, Ord v) => Env v Prefix -> Env v Prefix -> ExceptT (Prefix,Prefix) m (Env v Prefix)
 concatEnv (Env m1) (Env m2) = Env <$> unionWithM prefixConcat m1 m2
 
-unionDisjointEnv :: (Monad m, Ord v) => Env v -> Env v -> ExceptT (v,Prefix,Prefix) m (Env v)
+unionDisjointEnv :: (Monad m, Ord v) => Env v Prefix -> Env v Prefix -> ExceptT (v,Prefix,Prefix) m (Env v Prefix)
 unionDisjointEnv (Env m1) (Env m2) = Env <$> unionWithkM (\v p p' -> throwError (v,p,p')) m1 m2
 
 isMaximal :: Prefix -> Bool
@@ -140,33 +140,33 @@ isEmpty StpDone = False
 isEmpty (StpA _) = False
 isEmpty (StpB {}) = False
 
-data Env v = Env (M.Map v Prefix) deriving (Eq, Ord, Show)
+data Env v p = Env (M.Map v p) deriving (Eq, Ord, Show)
 
-instance PrettyPrint v => PrettyPrint (Env v) where
+instance (PrettyPrint p, PrettyPrint v) => PrettyPrint (Env v p) where
   pp (Env m) = "{" ++ concat (intersperse "," $ map go $ M.assocs m) ++ "}"
     where
       go (x,p) = pp x ++ " = " ++ pp p
 
-lookupEnv :: (Ord v) => v -> Env v -> Maybe Prefix
+lookupEnv :: (Ord v) => v -> Env v p -> Maybe p
 lookupEnv x (Env m) = M.lookup x m
 
-composeEnv :: (Ord v) => Env v -> Env v -> Env v
+composeEnv :: (Ord v) => Env v p -> Env v p -> Env v p
 composeEnv (Env m) (Env m') = Env (M.unionWith (\ _ x -> x) m m')
 
-emptyEnv :: Env v
+emptyEnv :: Env v p
 emptyEnv = Env M.empty
 
-singletonEnv :: v -> Prefix -> Env v
+singletonEnv :: v -> p -> Env v p
 singletonEnv x p = Env (M.singleton x p)
 
-bindEnv :: (Ord v) => v -> Prefix -> Env v -> Env v
+bindEnv :: (Ord v) => v -> p -> Env v p -> Env v p
 bindEnv x p rho = composeEnv rho (singletonEnv x p)
 
-bindAllEnv :: (Ord v) => [(v,Prefix)] -> Env v -> Env v
+bindAllEnv :: (Ord v) => [(v,p)] -> Env v p -> Env v p
 bindAllEnv xs rho = foldr (uncurry bindEnv) rho xs
 
-unbindEnv :: (Ord v) => v -> Env v -> Env v
+unbindEnv :: (Ord v) => v -> Env v p -> Env v p
 unbindEnv x (Env m) = Env (M.delete x m)
 
-allEnv :: (Prefix -> Bool) -> Env v -> Bool
+allEnv :: (p -> Bool) -> Env v p -> Bool
 allEnv p (Env m) = all p m
