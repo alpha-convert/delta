@@ -23,10 +23,10 @@ data Term =
     | TmCatR Term Term
     | TmInl Term
     | TmInr Term
-    | TmPlusCase (Env Var) Ty Var Var Term Var Term
+    | TmPlusCase (M.Map Var Ty) (Env Var) Ty Var Var Term Var Term
     | TmNil
     | TmCons Term Term
-    | TmStarCase (Env Var) Ty Ty Var Term Var Var Term {- first return type, then star type -}
+    | TmStarCase (M.Map Var Ty) (Env Var) Ty Ty Var Term Var Var Term {- first return type, then star type -}
     | TmFix (Ctx Var) Ty Term
     | TmRec
     | TmCut Var Term Term
@@ -52,9 +52,9 @@ instance PrettyPrint Term where
             go _ (TmCatL t (Var x) (Var y) (Var z) e) = concat ["let_{",pp t,"} (",x,";",y,") = ",z," in ",go False e]
             go _ (TmInl e) = "inl " ++ go True e
             go _ (TmInr e) = "inl " ++ go True e
-            go _ (TmPlusCase _ _ (Var z) (Var x) e1 (Var y) e2) = concat ["case ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
+            go _ (TmPlusCase _ rho _ (Var z) (Var x) e1 (Var y) e2) = concat ["case_{",pp rho,"} ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
             go _ (TmCons e1 e2) = concat [go True e1," :: ",go True e2]
-            go _ (TmStarCase rho _ _ (Var z) e1 (Var x) (Var xs) e2) = concat ["case _{",pp rho,"}",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
+            go _ (TmStarCase _ rho _ _ (Var z) e1 (Var x) (Var xs) e2) = concat ["case _{",pp rho,"} ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
             go _ (TmCut x e e') = concat ["let ",pp x," = ", go True e, " in ", go True e']
 
 -- substVar e x y = e[x/y]
@@ -69,21 +69,35 @@ substVar (TmCatL t x' y' z e) x y = TmCatL t x' y' z (substVar e x y) {- FIXME: 
 substVar (TmCatR e1 e2) x y = TmCatR (substVar e1 x y) (substVar e2 x y)
 substVar (TmInl e) x y = TmInl (substVar e x y)
 substVar (TmInr e) x y = TmInr (substVar e x y)
-substVar (TmPlusCase rho r z x' e1 y' e2) x y | y == z = TmPlusCase rho' r x x' (substVar e1 x y) y' (substVar e2 x y)
+substVar (TmPlusCase m rho r z x' e1 y' e2) x y | y == z = TmPlusCase m' rho' r x x' (substVar e1 x y) y' (substVar e2 x y)
   where
     rho' = case Values.lookupEnv z rho of
            Nothing -> error "Impossible"
            Just p -> bindEnv x p (unbindEnv z rho)
-substVar (TmPlusCase rho r z x' e1 y' e2) x y = TmPlusCase rho r z x' (substVar e1 x y) y' (substVar e2 x y)
+    m' = case M.lookup z m of
+           Nothing -> error "Impossible"
+           Just p -> M.insert x p (M.delete z m)
+substVar (TmPlusCase m rho r z x' e1 y' e2) x y = TmPlusCase m' rho r z x' (substVar e1 x y) y' (substVar e2 x y)
+  where
+    m' = case M.lookup y m of
+           Nothing -> m
+           Just p -> M.insert x p (M.delete y m)
 
 substVar TmNil _ _ = TmNil
 substVar (TmCons e1 e2) x y = TmCons (substVar e1 x y) (substVar e2 x y)
-substVar (TmStarCase rho r s z e1 x' xs' e2) x y | y == z = TmStarCase rho' r s z (substVar e1 x y) x' xs' (substVar e2 x y)
+substVar (TmStarCase m rho r s z e1 x' xs' e2) x y | y == z = TmStarCase m' rho' r s z (substVar e1 x y) x' xs' (substVar e2 x y)
   where
     rho' = case Values.lookupEnv z rho of
            Nothing -> error "Impossible"
            Just p -> bindEnv x p (unbindEnv z rho)
-substVar (TmStarCase rho r s z e1 x' xs' e2) x y = TmStarCase rho r s z (substVar e1 x y) x' xs' (substVar e2 x y)
+    m' = case M.lookup z m of
+           Nothing -> error "Impossible"
+           Just p -> M.insert x p (M.delete z m)
+substVar (TmStarCase m rho r s z e1 x' xs' e2) x y = TmStarCase m' rho r s z (substVar e1 x y) x' xs' (substVar e2 x y)
+  where
+    m' = case M.lookup y m of
+           Nothing -> m
+           Just p -> M.insert x p (M.delete y m)
 
 -- TODO: are these correct?
 substVar TmRec _ _ = TmRec

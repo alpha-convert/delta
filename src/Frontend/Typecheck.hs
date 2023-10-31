@@ -11,7 +11,7 @@ module Frontend.Typecheck(
 import qualified Frontend.ElabSyntax as Elab
 import qualified CoreSyntax as Core
 import Control.Monad.Except (MonadError (throwError), runExceptT, ExceptT)
-import Types (Ctx (..), Ty(..), ctxBindings, ctxVars, emptyPrefix, ctxAssoc, deriv, ValueLikeErr (IllTyped))
+import Types (Ctx (..), Ty(..), ctxBindings, ctxVars, emptyPrefix, ctxAssoc, deriv, ValueLikeErr (IllTyped), ValueLike (hasType))
 import Control.Monad.Reader (MonadReader (ask, local), asks, ReaderT (runReaderT))
 import Var (Var (Var))
 import Values (Lit(..), Env, Prefix (..), emptyEnv, bindEnv, isMaximal, isEmpty, allEnv, unionDisjointEnv)
@@ -45,7 +45,7 @@ data TckErr t = VarNotFound Var
             | ListedTypeError Ty Ty Core.Term
             | ImpossibleCut Var Core.Term Core.Term
             | UnsaturatedRecursiveCall Int Elab.Term
-            | DerivErr (Env Var.Var) (M.Map Var.Var Ty)
+            | HasTypeErr (Env Var.Var) (M.Map Var.Var Ty)
 
 instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (VarNotFound (Var x)) = concat ["Variable ",x," not found"]
@@ -69,7 +69,7 @@ instance PrettyPrint t => PrettyPrint (TckErr t) where
             ppCut (Var x') e e' = concat ["let ",x',"= (",pp e,") in (",pp e',")"]
     pp (ListedTypeError t' t e) = concat ["Listed type ", pp t'," in term ", pp e, " did not match type ", pp t]
     pp (UnsaturatedRecursiveCall n e) = concat ["Expected ", show n, " argments to recursive call ", pp e]
-    pp (DerivErr rho m) = concat ["Failed to take derivative of type map ",pp m," by ", pp rho]
+    pp (HasTypeErr rho m) = concat ["Environment ",pp rho," does not hav expected types ", pp m]
 
 data RecSig = Rec (Ctx Var) Ty
 
@@ -123,11 +123,14 @@ withRecSig g s = local $ \t -> TckCtx (mp t) (Rec g s)
 withCtxDeriv :: (TckM t m) => Env Var -> m a -> m a
 withCtxDeriv rho m = do
     TckCtx g rs <- ask
-    g' <- reThrow handleDerivErr (deriv rho g)
+    g' <- reThrow handleHasTypeErr (deriv rho g)
     local (const (TckCtx g' rs)) m
 
-handleDerivErr :: Types.ValueLikeErr (Env Var) (M.Map Var Ty) -> TckErr t
-handleDerivErr (IllTyped rho m) = DerivErr rho m
+withCtx :: (TckM t m) => M.Map Var Ty -> m a -> m a
+withCtx m = local (\(TckCtx _ rs) -> TckCtx m rs)
+
+handleHasTypeErr :: Types.ValueLikeErr (Env Var) (M.Map Var Ty) -> TckErr t
+handleHasTypeErr (IllTyped rho m) = HasTypeErr rho m
 
 guard :: (TckM t m) => Bool -> TckErr t -> m ()
 guard b e = if b then return () else throwError e
@@ -197,7 +200,8 @@ checkElab r e@(Elab.TmPlusCase z x e1 y e2) = do
     p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
     p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
     rho <- asks emptyEnvOfType
-    return $ CR p'' (Core.TmPlusCase rho r z x e1' y e2')
+    m <- asks mp
+    return $ CR p'' (Core.TmPlusCase m rho r z x e1' y e2')
 
 checkElab (TyStar _) Elab.TmNil = return (CR P.empty Core.TmNil)
 checkElab t Elab.TmNil = throwError (WrongTypeNil t)
@@ -219,7 +223,8 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
     p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
     rho <- asks emptyEnvOfType
-    return $ CR p'' (Core.TmStarCase rho r s z e1' x xs e2')
+    m <- asks mp
+    return $ CR p'' (Core.TmStarCase m rho r s z e1' x xs e2')
 
 checkElab r (Elab.TmCut x e1 e2) = do
     IR s p e1' <- inferElab e1
@@ -287,7 +292,8 @@ inferElab e@(Elab.TmPlusCase z x e1 y e2) = do
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
     rho <- asks emptyEnvOfType
-    return $ IR r1 p' (Core.TmPlusCase rho r1 z x e1' y e2')
+    m <- asks mp
+    return $ IR r1 p' (Core.TmPlusCase m rho r1 z x e1' y e2')
 
 inferElab e@Elab.TmNil = throwError (CheckTermInferPos e)
 
@@ -305,7 +311,8 @@ inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
     rho <- asks emptyEnvOfType
-    return $ IR r1 p' (Core.TmStarCase rho r1 s z e1' x xs e2')
+    m <- asks mp
+    return $ IR r1 p' (Core.TmStarCase m rho r1 s z e1' x xs e2')
 
 inferElab e@(Elab.TmCut x e1 e2) = do
     IR s p e1' <- inferElab e1
@@ -356,14 +363,15 @@ checkCore t (Core.TmInl e) = throwError (WrongTypeInl e t)
 checkCore (TyPlus _ t) (Core.TmInr e) = checkCore t e
 checkCore t (Core.TmInr e) = throwError (WrongTypeInr e t)
 
-checkCore r e@(Core.TmPlusCase rho r' z x e1 y e2) = withCtxDeriv rho $ do
-    -- TODO: Need to take the derivative of the whole context by rho first!
-    (s,t) <- lookupTyPlus z
-    guard (r == r') (ListedTypeError r' r e)
-    p1 <- withBind x s $ withUnbind z $ checkCore r e1
-    p2 <- withBind y t $ withUnbind z $ checkCore r e2
-    p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
-    reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
+checkCore r e@(Core.TmPlusCase m rho r' z x e1 y e2) = do
+    reThrow handleHasTypeErr (hasType rho m)
+    withCtx m $ do
+        (s,t) <- lookupTyPlus z
+        guard (r == r') (ListedTypeError r' r e)
+        p1 <- withBind x s $ withUnbind z $ checkCore r e1
+        p2 <- withBind y t $ withUnbind z $ checkCore r e2
+        p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
+        reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
 
 checkCore (TyStar _) Core.TmNil = return P.empty
 checkCore t Core.TmNil = throwError (WrongTypeNil t)
@@ -375,15 +383,17 @@ checkCore (TyStar s) e@(Core.TmCons e1 e2) = do
     reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
 checkCore t e@(Core.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
     
-checkCore r e@(Core.TmStarCase rho r' s' z e1 x xs e2) = withCtxDeriv rho $ do
-    guard (r == r') (ListedTypeError r' r e)
-    s <- lookupTyStar z
-    guard (s == s') (ListedTypeError s' s e)
-    p1 <- withUnbind z (checkCore r e1)
-    p2 <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkCore r e2)
-    guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
-    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
-    reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
+checkCore r e@(Core.TmStarCase m rho r' s' z e1 x xs e2) = do
+    reThrow handleHasTypeErr (hasType rho m)
+    withCtx m $ do
+        guard (r == r') (ListedTypeError r' r e)
+        s <- lookupTyStar z
+        guard (s == s') (ListedTypeError s' s e)
+        p1 <- withUnbind z (checkCore r e1)
+        p2 <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkCore r e2)
+        guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
+        p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+        reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
 
 -- NOTE: this just checks that we have all the binders we expect for the term, not that they arrive in the right order!
 checkCore r e@Core.TmRec = do
@@ -427,13 +437,15 @@ inferCore e@(Core.TmCatR e1 e2) = do
 inferCore (Core.TmInl e) = undefined
 inferCore (Core.TmInr e) = undefined
 
-inferCore e@(Core.TmPlusCase rho r z x e1 y e2) = do
-    (s,t) <- lookupTyPlus z
-    p1 <- withBind x s $ withUnbind z $ checkCore r e1
-    p2 <- withBind y t $ withUnbind z $ checkCore r e2
-    p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
-    p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
-    return (r,p'')
+inferCore e@(Core.TmPlusCase m rho r z x e1 y e2) = do
+    reThrow handleHasTypeErr (hasType rho m)
+    withCtx m $ do
+        (s,t) <- lookupTyPlus z
+        p1 <- withBind x s $ withUnbind z $ checkCore r e1
+        p2 <- withBind y t $ withUnbind z $ checkCore r e2
+        p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
+        p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
+        return (r,p'')
 
 inferCore Core.TmNil = undefined
 
@@ -444,15 +456,17 @@ inferCore e@(Core.TmCons e1 e2) = do
     p <- reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
     return (TyStar s, p)
 
-inferCore e@(Core.TmStarCase rho r s' z e1 x xs e2) = do
-    s <- lookupTyStar z
-    guard (s == s') (ListedTypeError s' s e)
-    p1 <- withUnbind z (checkCore r e1)
-    p2 <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkCore r e2)
-    guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
-    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
-    p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
-    return (r,p'')
+inferCore e@(Core.TmStarCase m rho r s' z e1 x xs e2) = do
+    reThrow handleHasTypeErr (hasType rho m)
+    withCtx m $ do
+        s <- lookupTyStar z
+        guard (s == s') (ListedTypeError s' s e)
+        p1 <- withUnbind z (checkCore r e1)
+        p2 <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkCore r e2)
+        guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
+        p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+        p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
+        return (r,p'')
 
 inferCore e@Core.TmRec = do
     TckCtx g_bound (Rec g r) <- ask
@@ -552,7 +566,7 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
         go :: (MonadIO m) => Either Elab.FunDef Elab.RunCmd -> StateT FileInfo m (Either Core.FunDef Core.RunCmd)
         go (Left (Elab.FD f g t e)) = do
             e' <- lift $ doCheckElabTm False g t e
-            liftIO $ print $ "Function " ++ f ++ " typechecked OK. Core term: " ++ pp e'
+            liftIO $ putStrLn $ "Function " ++ f ++ " typechecked OK. Core term: " ++ pp e'
             fi <- get
             put (M.insert f (g,t) fi)
             return (Left (Core.FD f g t e'))
