@@ -1,5 +1,5 @@
 -- AUTHORS: Emeka Nkurumeh, Joe Cutler
-{-# LANGUAGE FlexibleContexts, FlexibleInstances, MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleContexts, FlexibleInstances, MultiParamTypeClasses, BangPatterns #-}
 
 module Frontend.Typecheck(
     doCheckElabPgm,
@@ -26,6 +26,7 @@ import Util.PartialOrder (substSingAll)
 import Control.Monad (when)
 import Test.HUnit
 import Data.Bifunctor
+import Debug.Trace (trace)
 
 data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
@@ -234,7 +235,8 @@ checkElab r (Elab.TmCut x e1 e2) = do
     CR p' e2' <- withBind x s $ checkElab r e2
     reThrow (handleReUse (Elab.TmCatR e1 e2)) (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
-    return (CR p'' (Core.TmCut x e1' e2'))
+    e' <- reThrow handleImpossibleCut (Core.cut x e1' e2')
+    return (CR p'' e')
 
 checkElab r e@(Elab.TmRec es) = do
     Rec g r' <- asks rs
@@ -325,7 +327,8 @@ inferElab e@(Elab.TmCut x e1 e2) = do
     IR t p' e2' <- withBind x s $ inferElab e2
     reThrow (handleReUse e) (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
-    return (IR t p'' (Core.TmCut x e1' e2'))
+    e' <- reThrow handleImpossibleCut (Core.cut x e1' e2')
+    return (IR t p'' e')
 
 inferElab e@(Elab.TmRec es) = do
     Rec g r <- asks rs
@@ -350,6 +353,7 @@ checkCore t e@(Core.TmVar x) = do
 checkCore r e@(Core.TmCatL t' x y z e') = do
     (s,t) <- lookupTyCat e z
     guard (t == t') (ListedTypeError t' t e)
+    m <- asks mp
     p <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkCore r e')
     guard (not $ P.lessThan p y x) (OutOfOrder x y e')
     -- Replace x and y with z in the output
@@ -369,7 +373,9 @@ checkCore (TyPlus _ t) (Core.TmInr e) = checkCore t e
 checkCore t (Core.TmInr e) = throwError (WrongTypeInr e t)
 
 checkCore r e@(Core.TmPlusCase m rho r' z x e1 y e2) = do
+    !() <- trace ("Here :" ++ pp m ++ ", " ++ pp z) (return ())
     reThrow handleHasTypeErr (hasType rho m)
+    !() <- trace ("Here :" ++ pp m ++ ", " ++ pp z) (return ())
     withCtx m $ do
         (s,t) <- lookupTyPlus e z
         guard (r == r') (ListedTypeError r' r e)
@@ -412,11 +418,12 @@ checkCore r e@(Core.TmFix args g s e') = do
     reThrow (handleOutOfOrder e) (P.consistentWith p' (ctxVars g))
     return p
 
-checkCore r e@(Core.TmCut x e1 e2) = do
+{-checkCore r e@(Core.TmCut x e1 e2) = do
     (s,p) <- inferCore e1
     p' <- withBind x s $ checkCore r e2
     reThrow (handleReUse e) (P.checkDisjoint p p')
     reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
+-}
 
 
 inferCore :: (TckM Core.Term m) => Core.Term -> m (Ty,P.Partial Var.Var)
@@ -484,15 +491,16 @@ inferCore e@(Core.TmRec args) = do
 
 inferCore (Core.TmFix args g s e') =  do
     p <- checkRec g args
-    withRecSig g s (checkCore s e')
+    !_ <- withRecSig g s (checkCore s e')
     return (s,p)
 
-inferCore e@(Core.TmCut x e1 e2) = do
+{-inferCore e@(Core.TmCut x e1 e2) = do
     (s,p) <- inferCore e1
     (t,p') <- withBind x s $ inferCore e2
     reThrow (handleReUse e) (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
     return (t,p'')
+-}
 
 checkRec :: (TckM Core.Term m) => Ctx Var Ty -> Ctx Var Core.Term -> m (P.Partial Var)
 checkRec g g' = go g g'

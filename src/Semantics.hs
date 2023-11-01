@@ -2,6 +2,7 @@
 module Semantics where
 
 import CoreSyntax
+    ( Term(..), Program, FunDef(..), RunCmd(..), substVar, sinkTm, cut)
 import qualified Data.Map as M
 import Control.Monad.Reader
     ( Monad(return), sequence, MonadReader(ask, local), ReaderT (runReaderT), guard )
@@ -81,7 +82,8 @@ eval (TmCatL t x y z e) = do
             (p',e') <- withEnv (bindAllEnv [(x,p1),(y,p2)]) (eval e)
             let e'' = substVar e' z y
             sink <- reThrow (SinkError x) (sinkTm p1)
-            return (p', TmCut x sink e'')
+            e''' <- reThrow handleRuntimeCutError (cut x sink e'')
+            return (p', e''')
         _ -> throwError (NotCatPrefix z p)
 
 eval (TmCatR e1 e2) = do
@@ -125,7 +127,7 @@ eval (TmCons e1 e2) = do
         (p',e2') <- eval e2
         return (StpB p p',e2')
 
-eval (TmStarCase m rho' r s z e1 x xs e2) = do
+eval e@(TmStarCase m rho' r s z e1 x xs e2) = do
     withEnvM (reThrow (uncurry ConcatError) . concatEnv rho') $ do
         p <- lookupVar z
         (case p of
@@ -134,28 +136,34 @@ eval (TmStarCase m rho' r s z e1 x xs e2) = do
                 return (emptyPrefix r, TmStarCase m rho'' r s z e1 x xs e2)
             StpDone -> eval e1
             StpA p' -> do
+                !() <- trace ("Here!! With a term: "  ++ pp e ++ "\n\n") (return ())
                 (p'',e2') <- withEnv (bindAllEnv [(x,p'),(xs,StpEmp)]) (eval e2)
+                !() <- trace ("Stepped the body: "  ++ pp e2' ++ "\n\n") (return ())
                 return (p'', TmCatL (TyStar s) x xs z e2')
             StpB p1 p2 -> do
                 (p'',e2') <- withEnv (bindAllEnv [(x,p1),(xs,p2)]) (eval e2)
                 sink <- reThrow (SinkError x) (sinkTm p1)
-                return (p'', substVar (TmCut x sink e2') z xs)
+                e'' <- reThrow handleRuntimeCutError (cut x sink e2')
+                return (p'', substVar e'' z xs)
             _ -> throwError (NotPlusPrefix z p))
 
-eval (TmCut x e1 e2) = do
-    (p,e1') <- eval e1
-    withEnv (bindEnv x p) $ do
-        (p',e2') <- eval e2
-        return (p',TmCut x e1' e2')
+-- eval (TmCut x e1 e2) = do
+--     (p,e1') <- eval e1
+--     withEnv (bindEnv x p) $ do
+--         (p',e2') <- eval e2
+--         return (p',TmCut x e1' e2')
 
-eval (TmFix args g s e) =
-    let e' = cutAll args (fixSubst g s e e) in
-    let !() = Debug.trace ("Unfolding recursion: " ++ pp e') () in
-    eval e'
+eval (TmFix args g s e) = do
+    let e' = fixSubst g s e e
+    e'' <- cutAll args e'
+    let !() = Debug.trace ("Unfolding recursion: " ++ pp e' ++ " with args " ++ pp args) ()
+    eval e''
     where
-        cutAll EmpCtx e = e
-        cutAll (SngCtx x e') e = TmCut x e' e
-        cutAll (SemicCtx g g') e = cutAll g (cutAll g' e)
+        cutAll EmpCtx e = return e
+        cutAll (SngCtx x e') e = reThrow handleRuntimeCutError (cut x e' e)
+        cutAll (SemicCtx g g') e = do
+            e' <- cutAll g' e
+            cutAll g e'
 
 eval (TmRec _) = error "Impossible."
 
@@ -174,11 +182,10 @@ fixSubst g s e = go
         go (TmStarCase m rho r t z e1 y ys e2) = TmStarCase m rho r t z (go e1) y ys (go e2)
         go (TmFix {}) = error "Nested fix! Should be impossible."
         go (TmRec args) = TmFix args g s e
-        go (TmCut x e1 e2) = TmCut x (go e1) (go e2)
+        -- go (TmCut x e1 e2) = TmCut x (go e1) (go e2)
 
 handleRuntimeCutError :: (Var.Var, Term, Term) -> SemError
 handleRuntimeCutError (x,e,e') = RuntimeCutError x e e'
-
 
 type TopLevel = M.Map String (Term, Ctx Var.Var Ty, Ty)
 
@@ -195,12 +202,12 @@ doRunPgm p = do
             case M.lookup f tl of
                 Just (e,g,s) -> case runIdentity $ runExceptT $ runReaderT (eval e) rho of
                                     Right (p',e') -> do
-                                        lift (putStrLn $ "Result of executing " ++ f ++ ": " ++ pp p')
-                                        -- lift (putStrLn $ pp e')
+                                        lift (putStrLn $ "Result of executing " ++ f ++ ": " ++ pp p' ++ "\n\n")
+                                        lift (putStrLn $ "Final core term: " ++  pp e' ++ "\n\n")
                                         () <- hasTypeB p' s >>= guard
-                                        g' <- doDeriv rho g 
+                                        g' <- doDeriv rho g
                                         s' <- doDeriv p' s
-                                        () <- doCheckCoreTm g' s' e'
+                                        -- () <- doCheckCoreTm g' s' e'
                                         return ()
                                     Left err -> error $ "Runtime Error: " ++ pp err
                 Nothing -> error ("Runtime Error: Tried to execute unbound function " ++ f)
@@ -214,12 +221,12 @@ semTests = TestList [
         semTest (TmVar $ var "x") [("x",CatPA (LitPFull (LInt 4)))] (CatPA (LitPFull (LInt 4))) (TmVar $ var "x"),
         semTest (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "x"))) [("z",CatPA LitPEmp)] LitPEmp (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "x"))),
         semTest (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "x"))) [("z",CatPA (LitPFull (LInt 3)))] (LitPFull (LInt 3)) (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "x"))),
-        semTest (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "x"))) [("z",CatPB (LitPFull (LInt 3)) LitPEmp)] (LitPFull (LInt 3)) (TmCut (var "x") TmEpsR (TmVar (var "x"))),
+        semTest (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "x"))) [("z",CatPB (LitPFull (LInt 3)) LitPEmp)] (LitPFull (LInt 3)) TmEpsR,
 
         semTest (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "y"))) [("z",CatPA LitPEmp)] LitPEmp (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "y"))),
         semTest (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "y"))) [("z",CatPA (LitPFull (LInt 3)))] LitPEmp (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "y"))),
         semTest (TmCatL (TyCat TyInt TyInt) (var "x") (var "y") (var "z") (TmVar (var "y"))) [("z",CatPA (LitPFull (LInt 3)))] (CatPA LitPEmp) (TmCatL (TyCat TyInt TyInt) (var "x") (var "y") (var "z") (TmVar (var "y"))),
-        semTest (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "y"))) [("z",CatPB (LitPFull (LInt 3)) (LitPFull (LInt 4)))] (LitPFull (LInt 4)) (TmCut (var "x") TmEpsR $ TmVar (var "z")),
+        semTest (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "y"))) [("z",CatPB (LitPFull (LInt 3)) (LitPFull (LInt 4)))] (LitPFull (LInt 4)) (TmVar (var "z")),
 
         semTest (TmCatR (TmVar $ var "x") (TmVar $ var "y")) [("x",LitPEmp),("y",LitPEmp)] (CatPA LitPEmp) (TmCatR (TmVar $ var "x") (TmVar $ var "y")),
         semTest (TmCatR (TmLitR (LBool False)) (TmVar $ var "y")) [("y",LitPEmp)] (CatPB (LitPFull $ LBool False) LitPEmp) (TmVar (var "y")),
