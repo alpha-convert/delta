@@ -31,13 +31,14 @@ instance PrettyPrint Term where
             go False (TmInr e) = "inl " ++ go True e
             go False (TmCons e1 e2) = concat [go True e1," :: ", go True e2]
 
-data HistSemErr = NonClosed Var | BadCons MaximalPrefix Term Term
+data SemErr = NonClosed Var | BadCons MaximalPrefix Term Term
+    deriving (Eq, Ord, Show)
 
-instance PrettyPrint HistSemErr where
+instance PrettyPrint SemErr where
     pp (NonClosed x) = "Term not closed, encountered variable " ++ pp x
     pp (BadCons p2 e1 e2) = concat ["Could not compute cons ", pp (TmCons e1 e2), " because ", pp e2, " evaluated to ", pp p2]
 
-eval :: (MonadError HistSemErr m) => Term -> m MaximalPrefix
+eval :: (MonadError SemErr m) => Term -> m MaximalPrefix
 eval (TmLit l) = return (LitMP l)
 eval TmEps = return EpsMP
 eval (TmVar x) = throwError (NonClosed x)

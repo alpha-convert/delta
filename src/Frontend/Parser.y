@@ -34,7 +34,9 @@ import Data.Char ( isDigit, isAlpha, isSpace )
       tyEps           { TokenTyEps }
       emp             { TokenEmp }
       exec            { TokenExec }
+      wait            { TokenWait }
       rec             { TokenRec }
+      do              { TokenDo }
       '='             { TokenEq }
       '('             { TokenOB }
       ')'             { TokenCB }
@@ -64,6 +66,7 @@ Exp   : let '(' WildVar ';' WildVar ')' '=' Exp in Exp             { TmCatL $3 $
       | inr Exp1                                                   { TmInr $2 }
       | case Exp of inl WildVar '=>' Exp '|' inr WildVar '=>' Exp  { TmPlusCase $2 $5 $7 $10 $12}
       | case Exp of nil '=>' Exp '|' WildVar '::' WildVar '=>' Exp { TmStarCase $2 $6 $8 $10 $12}
+      | wait VarList do Exp                                        { TmWait $2 $4 }
       | Exp1 '::' Exp                                              { TmCons $1 $3 }
       | Exp1                                                       { $1 }
 
@@ -92,6 +95,9 @@ Ty3   : tyInt                                                     { TyInt }
       | tyBool                                                    { TyBool }
       | tyEps                                                     { TyEps }
       | '(' Ty ')'                                                { $2 }
+
+VarList : {-empty-}                                               { [] }
+        | Var ',' VarList                                         { $1 : $3 }
 
 FunDef      : fun var '(' Params ')' ':' Ty '=' Exp                      { FD $2 $4 $7 $9 }
 
@@ -157,6 +163,8 @@ data Token
       | TokenStar
       | TokenEmp
       | TokenExec
+      | TokenDo
+      | TokenWait
       | TokenPlus
       | TokenTyInt
       | TokenTyBool
@@ -201,6 +209,8 @@ lexVar cs =
       ("fun",rest)  -> TokenFun : lexer rest
       ("emp",rest)  -> TokenEmp : lexer rest
       ("rec",rest)  -> TokenRec : lexer rest
+      ("wait",rest)  -> TokenWait : lexer rest
+      ("do",rest)  -> TokenDo : lexer rest
       ("true",rest)  -> TokenBool True : lexer rest
       ("false",rest)  -> TokenBool False : lexer rest
       ("exec",rest)  -> TokenExec : lexer rest

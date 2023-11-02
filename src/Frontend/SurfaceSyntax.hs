@@ -9,6 +9,7 @@ module Frontend.SurfaceSyntax(
 import Values ( Lit(..), Prefix)
 import Var(Var(..))
 import Types
+import qualified HistPgm as Hist
 
 data Term =
       TmLitR Lit
@@ -23,8 +24,11 @@ data Term =
     | TmCons Term Term
     | TmStarCase Term Term (Maybe Var.Var) (Maybe Var.Var) Term
     | TmRec [Term]
+    | TmWait [Var] Term
+    | TmHistPgm Hist.Term
     deriving (Eq,Ord,Show)
-
+  
+  
 data UntypedPrefix =
       EmpP
     | LitP Lit

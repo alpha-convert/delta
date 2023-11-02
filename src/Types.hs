@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveFoldable, DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, FlexibleContexts #-}
-module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc, ctxMap) where
+module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc, ctxMap, ctxFoldM) where
 
 import qualified Data.Map as M
 import Control.Monad.Except (ExceptT, throwError, withExceptT, runExceptT)
@@ -26,6 +26,14 @@ ctxMap :: (v -> t -> (v',t')) -> Ctx v t -> Ctx v' t'
 ctxMap _ EmpCtx = EmpCtx
 ctxMap f (SngCtx x y) = let (x',y') = f x y in SngCtx x' y'
 ctxMap f (SemicCtx g g') = SemicCtx (ctxMap f g) (ctxMap f g')
+
+ctxFoldM :: (Monad m) => m a -> (v -> t -> m a) -> (a -> a -> m a) -> Ctx v t -> m a
+ctxFoldM x f g EmpCtx = x
+ctxFoldM _ f g (SngCtx x t) = f x t
+ctxFoldM x f g (SemicCtx g1 g2) = do
+  a1 <- ctxFoldM x f g g1
+  a2 <- ctxFoldM x f g g2
+  g a1 a2
 
 instance Bifunctor Ctx where
   bimap _ _ EmpCtx = EmpCtx

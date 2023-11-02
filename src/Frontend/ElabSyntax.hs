@@ -17,6 +17,10 @@ import Control.Monad.RWS.Strict (MonadReader (local, ask))
 import Control.Monad.Reader (ReaderT (runReaderT))
 import Test.HUnit
 import Data.List (intercalate)
+import qualified Data.Functor
+import Data.Functor ((<&>))
+import qualified HistPgm as Hist
+import qualified Data.List as Hist
 
 data Term =
       TmLitR Lit
@@ -32,6 +36,8 @@ data Term =
     | TmStarCase Var Term Var Var Term
     | TmCut Var Term Term
     | TmRec [Term]
+    | TmWait Var Term
+    | TmHistPgm Hist.Term
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint Term where
@@ -42,6 +48,7 @@ instance PrettyPrint Term where
             go _ (TmVar (Var x)) = x
             go _ TmNil = "nil"
             go _ (TmCatR e1 e2) = concat ["(",go False e1,";",go False e2,")"]
+            go _ (TmHistPgm eh) = concat ["{",pp eh,"}"]
             go True e = concat ["(", go False e, ")"]
             go False (TmCatL (Var x) (Var y) (Var z) e) = concat ["let (",x,";",y,") = ",z," in ",go False e]
             go False (TmInl e) = "inl " ++ go True e
@@ -51,6 +58,7 @@ instance PrettyPrint Term where
             go False (TmCons e1 e2) = concat [go True e1," :: ", go True e2]
             go False (TmStarCase (Var z) e1 (Var x) (Var xs) e2) = concat ["case ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
             go False (TmRec es) = concat ["rec (", intercalate ";" (map (go False) es), ")"]
+            go False (TmWait x e) = concat ["wait ", pp x," do ", go True e]
 
 data ElabState = ES { nextVar :: Int } deriving (Eq, Ord, Show)
 
@@ -82,10 +90,10 @@ withUnshadow (Just x) u = do
     EI sm <- ask
     if M.member x sm then do
         y <- freshElabVar
-        a <- local (\(EI sm) -> EI (M.insert x y sm)) u
+        a <- local (\(EI sm') -> EI (M.insert x y sm')) u
         return (a,y)
     else do
-        a <- local (\(EI sm) -> EI (M.insert x x sm)) u
+        a <- local (\(EI sm') -> EI (M.insert x x sm')) u
         return (a,x)
 
 unshadow :: (ElabM m) => Var -> m Var
@@ -103,6 +111,7 @@ sameBinder (Just x) (Just y) = if x == y then Just x else Nothing
 elab :: (ElabM m) => Surf.Term -> m Term
 elab (Surf.TmLitR l) = return (TmLitR l)
 elab Surf.TmEpsR = return TmEpsR
+elab (Surf.TmHistPgm he) = TmHistPgm <$> elabHist he
 elab (Surf.TmVar x) = TmVar <$> unshadow x
 elab (Surf.TmCatL mx my e1 e2) = do
     case sameBinder mx my of
@@ -132,7 +141,23 @@ elab (Surf.TmStarCase e e1 mx mxs e2) = do
     ((e2',xs),x) <- withUnshadow mx $ withUnshadow mxs $ elab e2
     z <- freshElabVar
     return $ TmCut z e' (TmStarCase z e1' x xs e2')
-elab (Surf.TmRec xs) = TmRec <$> mapM elab xs
+elab (Surf.TmRec es) = TmRec <$> mapM elab es
+elab (Surf.TmWait xs e) = do
+    ys <- mapM unshadow xs
+    go ys <$> elab e
+    where
+        go [] e' = e'
+        go (x:xs') e' = TmWait x (go xs' e')
+
+elabHist :: (ElabM m) => Hist.Term -> m Hist.Term
+elabHist (Hist.TmVar x) = Hist.TmVar <$> unshadow x
+elabHist e@(Hist.TmLit _) = return e
+elabHist e@Hist.TmEps = return e
+elabHist (Hist.TmPair e1 e2) = Hist.TmPair <$> elabHist e1 <*> elabHist e2
+elabHist (Hist.TmInl e) = Hist.TmInl <$> elabHist e
+elabHist (Hist.TmInr e) = Hist.TmInr <$> elabHist e
+elabHist e@Hist.TmNil = return e
+elabHist (Hist.TmCons e1 e2) = Hist.TmCons <$> elabHist e1 <*> elabHist e2
 
 {-TODO: ensure that fundefs have unique vars-}
 

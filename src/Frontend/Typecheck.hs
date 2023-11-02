@@ -77,10 +77,10 @@ instance PrettyPrint t => PrettyPrint (TckErr t) where
 
 data RecSig = Rec (Ctx Var Ty) Ty
 
-data TckCtx = TckCtx { mp :: M.Map Var.Var Ty, rs :: RecSig }
+data TckCtx = TckCtx { mp :: M.Map Var.Var Ty, rs :: RecSig, hc :: M.Map Var Ty }
 
 emptyEnvOfType :: TckCtx -> Env Var Prefix
-emptyEnvOfType (TckCtx m _) = M.foldrWithKey (\x t -> bindEnv x (emptyPrefix t)) emptyEnv m
+emptyEnvOfType (TckCtx m _ _) = M.foldrWithKey (\x t -> bindEnv x (emptyPrefix t)) emptyEnv m
 
 class (MonadError (TckErr t) m, MonadReader TckCtx m) => TckM t m where
 
@@ -113,25 +113,28 @@ lookupTyStar e x = do
         _ -> throwError (ExpectedTyStar x s' e)
 
 withUnbind :: (TckM t m) => Var -> m a -> m a
-withUnbind x = local (\t -> TckCtx (M.delete x (mp t)) (rs t))
+withUnbind x = local (\t -> TckCtx (M.delete x (mp t)) (rs t) (hc t))
 
 withBind :: (TckM t m) => Var -> Ty -> m a -> m a
-withBind x s = local (\t -> TckCtx (M.insert x s (mp t)) (rs t))
+withBind x s = local (\t -> TckCtx (M.insert x s (mp t)) (rs t) (hc t))
 
 withBindAll :: (TckM t m) => [(Var,Ty)] -> m a -> m a
-withBindAll xs = local $ \t -> TckCtx (foldr (\(x,s) -> (M.insert x s .)) id xs (mp t)) (rs t)
+withBindAll xs = local $ \t -> TckCtx (foldr (\(x,s) -> (M.insert x s .)) id xs (mp t)) (rs t) (hc t)
 
 withRecSig :: (TckM t m) => Ctx Var Ty -> Ty -> m a -> m a
-withRecSig g s = local $ \t -> TckCtx (mp t) (Rec g s)
+withRecSig g s = local $ \t -> TckCtx (mp t) (Rec g s) (hc t)
 
 withCtxDeriv :: (TckM t m) => Env Var Prefix -> m a -> m a
 withCtxDeriv rho m = do
-    TckCtx g rs <- ask
+    TckCtx g rs hc <- ask
     g' <- reThrow handleHasTypeErr (deriv rho g)
-    local (const (TckCtx g' rs)) m
+    local (const (TckCtx g' rs hc)) m
 
 withCtx :: (TckM t m) => M.Map Var Ty -> m a -> m a
-withCtx m = local (\(TckCtx _ rs) -> TckCtx m rs)
+withCtx m = local (\(TckCtx _ rs hc) -> TckCtx m rs hc)
+
+withBindHist :: (TckM t m) => Var -> Ty -> m a -> m a
+withBindHist x s = local (\t -> TckCtx (mp t) (rs t) (M.insert x s (hc t)))
 
 handleHasTypeErr :: Types.ValueLikeErr (Env Var Prefix) (M.Map Var Ty) -> TckErr t
 handleHasTypeErr (IllTyped rho m) = HasTypeErr rho m
@@ -247,6 +250,14 @@ checkElab r e@(Elab.TmRec es) = do
     (_,(p,args)) <- elabRec g es'
     return (CR p (Core.TmRec args))
 
+checkElab r e@(Elab.TmWait x e') = do
+    rho <- asks emptyEnvOfType
+    s <- lookupTy e x
+    CR p e'' <- withBindHist x s $ withUnbind x $ checkElab r e'
+    return (CR p (Core.TmWait rho r x e''))
+
+checkElab r e@(Elab.TmHistPgm he) = undefined
+
 -- Given a context and a list of inferred terms, return the "context" mapping variables to terms.
 elabRec :: (TckM Elab.Term m) => Ctx Var Ty -> [InferElabResult] -> m ([InferElabResult],(P.Partial Var,Ctx Var Core.Term))
 elabRec EmpCtx [] = return ([],(P.empty,EmpCtx))
@@ -338,6 +349,15 @@ inferElab e@(Elab.TmRec es) = do
     (_,(p,args)) <- elabRec g es'
     return (IR r p (Core.TmRec args))
 
+inferElab e@(Elab.TmWait x e') = do
+    rho <- asks emptyEnvOfType
+    s <- lookupTy e x
+    IR t p e'' <- withBindHist x s $ withUnbind x $ inferElab e'
+    return (IR t p (Core.TmWait rho t x e''))
+
+inferElab e@(Elab.TmHistPgm he) = undefined
+
+
 checkCore :: (TckM Core.Term m) => Ty -> Core.Term -> m (P.Partial Var.Var)
 checkCore TyInt (Core.TmLitR (LInt _)) = return P.empty
 checkCore TyBool (Core.TmLitR (LBool _)) = return P.empty
@@ -408,7 +428,7 @@ checkCore r e@(Core.TmStarCase m rho r' s' z e1 x xs e2) = do
 
 -- NOTE: this just checks that we have all the binders we expect for the term, not that they arrive in the right order!
 checkCore r e@(Core.TmRec args) = do
-    TckCtx g_bound (Rec g r') <- ask
+    TckCtx g_bound (Rec g r') _ <- ask
     guard (r == r') (UnequalReturnTypes r r' e) --return types are the same
     checkRec g args
 
@@ -418,12 +438,18 @@ checkCore r e@(Core.TmFix args g s e') = do
     reThrow (handleOutOfOrder e) (P.consistentWith p' (ctxVars g))
     return p
 
-{-checkCore r e@(Core.TmCut x e1 e2) = do
+checkCore r e@(Core.TmCut x e1 e2) = do
     (s,p) <- inferCore e1
     p' <- withBind x s $ checkCore r e2
     reThrow (handleReUse e) (P.checkDisjoint p p')
     reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
--}
+
+checkCore r e@(Core.TmWait _ r' x e') = do
+    guard (r == r') (ListedTypeError r r' e)
+    s <- lookupTy e x
+    withBindHist x s $ withUnbind x $ checkCore r e'
+
+checkCore r e@(Core.TmHistPgm s he) = undefined
 
 
 inferCore :: (TckM Core.Term m) => Core.Term -> m (Ty,P.Partial Var.Var)
@@ -485,7 +511,7 @@ inferCore e@(Core.TmStarCase m rho r s' z e1 x xs e2) = do
         return (r,p'')
 
 inferCore e@(Core.TmRec args) = do
-    TckCtx _ (Rec g r) <- ask
+    TckCtx _ (Rec g r) _ <- ask
     p <- checkRec g args
     return (r,p)
 
@@ -494,13 +520,19 @@ inferCore (Core.TmFix args g s e') =  do
     !_ <- withRecSig g s (checkCore s e')
     return (s,p)
 
-{-inferCore e@(Core.TmCut x e1 e2) = do
+inferCore e@(Core.TmCut x e1 e2) = do
     (s,p) <- inferCore e1
     (t,p') <- withBind x s $ inferCore e2
     reThrow (handleReUse e) (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
     return (t,p'')
--}
+
+inferCore e@(Core.TmWait _ r x e') = do
+    s <- lookupTy e x
+    p <- withBindHist x s $ withUnbind x $ checkCore r e'
+    return (r,p)
+
+inferCore e@(Core.TmHistPgm s he) = undefined
 
 checkRec :: (TckM Core.Term m) => Ctx Var Ty -> Ctx Var Core.Term -> m (P.Partial Var)
 checkRec g g' = go g g'
@@ -571,7 +603,7 @@ type FileInfo = M.Map String (Ctx Var Ty, Ty)
 -- Doublecheck argument typechecks the resulting term, again.
 doCheckElabTm :: (MonadIO m) => Bool -> Ctx Var Ty -> Ty -> Elab.Term -> m Core.Term
 doCheckElabTm doubleCheck g t e = do
-    let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e :: (ReaderT TckCtx (ExceptT (TckErr Elab.Term) Identity) CheckElabResult)) (TckCtx (ctxBindings g) (Rec g t))
+    let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e :: (ReaderT TckCtx (ExceptT (TckErr Elab.Term) Identity) CheckElabResult)) (TckCtx (ctxBindings g) (Rec g t) M.empty)
     case ck of
         Left err -> error (pp err)
         Right (CR usages tm) -> do
@@ -583,7 +615,7 @@ doCheckElabTm doubleCheck g t e = do
 
 doCheckCoreTm :: (MonadIO m) => Ctx Var Ty -> Ty -> Core.Term -> m ()
 doCheckCoreTm g t e = do
-    let ck = runIdentity $ runExceptT $ runReaderT (checkCore t e :: (ReaderT TckCtx (ExceptT (TckErr Core.Term) Identity) (P.Partial Var))) (TckCtx (ctxBindings g) (Rec g t))
+    let ck = runIdentity $ runExceptT $ runReaderT (checkCore t e :: (ReaderT TckCtx (ExceptT (TckErr Core.Term) Identity) (P.Partial Var))) (TckCtx (ctxBindings g) (Rec g t) M.empty)
     case ck of
         Left err -> error ("ERROR: " ++ pp err ++ " while checking " ++ pp e ++ " against type " ++ pp t ++ " in context " ++ pp g)
         Right usages -> do

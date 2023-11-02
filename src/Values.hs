@@ -1,6 +1,7 @@
 module Values(
   Lit(..),
   Prefix(..),
+  MaximalPrefix(..),
   isMaximal,
   isEmpty,
   Env,
@@ -14,14 +15,18 @@ module Values(
   prefixConcat,
   concatEnv,
   allEnv,
-  unionDisjointEnv
+  unionDisjointEnv,
+  rebindEnv,
+  maximalLift,
+  maximalDemote
 ) where
 
 import qualified Data.Map as M
 import Util.PrettyPrint (PrettyPrint(..))
 import Control.Monad.Except
 import Data.IntMap (unionWith)
-import Data.List (intersperse)
+import Data.List (intersperse, intercalate)
+import Data.Semigroup (Max)
 
 data Lit = LInt Int | LBool Bool deriving (Eq, Ord, Show)
 
@@ -56,7 +61,7 @@ instance PrettyPrint Prefix where
   pp StpEmp = "stpemp"
   pp StpDone = "[]"
   pp (StpA p) = concat ["[",pp p,";)"]
-  pp (StpB p p') = concat ["[",pp p,";",pp p',";)"]
+  pp (StpB p p') = concat ["[",pp p,";",pp p',")"]
 
 prefixConcat :: (Monad m) => Prefix -> Prefix -> ExceptT (Prefix,Prefix) m Prefix
 prefixConcat LitPEmp LitPEmp = return LitPEmp
@@ -143,7 +148,7 @@ isEmpty (StpB {}) = False
 data Env v p = Env (M.Map v p) deriving (Eq, Ord, Show)
 
 instance (PrettyPrint p, PrettyPrint v) => PrettyPrint (Env v p) where
-  pp (Env m) = "{" ++ concat (intersperse "," $ map go $ M.assocs m) ++ "}"
+  pp (Env m) = "{" ++ intercalate "," (map go $ M.assocs m) ++ "}"
     where
       go (x,p) = pp x ++ " = " ++ pp p
 
@@ -170,3 +175,60 @@ unbindEnv x (Env m) = Env (M.delete x m)
 
 allEnv :: (p -> Bool) -> Env v p -> Bool
 allEnv p (Env m) = all p m
+
+-- rebindEnv m x y = m[x/y]
+rebindEnv :: (Ord v) => Env v p -> v -> v -> Env v p
+rebindEnv m x y =
+  case lookupEnv y m of
+    Nothing -> m
+    Just p -> bindEnv x p (unbindEnv y m)
+
+data MaximalPrefix =
+      LitMP Lit
+    | EpsMP
+    | CatMP MaximalPrefix MaximalPrefix
+    | SumMPA MaximalPrefix
+    | SumMPB MaximalPrefix
+    | StMP [MaximalPrefix]
+    deriving (Eq, Ord, Show)
+
+maximalDemote :: MaximalPrefix -> Prefix
+maximalDemote (LitMP l) = LitPFull l
+maximalDemote EpsMP = EpsP
+maximalDemote (CatMP p1 p2) = CatPB (maximalDemote p1) (maximalDemote p2)
+maximalDemote (SumMPA p) = SumPA (maximalDemote p)
+maximalDemote (SumMPB p) = SumPB (maximalDemote p)
+maximalDemote (StMP ps) = go ps
+  where
+    go [] = StpDone
+    go (p:ps') = StpB (maximalDemote p) (go ps')
+
+instance PrettyPrint MaximalPrefix where
+  pp (LitMP l) = pp l
+  pp EpsMP = "()"
+  pp (CatMP p1 p2) = "(" ++ pp p1 ++ ";" ++ pp p2 ++ ")"
+  pp (SumMPA p) = "inl " ++ pp p
+  pp (SumMPB p) = "inr " ++ pp p
+  pp (StMP p) = "[" ++ intercalate ";" (map pp p) ++ "]"
+
+maximalLift :: Prefix -> Maybe MaximalPrefix
+maximalLift LitPEmp = Nothing
+maximalLift (LitPFull l) = return (LitMP l)
+maximalLift EpsP = return EpsMP
+maximalLift (CatPA _) = Nothing
+maximalLift (CatPB p1 p2) = do
+  p1' <- maximalLift p1
+  p2' <- maximalLift p2
+  return (CatMP p1' p2')
+maximalLift SumPEmp = Nothing
+maximalLift (SumPA p) = SumMPA <$> maximalLift p
+maximalLift (SumPB p) = SumMPB <$> maximalLift p
+maximalLift StpEmp = Nothing
+maximalLift StpDone = return (StMP [])
+maximalLift (StpA _) = Nothing
+maximalLift (StpB p1 p2) = do
+  p1' <- maximalLift p1
+  p2' <- maximalLift p2
+  case p2' of
+    StMP ps -> return (StMP (p1' : ps))
+    _ -> Nothing

@@ -2,7 +2,7 @@
 module Semantics where
 
 import CoreSyntax
-    ( Term(..), Program, FunDef(..), RunCmd(..), substVar, sinkTm, cut)
+    ( Term(..), Program, FunDef(..), RunCmd(..), substVar, sinkTm, cut, maximalPrefixSubst)
 import qualified Data.Map as M
 import Control.Monad.Reader
     ( Monad(return), sequence, MonadReader(ask, local), ReaderT (runReaderT), guard )
@@ -10,7 +10,7 @@ import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.Except ( ExceptT, runExceptT, MonadError(throwError) )
 import Prelude
 import Types (emptyPrefix, Ty (..), Ctx (..), ValueLike (..))
-import Values (Prefix (..), Env, isMaximal, bindAllEnv, bindEnv, bindAllEnv, lookupEnv, prefixConcat, concatEnv, emptyEnv, Lit (..))
+import Values (Prefix (..), Env, isMaximal, bindAllEnv, bindEnv, bindAllEnv, lookupEnv, prefixConcat, concatEnv, emptyEnv, Lit (..), maximalLift, MaximalPrefix, maximalDemote)
 import Data.Map (Map, unionWith)
 import Control.Applicative (Applicative(liftA2))
 import Control.Monad.State (runStateT, StateT, modify', gets, get, lift)
@@ -19,8 +19,8 @@ import Util.PrettyPrint (PrettyPrint (pp))
 import qualified Var (Var(..))
 import Frontend.Typecheck (doCheckCoreTm)
 import Test.HUnit
-import qualified Debug.Trace as Debug
 import Debug.Trace (trace)
+import qualified HistPgm as Hist
 
 data SemError =
       VarLookupFailed Var.Var
@@ -28,7 +28,9 @@ data SemError =
     | NotPlusPrefix Var.Var Prefix
     | ConcatError Prefix Prefix
     | RuntimeCutError Var.Var Term Term
-    | SinkError Var.Var Prefix
+    | SinkError Prefix
+    | MaximalPrefixSubstErr Var.Var Values.MaximalPrefix Term
+    | HistSemErr Hist.SemErr Hist.Term
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint SemError where
@@ -37,7 +39,9 @@ instance PrettyPrint SemError where
     pp (NotPlusPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a plus-prefix. Instead got: ",pp p]
     pp (ConcatError p p') = concat ["Tried to concatenate prefixes ", pp p," and ",pp p']
     pp (RuntimeCutError x e e') = concat ["Error occurred when trying to cut ",pp x," = ",pp e, " in ", pp e',". This is a bug."]
-    pp (SinkError x p) = concat ["Tried to build sink term for prefix ", pp p, "while substituting for ", pp x, ". This is a bug."]
+    pp (SinkError p) = concat ["Tried to build sink term for prefix ", pp p, ". This is a bug."]
+    pp (MaximalPrefixSubstErr x p e) = concat ["Failed to substitute prefix ", pp p," for ", pp x, " in term ", pp e]
+    pp (HistSemErr err he) = concat ["Encountered error while evaluating historical term ", pp he, ": ", pp err]
 
 class (MonadReader (Env Var.Var Prefix) m, MonadError SemError m) => EvalM m where
 
@@ -81,7 +85,7 @@ eval (TmCatL t x y z e) = do
         CatPB p1 p2 -> do
             (p',e') <- withEnv (bindAllEnv [(x,p1),(y,p2)]) (eval e)
             let e'' = substVar e' z y
-            sink <- reThrow (SinkError x) (sinkTm p1)
+            sink <- reThrow SinkError (sinkTm p1)
             e''' <- reThrow handleRuntimeCutError (cut x sink e'')
             return (p', e''')
         _ -> throwError (NotCatPrefix z p)
@@ -136,27 +140,24 @@ eval e@(TmStarCase m rho' r s z e1 x xs e2) = do
                 return (emptyPrefix r, TmStarCase m rho'' r s z e1 x xs e2)
             StpDone -> eval e1
             StpA p' -> do
-                !() <- trace ("Here!! With a term: "  ++ pp e ++ "\n\n") (return ())
                 (p'',e2') <- withEnv (bindAllEnv [(x,p'),(xs,StpEmp)]) (eval e2)
-                !() <- trace ("Stepped the body: "  ++ pp e2' ++ "\n\n") (return ())
                 return (p'', TmCatL (TyStar s) x xs z e2')
             StpB p1 p2 -> do
                 (p'',e2') <- withEnv (bindAllEnv [(x,p1),(xs,p2)]) (eval e2)
-                sink <- reThrow (SinkError x) (sinkTm p1)
+                sink <- reThrow SinkError (sinkTm p1)
                 e'' <- reThrow handleRuntimeCutError (cut x sink e2')
                 return (p'', substVar e'' z xs)
             _ -> throwError (NotPlusPrefix z p))
 
--- eval (TmCut x e1 e2) = do
---     (p,e1') <- eval e1
---     withEnv (bindEnv x p) $ do
---         (p',e2') <- eval e2
---         return (p',TmCut x e1' e2')
+eval (TmCut x e1 e2) = do
+    (p,e1') <- eval e1
+    withEnv (bindEnv x p) $ do
+        (p',e2') <- eval e2
+        return (p',TmCut x e1' e2')
 
 eval (TmFix args g s e) = do
     let e' = fixSubst g s e e
     e'' <- cutAll args e'
-    let !() = Debug.trace ("Unfolding recursion: " ++ pp e' ++ " with args " ++ pp args) ()
     eval e''
     where
         cutAll EmpCtx e = return e
@@ -166,6 +167,23 @@ eval (TmFix args g s e) = do
             cutAll g e'
 
 eval (TmRec _) = error "Impossible."
+
+eval (TmWait rho' r x e) =
+    withEnvM (reThrow (uncurry ConcatError) . concatEnv rho') $ do
+        p <- lookupVar x
+        case maximalLift p of
+            Just p' -> do
+                e' <- reThrow handlePrefixSubstError $ maximalPrefixSubst p' x e
+                eval e'
+            Nothing -> do
+                rho'' <- ask
+                return (emptyPrefix r, TmWait rho'' r x e)
+
+eval (TmHistPgm _ he) = do
+    mp <- reThrow (handleHistEvalErr he) (Hist.eval he)
+    let p = maximalDemote mp
+    e <- reThrow SinkError (sinkTm p)
+    return (p,e)
 
 fixSubst g s e = go
     where
@@ -182,13 +200,21 @@ fixSubst g s e = go
         go (TmStarCase m rho r t z e1 y ys e2) = TmStarCase m rho r t z (go e1) y ys (go e2)
         go (TmFix {}) = error "Nested fix! Should be impossible."
         go (TmRec args) = TmFix args g s e
-        -- go (TmCut x e1 e2) = TmCut x (go e1) (go e2)
+        go (TmWait rho r x e') = TmWait rho r x (go e')
+        go (TmCut x e1 e2) = TmCut x (go e1) (go e2)
+        go (TmHistPgm t he) = TmHistPgm t he
 
 handleRuntimeCutError :: (Var.Var, Term, Term) -> SemError
 handleRuntimeCutError (x,e,e') = RuntimeCutError x e e'
 
-type TopLevel = M.Map String (Term, Ctx Var.Var Ty, Ty)
+handlePrefixSubstError :: (Var.Var,Values.MaximalPrefix, Term) -> SemError
+handlePrefixSubstError (x,p,e) = MaximalPrefixSubstErr x p e
 
+
+handleHistEvalErr :: Hist.Term -> Hist.SemErr -> SemError
+handleHistEvalErr e err = HistSemErr err e
+
+type TopLevel = M.Map String (Term, Ctx Var.Var Ty, Ty)
 
 doRunPgm :: Program -> IO ()
 doRunPgm p = do
@@ -202,8 +228,8 @@ doRunPgm p = do
             case M.lookup f tl of
                 Just (e,g,s) -> case runIdentity $ runExceptT $ runReaderT (eval e) rho of
                                     Right (p',e') -> do
-                                        lift (putStrLn $ "Result of executing " ++ f ++ ": " ++ pp p' ++ "\n\n")
-                                        lift (putStrLn $ "Final core term: " ++  pp e' ++ "\n\n")
+                                        lift (putStrLn $ "Result of executing " ++ f ++ ": " ++ pp p')
+                                        lift (putStrLn $ "Final core term: " ++  pp e' ++ "\n")
                                         () <- hasTypeB p' s >>= guard
                                         g' <- doDeriv rho g
                                         s' <- doDeriv p' s
