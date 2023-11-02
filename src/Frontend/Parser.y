@@ -5,6 +5,7 @@ import Values ( Lit(..))
 import Var(Var(..))
 import Types
 import Data.Char ( isDigit, isAlpha, isSpace )
+import qualified HistPgm as Hist
 
 }
 
@@ -26,6 +27,7 @@ import Data.Char ( isDigit, isAlpha, isSpace )
       inl             { TokenInl }
       inr             { TokenInr }
       fun             { TokenFun }
+      end             { TokenEnd }
       bool            { TokenBool $$ }
       int             { TokenInt $$ }
       var             { TokenVar (Var.Var $$) }
@@ -38,10 +40,12 @@ import Data.Char ( isDigit, isAlpha, isSpace )
       rec             { TokenRec }
       do              { TokenDo }
       '='             { TokenEq }
-      '('             { TokenOB }
-      ')'             { TokenCB }
+      '('             { TokenOP }
+      ')'             { TokenCP }
       '['             { TokenOS }
       ']'             { TokenCS }
+      '{'             { TokenOC }
+      '}'             { TokenCC }
       ','             { TokenComma }
       ';'             { TokenSemic }
       ':'             { TokenColon }
@@ -52,6 +56,10 @@ import Data.Char ( isDigit, isAlpha, isSpace )
       '.'             { TokenDot }
       '+'             { TokenPlus }
       '*'             { TokenStar }
+      '-'             { TokenDash }
+      '/'             { TokenSlash }
+      '||'            { TokenPipes }
+      '&&'            { TokenAmps }
 
 %%
 
@@ -61,12 +69,11 @@ WildVar : '_'     { Nothing }
         | Var     { Just $1 }
 
 Exp   : let '(' WildVar ';' WildVar ')' '=' Exp in Exp             { TmCatL $3 $5 $8 $10 }
-      | '(' Exp ';' Exp ')'                                        { TmCatR $2 $4 }
       | inl Exp1                                                   { TmInl $2 }
       | inr Exp1                                                   { TmInr $2 }
       | case Exp of inl WildVar '=>' Exp '|' inr WildVar '=>' Exp  { TmPlusCase $2 $5 $7 $10 $12}
       | case Exp of nil '=>' Exp '|' WildVar '::' WildVar '=>' Exp { TmStarCase $2 $6 $8 $10 $12}
-      | wait VarList do Exp                                        { TmWait $2 $4 }
+      | wait VarList do Exp end                                    { TmWait $2 $4 }
       | Exp1 '::' Exp                                              { TmCons $1 $3 }
       | Exp1                                                       { $1 }
 
@@ -76,7 +83,29 @@ Exp1  : int                                                       { TmLitR (LInt
       | nil                                                       { TmNil }
       | Var                                                       { TmVar $1 }
       | rec '(' Args ')'                                          { TmRec $3 }
+      | '(' Exp ';' Exp ')'                                       { TmCatR $2 $4 }
       | '(' Exp ')'                                               { $2 }
+      | '{' HistPgm '}'                                           { TmHistPgm $2 }
+
+HistPgm     : HP1 '+' HP1                                         { Hist.TmBinOp Hist.Add $1 $3 }
+            | HP1 '-' HP1                                         { Hist.TmBinOp Hist.Sub $1 $3 }
+            | HP1 '||' HP1                                        { Hist.TmBinOp Hist.Or $1 $3 }
+            | HP1 '::' HP1                                        { Hist.TmCons $1 $3 }
+            | inl HP1                                             { Hist.TmInl $2 }
+            | inr HP1                                             { Hist.TmInr $2 }
+            | HP1                                                 { $1 }
+
+HP1         : HP2 '*' HP2                                         { Hist.TmBinOp Hist.Mul $1 $3 }
+            | HP2 '/' HP2                                         { Hist.TmBinOp Hist.Div $1 $3 }
+            | HP2                                                 { $1 }
+
+HP2         : int                                                 { Hist.TmLit (LInt $1) }
+            | bool                                                { Hist.TmLit (LBool $1) }
+            | nil                                                 { Hist.TmNil }
+            | '('')'                                              { Hist.TmEps }
+            | Var                                                 { Hist.TmVar $1 }
+            | '(' HistPgm ')'                                     { $2 }
+            | '(' HistPgm ',' HistPgm ')'                         { Hist.TmPair $2 $4 }
 
 Args  : {- empty -}                                               { [] }
       | Exp                                                       { [$1] }
@@ -97,6 +126,7 @@ Ty3   : tyInt                                                     { TyInt }
       | '(' Ty ')'                                                { $2 }
 
 VarList : {-empty-}                                               { [] }
+        | Var                                                     { [$1] }
         | Var ',' VarList                                         { $1 : $3 }
 
 FunDef      : fun var '(' Params ')' ':' Ty '=' Exp                      { FD $2 $4 $7 $9 }
@@ -155,17 +185,24 @@ data Token
       | TokenArr
       | TokenWild
       | TokenPipe
-      | TokenOB
-      | TokenCB
+      | TokenOP
+      | TokenCP
       | TokenOS
       | TokenCS
+      | TokenOC
+      | TokenCC
       | TokenDot
       | TokenStar
+      | TokenDash
+      | TokenSlash
       | TokenEmp
+      | TokenAmps
+      | TokenPipes
       | TokenExec
       | TokenDo
       | TokenWait
       | TokenPlus
+      | TokenEnd
       | TokenTyInt
       | TokenTyBool
       | TokenTyEps
@@ -177,19 +214,25 @@ lexer (c:cs)
       | isSpace c = lexer cs
       | isAlpha c = lexVar (c:cs)
       | isDigit c = lexNum (c:cs)
+lexer ('|':'|':cs) = TokenPipes : lexer cs
+lexer ('&':'&':cs) = TokenAmps : lexer cs
 lexer ('=':'>':cs) = TokenArr : lexer cs
 lexer (':':':':cs) = TokenCons : lexer cs
 lexer ('=':cs) = TokenEq : lexer cs
 lexer (',':cs) = TokenComma : lexer cs
 lexer ('.':cs) = TokenDot : lexer cs
 lexer ('+':cs) = TokenPlus : lexer cs
+lexer ('-':cs) = TokenDash : lexer cs
+lexer ('/':cs) = TokenSlash : lexer cs
 lexer (';':cs) = TokenSemic : lexer cs
 lexer (':':cs) = TokenColon : lexer cs
 lexer ('_':cs) = TokenWild : lexer cs
-lexer ('(':cs) = TokenOB : lexer cs
-lexer (')':cs) = TokenCB : lexer cs
+lexer ('(':cs) = TokenOP : lexer cs
+lexer (')':cs) = TokenCP : lexer cs
 lexer ('[':cs) = TokenOS : lexer cs
 lexer (']':cs) = TokenCS : lexer cs
+lexer ('{':cs) = TokenOC : lexer cs
+lexer ('}':cs) = TokenCC : lexer cs
 lexer ('|':cs) = TokenPipe : lexer cs
 lexer ('*':cs) = TokenStar : lexer cs
 
@@ -208,6 +251,7 @@ lexVar cs =
       ("nil",rest)  -> TokenNil : lexer rest
       ("fun",rest)  -> TokenFun : lexer rest
       ("emp",rest)  -> TokenEmp : lexer rest
+      ("end",rest)  -> TokenEnd : lexer rest
       ("rec",rest)  -> TokenRec : lexer rest
       ("wait",rest)  -> TokenWait : lexer rest
       ("do",rest)  -> TokenDo : lexer rest

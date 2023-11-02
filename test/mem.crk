@@ -3,7 +3,10 @@ fun bar (x : Int; ys : Int*) : Int* =
       nil => x :: nil
     | u::us => u :: rec(x;us)
 
+exec bar (x = emp; y = emp)
 exec bar (x = 3; ys = emp)
 exec bar (x = 3; ys = [emp])
 exec bar (x = 3; ys = [4;emp])
+exec bar (x = 3; ys = [4;])
 exec bar (x = 3; ys = [4;5])
+

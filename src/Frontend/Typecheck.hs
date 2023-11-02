@@ -12,7 +12,7 @@ import qualified Frontend.ElabSyntax as Elab
 import qualified CoreSyntax as Core
 import Control.Monad.Except (MonadError (throwError), runExceptT, ExceptT)
 import Types (Ctx (..), Ty(..), ctxBindings, ctxVars, emptyPrefix, ctxAssoc, deriv, ValueLikeErr (IllTyped), ValueLike (hasType), ctxMap)
-import Control.Monad.Reader (MonadReader (ask, local), asks, ReaderT (runReaderT))
+import Control.Monad.Reader (MonadReader (ask, local), asks, ReaderT (runReaderT), withReaderT)
 import Var (Var (Var))
 import Values (Lit(..), Env, Prefix (..), emptyEnv, bindEnv, isMaximal, isEmpty, allEnv, unionDisjointEnv)
 import qualified Data.Map as M
@@ -27,6 +27,7 @@ import Control.Monad (when)
 import Test.HUnit
 import Data.Bifunctor
 import Debug.Trace (trace)
+import qualified HistPgm as Hist
 
 data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
@@ -49,6 +50,7 @@ data TckErr t = VarNotFound Var t
             | UnsaturatedRecursiveCall Int Elab.Term
             | HasTypeErr (Env Var.Var Prefix) (M.Map Var.Var Ty)
             | NonMatchingRecursiveArgs (Ctx Var Ty) (Ctx Var t)
+            | HistTckErr t Hist.TckErr
 
 instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (VarNotFound (Var x) e) = concat ["Variable ",x," not found in term ", pp e]
@@ -74,10 +76,11 @@ instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (UnsaturatedRecursiveCall n e) = concat ["Expected ", show n, " argments to recursive call ", pp e]
     pp (HasTypeErr rho m) = concat ["Environment ",pp rho," does not hav expected types ", pp m]
     pp (NonMatchingRecursiveArgs g g') = concat ["Recursive arguments ", pp g', " do not match context ", pp g]
+    pp (HistTckErr he err) = concat ["Error while checking historical program ", pp he, ": ", pp err]
 
 data RecSig = Rec (Ctx Var Ty) Ty
 
-data TckCtx = TckCtx { mp :: M.Map Var.Var Ty, rs :: RecSig, hc :: M.Map Var Ty }
+data TckCtx = TckCtx { mp :: M.Map Var.Var Ty, rs :: RecSig, histCtx :: M.Map Var Ty }
 
 emptyEnvOfType :: TckCtx -> Env Var Prefix
 emptyEnvOfType (TckCtx m _ _) = M.foldrWithKey (\x t -> bindEnv x (emptyPrefix t)) emptyEnv m
@@ -113,16 +116,16 @@ lookupTyStar e x = do
         _ -> throwError (ExpectedTyStar x s' e)
 
 withUnbind :: (TckM t m) => Var -> m a -> m a
-withUnbind x = local (\t -> TckCtx (M.delete x (mp t)) (rs t) (hc t))
+withUnbind x = local (\t -> TckCtx (M.delete x (mp t)) (rs t) (histCtx t))
 
 withBind :: (TckM t m) => Var -> Ty -> m a -> m a
-withBind x s = local (\t -> TckCtx (M.insert x s (mp t)) (rs t) (hc t))
+withBind x s = local (\t -> TckCtx (M.insert x s (mp t)) (rs t) (histCtx t))
 
 withBindAll :: (TckM t m) => [(Var,Ty)] -> m a -> m a
-withBindAll xs = local $ \t -> TckCtx (foldr (\(x,s) -> (M.insert x s .)) id xs (mp t)) (rs t) (hc t)
+withBindAll xs = local $ \t -> TckCtx (foldr (\(x,s) -> (M.insert x s .)) id xs (mp t)) (rs t) (histCtx t)
 
 withRecSig :: (TckM t m) => Ctx Var Ty -> Ty -> m a -> m a
-withRecSig g s = local $ \t -> TckCtx (mp t) (Rec g s) (hc t)
+withRecSig g s = local $ \t -> TckCtx (mp t) (Rec g s) (histCtx t)
 
 withCtxDeriv :: (TckM t m) => Env Var Prefix -> m a -> m a
 withCtxDeriv rho m = do
@@ -134,7 +137,7 @@ withCtx :: (TckM t m) => M.Map Var Ty -> m a -> m a
 withCtx m = local (\(TckCtx _ rs hc) -> TckCtx m rs hc)
 
 withBindHist :: (TckM t m) => Var -> Ty -> m a -> m a
-withBindHist x s = local (\t -> TckCtx (mp t) (rs t) (M.insert x s (hc t)))
+withBindHist x s = local (\t -> TckCtx (mp t) (rs t) (M.insert x s (histCtx t)))
 
 handleHasTypeErr :: Types.ValueLikeErr (Env Var Prefix) (M.Map Var Ty) -> TckErr t
 handleHasTypeErr (IllTyped rho m) = HasTypeErr rho m
@@ -160,6 +163,13 @@ data CheckElabResult = CR { cusages :: P.Partial Var, ctm :: Core.Term }
 
 promoteResult :: Ty -> CheckElabResult -> InferElabResult
 promoteResult t (CR p e) = IR t p e
+
+liftHistCheck :: (TckM t m') => t -> ReaderT (M.Map Var Ty) (ExceptT Hist.TckErr Identity) a -> m' a
+liftHistCheck e m = do
+    ma <- asks ((runIdentity . runExceptT . runReaderT m) . histCtx)
+    case ma of
+        Left err -> throwError (HistTckErr e err)
+        Right a -> return a
 
 checkElab :: (TckM Elab.Term m) => Ty -> Elab.Term -> m CheckElabResult
 checkElab TyInt (Elab.TmLitR l@(LInt _)) = return $ CR P.empty (Core.TmLitR l)
@@ -226,9 +236,16 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
     s <- lookupTyStar e z
     CR p1 e1' <- withUnbind z (checkElab r e1)
     CR p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkElab r e2)
+    () <- trace ("p1: " ++ show p1) (return ())
+    () <- trace ("p2: " ++ show p2) (return ())
     guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    () <- trace ("p': " ++ show p') (return ())
+    () <- trace ("z = " ++ show z) (return ())
+    () <- trace ("x = " ++ show x) (return ())
+    () <- trace ("xs = " ++ show xs) (return ())
     p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
+    () <- trace ("p'': " ++ show p'') (return ())
     rho <- asks emptyEnvOfType
     m <- asks mp
     return $ CR p'' (Core.TmStarCase m rho r s z e1' x xs e2')
@@ -256,7 +273,10 @@ checkElab r e@(Elab.TmWait x e') = do
     CR p e'' <- withBindHist x s $ withUnbind x $ checkElab r e'
     return (CR p (Core.TmWait rho r x e''))
 
-checkElab r e@(Elab.TmHistPgm he) = undefined
+checkElab r e@(Elab.TmHistPgm he) = do
+    () <- liftHistCheck e (Hist.check he r)
+    return (CR P.empty (Core.TmHistPgm r he))
+
 
 -- Given a context and a list of inferred terms, return the "context" mapping variables to terms.
 elabRec :: (TckM Elab.Term m) => Ctx Var Ty -> [InferElabResult] -> m ([InferElabResult],(P.Partial Var,Ctx Var Core.Term))
@@ -355,7 +375,9 @@ inferElab e@(Elab.TmWait x e') = do
     IR t p e'' <- withBindHist x s $ withUnbind x $ inferElab e'
     return (IR t p (Core.TmWait rho t x e''))
 
-inferElab e@(Elab.TmHistPgm he) = undefined
+inferElab e@(Elab.TmHistPgm he) = do
+    r <- liftHistCheck e (Hist.infer he)
+    return (IR r P.empty (Core.TmHistPgm r he))
 
 
 checkCore :: (TckM Core.Term m) => Ty -> Core.Term -> m (P.Partial Var.Var)
@@ -449,7 +471,10 @@ checkCore r e@(Core.TmWait _ r' x e') = do
     s <- lookupTy e x
     withBindHist x s $ withUnbind x $ checkCore r e'
 
-checkCore r e@(Core.TmHistPgm s he) = undefined
+checkCore r e@(Core.TmHistPgm r' he) = do
+    when (r /= r') $ throwError (ListedTypeError r' r e)
+    () <- liftHistCheck e (Hist.check he r)
+    return P.empty
 
 
 inferCore :: (TckM Core.Term m) => Core.Term -> m (Ty,P.Partial Var.Var)
@@ -532,7 +557,9 @@ inferCore e@(Core.TmWait _ r x e') = do
     p <- withBindHist x s $ withUnbind x $ checkCore r e'
     return (r,p)
 
-inferCore e@(Core.TmHistPgm s he) = undefined
+inferCore e@(Core.TmHistPgm s he) = do
+    () <- liftHistCheck e (Hist.check he s)
+    return (s,P.empty)
 
 checkRec :: (TckM Core.Term m) => Ctx Var Ty -> Ctx Var Core.Term -> m (P.Partial Var)
 checkRec g g' = go g g'
@@ -637,7 +664,7 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
         go (Right (Elab.RC f p)) = do
             fi <- get -- Get the current file information
             case M.lookup f fi of
-                Nothing -> error ""
+                Nothing -> error $ "Function " ++ f ++ " not defined."
                 Just (g,_) -> do
                     mps <- lift (runExceptT (checkUntypedPrefixCtx g p))
                     case mps of
