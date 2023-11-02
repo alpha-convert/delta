@@ -1,0 +1,7 @@
+fun filter(xs : (Int + Bool)*) : Int* =
+  case xs of
+    nil => nil
+  | y::ys => (case y of inl u => u :: rec(ys) | inr _ => rec(ys))
+
+exec filter(xs = [])
+exec filter(xs = [emp;2])
