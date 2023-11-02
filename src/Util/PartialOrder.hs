@@ -102,7 +102,7 @@ union (Partial p1) (Partial p2) =
 concat :: (Ord a, Monad m) => Partial a -> Partial a -> ExceptT (a, a) m (Partial a)
 concat p1 p2 = do
   p12 <- p1 `union` p2
-  union p12 . Partial $ Set.cartesianProduct (set p1) (set p2)
+  p12 `union` Partial (Set.cartesianProduct (set p1) (set p2))
 
 subst :: (Eq a, Ord b, Monad m) => (a -> Partial b) -> Partial a -> ExceptT (b,b) m (Partial b)
 subst f (Partial p) = foldM g (Partial (Set.fromList [])) p
@@ -112,10 +112,10 @@ subst f (Partial p) = foldM g (Partial (Set.fromList [])) p
       | otherwise = concat (f x) (f y) >>= union acc
 
 -- p[p'/x] = substSing p p' x
-substSing :: (Ord a, Monad m) => Partial a -> Partial a -> a -> ExceptT (a,a) m (Partial a)
-substSing p p' x = subst (\u -> if u == x then p' else singleton x) p
+substSing :: (Show a, Ord a, Monad m) => Partial a -> Partial a -> a -> ExceptT (a,a) m (Partial a)
+substSing p p' x = subst (\u -> if u == x then p' else singleton u) p
 
-substSingAll :: (Ord a, Monad m) => Partial a -> [(Partial a, a)] -> ExceptT (a,a) m (Partial a)
+substSingAll :: (Show a, Ord a, Monad m) => Partial a -> [(Partial a, a)] -> ExceptT (a,a) m (Partial a)
 substSingAll = foldM (\p (p',x) -> substSing p p' x)
 
 subOrder :: (Ord a) => Partial a -> Partial a -> Maybe (Partial a)
