@@ -1,0 +1,6 @@
+fun parsepairs(xs : Int*) : (Int . Int)* =
+    case xs of
+      nil => nil
+    | y :: ys => case ys of
+                   nil => nil
+                 | z :: zs => (y;z) :: rec(zs)
