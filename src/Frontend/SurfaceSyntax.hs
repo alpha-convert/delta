@@ -33,9 +33,12 @@ data UntypedPrefix =
     | LitP Lit
     | CatPA UntypedPrefix
     | CatPB UntypedPrefix UntypedPrefix
+    | ParP UntypedPrefix UntypedPrefix
     | SumPA UntypedPrefix
     | SumPB UntypedPrefix
-    | Stp [UntypedPrefix]
+    | StpA UntypedPrefix
+    | StpB UntypedPrefix UntypedPrefix
+    | StpDone
     deriving (Eq, Ord, Show)
 
 data Cmd =

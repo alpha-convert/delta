@@ -26,6 +26,7 @@ import GHC.IO.Handle.Types (Handle__(Handle__))
 data SemError =
       VarLookupFailed Var.Var
     | NotCatPrefix Var.Var Prefix
+    | NotParPrefix Var.Var Prefix
     | NotPlusPrefix Var.Var Prefix
     | ConcatError Prefix Prefix
     | RuntimeCutError Var.Var Term Term
@@ -37,6 +38,7 @@ data SemError =
 instance PrettyPrint SemError where
     pp (VarLookupFailed (Var.Var x)) = concat ["Variable ",x," is unbound. This is a compiler bug."]
     pp (NotCatPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a cat-prefix. Instead got: ",pp p]
+    pp (NotParPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a par-prefix. Instead got: ",pp p]
     pp (NotPlusPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a plus-prefix. Instead got: ",pp p]
     pp (ConcatError p p') = concat ["Tried to concatenate prefixes ", pp p," and ",pp p']
     pp (RuntimeCutError x e e') = concat ["Error occurred when trying to cut ",pp x," = ",pp e, " in ", pp e',". This is a bug."]
@@ -99,6 +101,19 @@ eval (TmCatR e1 e2) = do
         (p',e2') <- eval e2
         return (CatPB p p',e2')
 
+eval (TmParL x y z e) = do
+    p <- lookupVar z
+    case p of
+        ParP p1 p2 -> do
+            (p',e') <- withEnv (bindAllEnv [(x,p1),(y,p2)]) (eval e)
+            return (p', TmParL x y z e')
+        _ -> throwError (NotParPrefix z p)
+
+eval (TmParR e1 e2) = do
+    (p,e1') <- eval e1
+    (p',e2') <- eval e2
+    return (ParP p p', TmParR e1' e2')
+
 eval (TmInl e) = do
     (p,e') <- eval e
     return (SumPA p, e')
@@ -133,10 +148,6 @@ eval (TmCons e1 e2) = do
         return (StpB p p',e2')
 
 eval e@(TmStarCase m rho' r s z e1 x xs e2) = do
-    () <- trace ("Term: " ++ pp e) (return ())
-    () <- trace ("rho': " ++ pp rho') (return ())
-    rho <- ask
-    () <- trace ("rho: " ++ pp rho) (return ())
     withEnvM (reThrow (uncurry ConcatError) . concatEnv rho') $ do
         p <- lookupVar z
         (case p of
@@ -198,6 +209,8 @@ fixSubst g s e = go
         go (TmVar x) = TmVar x
         go (TmCatL t x y z e') = TmCatL t x y z (go e')
         go (TmCatR e1 e2) = TmCatR (go e1) (go e2)
+        go (TmParL x y z e') = TmParL x y z (go e')
+        go (TmParR e1 e2) = TmParR (go e1) (go e2)
         go (TmInl e') = TmInl (go e')
         go (TmInr e') = TmInr (go e')
         go (TmPlusCase m rho r z x e1 y e2) = TmPlusCase m rho r z x (go e1) y (go e2)

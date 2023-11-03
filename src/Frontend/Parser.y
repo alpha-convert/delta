@@ -137,16 +137,18 @@ Params  : {-empty-}                                                 { EmpCtx }
 
 Pfx   : '(' Pfx ';' ')'                                           { CatPA $2 }
       | '(' Pfx ';' Pfx ')'                                       { CatPB $2 $4 }
+      | '(' Pfx ',' Pfx ')'                                       { ParP $2 $4 }
       | emp                                                       { EmpP }
       | inl '(' Pfx ')'                                           { SumPA $3 }
       | inr '(' Pfx ')'                                           { SumPB $3 }
       | int                                                       { LitP (LInt $1) }
       | bool                                                      { LitP (LBool $1) }
-      | '[' Stp ']'                                               { Stp $2 }
+      | '[' Stp                                                   { $2 }
 
-Stp   : {-empty-}                                                 { [] }
-      | Pfx                                                       { [$1] }
-      | Pfx ';' Stp                                               { $1 : $3 }
+Stp   : ']'                                                       { StpDone }
+      | Pfx ')'                                                   { StpA $1 }
+      | Pfx ']'                                                   { StpB $1 StpDone }
+      | Pfx ';' Stp                                               { StpB $1 $3 }
 
 Bindings : {- empty -}                                            { [] }
           | Pfx                                                   { [$1] }

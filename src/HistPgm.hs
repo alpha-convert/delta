@@ -245,6 +245,7 @@ maximalPrefixToTerm :: MaximalPrefix -> Term
 maximalPrefixToTerm EpsMP = TmEps
 maximalPrefixToTerm (LitMP l) = TmLit l
 maximalPrefixToTerm (CatMP p1 p2) = TmPair (maximalPrefixToTerm p1) (maximalPrefixToTerm p2)
+maximalPrefixToTerm (ParMP p1 p2) = TmPair (maximalPrefixToTerm p1) (maximalPrefixToTerm p2)
 maximalPrefixToTerm (SumMPA p) = TmInl (maximalPrefixToTerm p)
 maximalPrefixToTerm (SumMPB p) = TmInr (maximalPrefixToTerm p)
 maximalPrefixToTerm (StMP ps) = go ps

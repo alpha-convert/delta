@@ -40,6 +40,7 @@ data Prefix =
     | EpsP
     | CatPA Prefix
     | CatPB Prefix Prefix
+    | ParP Prefix Prefix
     | SumPEmp
     | SumPA Prefix
     | SumPB Prefix
@@ -55,6 +56,7 @@ instance PrettyPrint Prefix where
   pp EpsP = "epsemp"
   pp (CatPA p) = concat ["(",pp p,";)"]
   pp (CatPB p p') = concat ["(",pp p,";",pp p',")"]
+  pp (ParP p p') = concat ["(",pp p,",", pp p',")"]
   pp SumPEmp = "sumemp"
   pp (SumPA p) = concat ["inl(",pp p,")"]
   pp (SumPB p) = concat ["inr(",pp p,")"]
@@ -79,6 +81,12 @@ prefixConcat p@(CatPA _) p' = throwError (p,p')
 prefixConcat (CatPB p1 p2) p = do
     p2' <- prefixConcat p2 p
     return (CatPB p1 p2')
+prefixConcat (ParP p1 p2) (ParP p1' p2') = do 
+  p1'' <- prefixConcat p1 p1'
+  p2'' <- prefixConcat p2 p2'
+  return (ParP p1'' p2'')
+prefixConcat p@(ParP {}) p' = throwError (p,p')
+
 prefixConcat SumPEmp SumPEmp = return SumPEmp
 prefixConcat SumPEmp (SumPA p) = return (SumPA p)
 prefixConcat SumPEmp (SumPB p) = return (SumPB p)
@@ -123,6 +131,7 @@ isMaximal (LitPFull _) = True
 isMaximal EpsP = True
 isMaximal (CatPA _) = False
 isMaximal (CatPB p p') = isMaximal p && isMaximal p'
+isMaximal (ParP p p') = isMaximal p && isMaximal p'
 isMaximal SumPEmp = False
 isMaximal (SumPA p) = isMaximal p
 isMaximal (SumPB p) = isMaximal p
@@ -137,6 +146,7 @@ isEmpty (LitPFull _) = False
 isEmpty EpsP = True
 isEmpty (CatPA p) = isEmpty p
 isEmpty (CatPB {}) = False
+isEmpty (ParP p p') = isEmpty p && isEmpty p'
 isEmpty SumPEmp = True
 isEmpty (SumPA _) = False
 isEmpty (SumPB _) = False
@@ -187,6 +197,7 @@ data MaximalPrefix =
       LitMP Lit
     | EpsMP
     | CatMP MaximalPrefix MaximalPrefix
+    | ParMP MaximalPrefix MaximalPrefix
     | SumMPA MaximalPrefix
     | SumMPB MaximalPrefix
     | StMP [MaximalPrefix]
@@ -196,6 +207,7 @@ maximalDemote :: MaximalPrefix -> Prefix
 maximalDemote (LitMP l) = LitPFull l
 maximalDemote EpsMP = EpsP
 maximalDemote (CatMP p1 p2) = CatPB (maximalDemote p1) (maximalDemote p2)
+maximalDemote (ParMP p1 p2) = ParP (maximalDemote p1) (maximalDemote p2)
 maximalDemote (SumMPA p) = SumPA (maximalDemote p)
 maximalDemote (SumMPB p) = SumPB (maximalDemote p)
 maximalDemote (StMP ps) = go ps
@@ -207,6 +219,7 @@ instance PrettyPrint MaximalPrefix where
   pp (LitMP l) = pp l
   pp EpsMP = "()"
   pp (CatMP p1 p2) = "(" ++ pp p1 ++ ";" ++ pp p2 ++ ")"
+  pp (ParMP p1 p2) = "(" ++ pp p1 ++ "," ++ pp p2 ++ ")"
   pp (SumMPA p) = "inl " ++ pp p
   pp (SumMPB p) = "inr " ++ pp p
   pp (StMP p) = "[" ++ intercalate ";" (map pp p) ++ "]"
@@ -220,6 +233,10 @@ maximalLift (CatPB p1 p2) = do
   p1' <- maximalLift p1
   p2' <- maximalLift p2
   return (CatMP p1' p2')
+maximalLift (ParP p1 p2) = do
+  p1' <- maximalLift p1
+  p2' <- maximalLift p2
+  return (ParMP p1' p2')
 maximalLift SumPEmp = Nothing
 maximalLift (SumPA p) = SumMPA <$> maximalLift p
 maximalLift (SumPB p) = SumMPB <$> maximalLift p

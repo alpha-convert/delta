@@ -10,13 +10,14 @@ import Control.Monad.IO.Class (MonadIO)
 import Control.Monad (foldM)
 import Data.Bifunctor (Bifunctor (..))
 
-data Ty = TyEps | TyInt | TyBool | TyCat Ty Ty | TyPlus Ty Ty | TyStar Ty deriving (Eq,Ord,Show)
+data Ty = TyEps | TyInt | TyBool | TyCat Ty Ty | TyPar Ty Ty | TyPlus Ty Ty | TyStar Ty deriving (Eq,Ord,Show)
 
 instance PrettyPrint Ty where
   pp TyEps = "Eps"
   pp TyInt = "Int"
   pp TyBool = "Bool"
   pp (TyCat s t) = concat ["(", pp s," . ", pp t, ")"]
+  pp (TyPar s t) = concat ["(", pp s," || ", pp t, ")"]
   pp (TyPlus s t) = concat ["(", pp s," + ", pp t, ")"]
   pp (TyStar s) = concat ["(", pp s,")*"]
 
@@ -68,6 +69,7 @@ instance TypeLike Ty where
   isNull (TyCat _ _) = False
   isNull (TyPlus _ _) = False
   isNull (TyStar _) = False
+  isNull (TyPar s t) = isNull s && isNull t
 
 instance TypeLike t => TypeLike (Ctx v t) where
   isNull EmpCtx = True
@@ -121,6 +123,12 @@ instance ValueLike Prefix Ty where
     if isMaximal p then return () else throwError (IllTyped (CatPB p p') (TyCat s t))
   hasType p@(CatPB _ _) t = throwError (IllTyped p t)
 
+  hasType (ParP p p') (TyPar s t) = do
+    () <- hasType p s
+    () <- hasType p' t
+    return ()
+  hasType p@(ParP {}) t = throwError (IllTyped p t)
+
   hasType SumPEmp (TyPlus _ _) = return ()
   hasType p@SumPEmp t = throwError (IllTyped p t)
 
@@ -163,6 +171,12 @@ instance ValueLike Prefix Ty where
 
   deriv (CatPB _ p') (TyCat _ t) = deriv p' t
   deriv p@(CatPB {}) t = throwError (IllTyped p t)
+
+  deriv (ParP p p') (TyPar s t) = do
+    s' <- deriv p s
+    t' <- deriv p' t
+    return (TyPar s' t')
+  deriv p@(ParP {}) t = throwError (IllTyped p t)
 
   deriv SumPEmp (TyPlus s t) = return (TyPlus s t)
   deriv p@SumPEmp t = throwError (IllTyped p t)
@@ -229,5 +243,6 @@ emptyPrefix TyInt = LitPEmp
 emptyPrefix TyBool = LitPEmp
 emptyPrefix TyEps = EpsP
 emptyPrefix (TyCat s _) = CatPA (emptyPrefix s)
+emptyPrefix (TyPar s t) = ParP (emptyPrefix s) (emptyPrefix t)
 emptyPrefix (TyPlus _ _) = SumPEmp
 emptyPrefix (TyStar _) = StpEmp

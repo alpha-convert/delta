@@ -25,6 +25,8 @@ data Term =
     | TmVar Var
     | TmCatL Ty Var Var Var Term
     | TmCatR Term Term
+    | TmParL Var Var Var Term
+    | TmParR Term Term
     | TmInl Term
     | TmInr Term
     | TmPlusCase (M.Map Var Ty) (Env Var Prefix) Ty Var Var Term Var Term
@@ -53,12 +55,14 @@ instance PrettyPrint Term where
             go _ TmEpsR = "sink"
             go _ (TmVar (Var x)) = x
             go _ (TmCatR e1 e2) = concat ["(",go False e1,";",go False e2,")"]
+            go _ (TmParR e1 e2) = concat ["(",go False e1,",",go False e2,")"]
             go _ TmNil = "nil"
             go _ (TmRec args) = "rec(" ++ pp args ++ ")"
             go _ (TmHistPgm _ he) = concat ["{", pp he, "}"]
             go True e = concat ["(", go False e, ")"]
-            go _ (TmFix _ _ _ e) = concat ["fix(",go False e,")"]
+            go _ (TmFix args _ _ e) = concat ["fix(",go False e,")[",pp args,"]"]
             go _ (TmCatL t (Var x) (Var y) (Var z) e) = concat ["let_{",pp t,"} (",x,";",y,") = ",z," in ",go False e]
+            go _ (TmParL (Var x) (Var y) (Var z) e) = concat ["let (",x,",",y,") = ",z," in ",go False e]
             go _ (TmInl e) = "inl " ++ go True e
             go _ (TmInr e) = "inl " ++ go True e
             go _ (TmPlusCase m rho _ (Var z) (Var x) e1 (Var y) e2) = concat ["case_",pp rho,"|",pp m," ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
@@ -82,6 +86,8 @@ substVar (TmVar x') _ _ = TmVar x'
 substVar (TmCatL t x' y' z e) x y | y == z = TmCatL t x' y' x (substVar e x y)
 substVar (TmCatL t x' y' z e) x y = TmCatL t x' y' z (substVar e x y) {- FIXME: ensure this doesn't capture!! -}
 substVar (TmCatR e1 e2) x y = TmCatR (substVar e1 x y) (substVar e2 x y)
+substVar (TmParL x' y' z e) x y = TmParL x' y' z (substVar e x y) {- FIXME: ensure this doesn't capture!! -}
+substVar (TmParR e1 e2) x y = TmParR (substVar e1 x y) (substVar e2 x y)
 substVar (TmInl e) x y = TmInl (substVar e x y)
 substVar (TmInr e) x y = TmInr (substVar e x y)
 substVar (TmPlusCase m rho r z x' e1 y' e2) x y | y == z = TmPlusCase m' rho' r x x' (substVar e1 x y) y' (substVar e2 x y)
@@ -181,6 +187,10 @@ sinkTm (LitPFull _) = return TmEpsR
 sinkTm EpsP = return TmEpsR
 sinkTm p@(CatPA _) = throwError p
 sinkTm (CatPB _ p) = sinkTm p
+sinkTm (ParP p1 p2) = do
+  e1 <- sinkTm p1
+  e2 <- sinkTm p2
+  return (undefined e1 e2)
 sinkTm p@SumPEmp = throwError p
 sinkTm (SumPA p) = sinkTm p
 sinkTm (SumPB p) = sinkTm p
@@ -193,6 +203,7 @@ maximalPrefixToTerm :: MaximalPrefix -> Term
 maximalPrefixToTerm EpsMP = TmEpsR
 maximalPrefixToTerm (LitMP l) = TmLitR l
 maximalPrefixToTerm (CatMP p1 p2) = TmCatR (maximalPrefixToTerm p1) (maximalPrefixToTerm p2)
+maximalPrefixToTerm (ParMP p1 p2) = undefined
 maximalPrefixToTerm (SumMPA p) = TmInl (maximalPrefixToTerm p)
 maximalPrefixToTerm (SumMPB p) = TmInr (maximalPrefixToTerm p)
 maximalPrefixToTerm (StMP ps) = go ps
@@ -216,6 +227,19 @@ maximalPrefixSubst p x (TmCatR e1 e2) = do
   e1' <- maximalPrefixSubst p x e1
   e2' <- maximalPrefixSubst p x e2
   return (TmCatR e1' e2')
+
+maximalPrefixSubst p x (TmParL x' y' z e') | x /= z = TmParL x' y' z <$> maximalPrefixSubst p x e'
+maximalPrefixSubst (ParMP p1 p2) _ (TmParL x' y' _ e') = do
+  e'' <- maximalPrefixSubst p1 x' e'
+  maximalPrefixSubst p2 y' e''
+maximalPrefixSubst p x e@(TmParL {}) = throwError (x,p,e)
+
+maximalPrefixSubst p x (TmParR e1 e2) = do
+  e1' <- maximalPrefixSubst p x e1
+  e2' <- maximalPrefixSubst p x e2
+  return (TmParR e1' e2')
+
+
 maximalPrefixSubst p x (TmInl e') = TmInl <$> maximalPrefixSubst p x e'
 maximalPrefixSubst p x (TmInr e') = TmInr <$> maximalPrefixSubst p x e'
 

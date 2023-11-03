@@ -26,13 +26,13 @@ import Util.PartialOrder (substSingAll)
 import Control.Monad (when)
 import Test.HUnit
 import Data.Bifunctor
-import Debug.Trace (trace)
 import qualified HistPgm as Hist
 
 data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
             | ReUse Var t
             | ExpectedTyCat Var Ty t
+            | ExpectedTyPar Var Ty t
             | ExpectedTyPlus Var Ty t
             | ExpectedTyStar Var Ty t
             | CheckTermInferPos t
@@ -41,6 +41,7 @@ data TckErr t = VarNotFound Var t
             | WrongTypeEpsR Ty
             | WrongTypeVar Var Ty Ty
             | WrongTypeCatR t t Ty
+            | WrongTypeParR t t Ty
             | WrongTypeInl t Ty
             | WrongTypeInr t Ty
             | WrongTypeNil Ty
@@ -57,6 +58,7 @@ instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (OutOfOrder (Var x) (Var y) e) = concat ["Variable ",y," came before ",x," in term ",pp e," but expected the other order."]
     pp (ReUse (Var x) e) = concat ["Variable ",x," was reused in disjoint branches of ", pp e]
     pp (ExpectedTyCat (Var x) t e) = concat ["Variable ",x," expected to be of concatenation type, but it has type ", pp t, " in term ", pp e]
+    pp (ExpectedTyPar (Var x) t e) = concat ["Variable ",x," expected to be of parallel type, but it has type ", pp t, " in term ", pp e]
     pp (ExpectedTyPlus (Var x) t e) = concat ["Variable ",x," expected to be of sum type, but it has type ", pp t, " in term ", pp e]
     pp (ExpectedTyStar (Var x) t e)= concat ["Variable ",x," expected to be of star type, but it has type ", pp t, " in term ", pp e]
     pp (CheckTermInferPos e) = concat ["The type of the term ",pp e," cannot be inferred"]
@@ -65,6 +67,7 @@ instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (WrongTypeEpsR t) = concat ["sink does not have type ", pp t]
     pp (WrongTypeVar (Var x) t s) = concat ["Variable ",x," has type ",pp s," but expected ", pp t]
     pp (WrongTypeCatR e1 e2 t) = concat ["Term (",pp e1,";",pp e2,") has concatenation type, but checking against ", pp t]
+    pp (WrongTypeParR e1 e2 t) = concat ["Term (",pp e1,",",pp e2,") has parallel type, but checking against ", pp t]
     pp (WrongTypeInl e t) = concat ["Term inl(", pp e,") has sum type, but checking against ", pp t]
     pp (WrongTypeInr e t) = concat ["Term inr(", pp e, ") has sum type, but checking against ", pp t]
     pp (WrongTypeNil t) = concat ["nil does not have type ", pp t]
@@ -100,6 +103,13 @@ lookupTyCat e x = do
     case s' of
         TyCat s t -> return (s,t)
         _ -> throwError (ExpectedTyCat x s' e)
+
+lookupTyPar :: (TckM t m) => t -> Var -> m (Ty, Ty)
+lookupTyPar e x = do
+    s' <- lookupTy e x
+    case s' of
+        TyPar s t -> return (s,t)
+        _ -> throwError (ExpectedTyPar x s' e)
 
 lookupTyPlus :: (TckM t m) => t -> Var -> m (Ty, Ty)
 lookupTyPlus e x = do
@@ -236,16 +246,9 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
     s <- lookupTyStar e z
     CR p1 e1' <- withUnbind z (checkElab r e1)
     CR p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkElab r e2)
-    () <- trace ("p1: " ++ show p1) (return ())
-    () <- trace ("p2: " ++ show p2) (return ())
     guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
-    () <- trace ("p': " ++ show p') (return ())
-    () <- trace ("z = " ++ show z) (return ())
-    () <- trace ("x = " ++ show x) (return ())
-    () <- trace ("xs = " ++ show xs) (return ())
     p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
-    () <- trace ("p'': " ++ show p'') (return ())
     rho <- asks emptyEnvOfType
     m <- asks mp
     return $ CR p'' (Core.TmStarCase m rho r s z e1' x xs e2')
@@ -408,6 +411,19 @@ checkCore (TyCat s t) e@(Core.TmCatR e1 e2) = do
     reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
 checkCore t (Core.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
 
+checkCore r e@(Core.TmParL x y z e') = do
+    (s,t) <- lookupTyPar e z
+    p <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkCore r e')
+    reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+
+checkCore (TyPar s t) e@(Core.TmParR e1 e2) = do
+    p1 <- checkCore s e1
+    p2 <- checkCore t e2
+    reThrow (handleOutOfOrder e) $ P.union p1 p2
+checkCore t (Core.TmParR e1 e2) = throwError (WrongTypeParR e1 e2 t)
+
+
+
 checkCore (TyPlus s _) (Core.TmInl e) = checkCore s e
 checkCore t (Core.TmInl e) = throwError (WrongTypeInl e t)
 
@@ -415,9 +431,7 @@ checkCore (TyPlus _ t) (Core.TmInr e) = checkCore t e
 checkCore t (Core.TmInr e) = throwError (WrongTypeInr e t)
 
 checkCore r e@(Core.TmPlusCase m rho r' z x e1 y e2) = do
-    !() <- trace ("Here :" ++ pp m ++ ", " ++ pp z) (return ())
     reThrow handleHasTypeErr (hasType rho m)
-    !() <- trace ("Here :" ++ pp m ++ ", " ++ pp z) (return ())
     withCtx m $ do
         (s,t) <- lookupTyPlus e z
         guard (r == r') (ListedTypeError r' r e)
@@ -498,7 +512,19 @@ inferCore e@(Core.TmCatR e1 e2) = do
     (s,p1) <- inferCore e1
     (t,p2) <- inferCore e2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
-    p'' <- reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
+    p'' <- reThrow (handleOutOfOrder e) $ P.concat p1 p2
+    return (TyCat s t,p'')
+
+inferCore e@(Core.TmParL x y z e') = do
+    (s,t) <- lookupTyPar e z
+    (r,p) <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferCore e')
+    p'' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    return (r,p'')
+
+inferCore e@(Core.TmParR e1 e2) = do
+    (s,p1) <- inferCore e1
+    (t,p2) <- inferCore e2
+    p'' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
     return (TyCat s t,p'')
 
 inferCore (Core.TmInl e) = undefined
@@ -592,6 +618,12 @@ checkUntypedPrefix (TyCat s t) (Surf.CatPB p1 p2) = do
     else throwError $ OrderIssue p1' p2'
 checkUntypedPrefix t@(TyCat {}) p = throwError $ WrongType t p
 
+checkUntypedPrefix (TyPar s t) (Surf.ParP p1 p2) = do
+    p1' <- checkUntypedPrefix s p1
+    p2' <- checkUntypedPrefix t p2
+    return (ParP p1' p2')
+checkUntypedPrefix t@(TyPar {}) p = throwError $ WrongType t p
+
 checkUntypedPrefix (TyPlus s _) (Surf.SumPA p) = do
     p' <- checkUntypedPrefix s p
     return (SumPA p')
@@ -600,7 +632,15 @@ checkUntypedPrefix (TyPlus _ t) (Surf.SumPB p) = do
     return (SumPB p')
 checkUntypedPrefix t@(TyPlus {}) p = throwError $ WrongType t p
 
-checkUntypedPrefix (TyStar s) (Surf.Stp ps) = checkUntypedStp s ps
+checkUntypedPrefix (TyStar _) Surf.StpDone = return StpDone
+checkUntypedPrefix (TyStar s) (Surf.StpA p) = do
+    p' <- checkUntypedPrefix s p
+    return (StpA p')
+checkUntypedPrefix (TyStar s) (Surf.StpB p1 p2) = do
+    p1' <- checkUntypedPrefix s p1
+    p2' <- checkUntypedPrefix (TyStar s) p2
+    if isMaximal p1' || isEmpty p2' then return (StpB p1' p2') else throwError (IllegalStp (StpB p1' p2'))
+
 checkUntypedPrefix t@(TyStar _) p = throwError $ WrongType t p
 
 checkUntypedStp :: (Monad m) => Ty -> [Surf.UntypedPrefix] -> ExceptT PrefixCheckErr m Prefix
