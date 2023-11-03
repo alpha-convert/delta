@@ -5,7 +5,7 @@ import CoreSyntax
     ( Term(..), Program, Cmd(..), substVar, sinkTm, cut, maximalPrefixSubst)
 import qualified Data.Map as M
 import Control.Monad.Reader
-    ( Monad(return), sequence, MonadReader(ask, local), ReaderT (runReaderT), guard )
+    ( Monad(return), sequence, MonadReader(ask, local), ReaderT (runReaderT), guard, asks )
 import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.Except ( ExceptT, runExceptT, MonadError(throwError) )
 import Prelude
@@ -87,8 +87,8 @@ eval (TmCatL t x y z e) = do
             (p',e') <- withEnv (bindAllEnv [(x,p1),(y,p2)]) (eval e)
             let e'' = substVar e' z y
             sink <- reThrow SinkError (sinkTm p1)
-            e''' <- reThrow handleRuntimeCutError (cut x sink e'')
-            return (p', e''')
+            -- e''' <- reThrow handleRuntimeCutError (cut x sink e'')
+            return (p', TmCut x sink e'')
         _ -> throwError (NotCatPrefix z p)
 
 eval (TmCatR e1 e2) = do
@@ -133,6 +133,10 @@ eval (TmCons e1 e2) = do
         return (StpB p p',e2')
 
 eval e@(TmStarCase m rho' r s z e1 x xs e2) = do
+    () <- trace ("Term: " ++ pp e) (return ())
+    () <- trace ("rho': " ++ pp rho') (return ())
+    rho <- ask
+    () <- trace ("rho: " ++ pp rho) (return ())
     withEnvM (reThrow (uncurry ConcatError) . concatEnv rho') $ do
         p <- lookupVar z
         (case p of
@@ -146,8 +150,8 @@ eval e@(TmStarCase m rho' r s z e1 x xs e2) = do
             StpB p1 p2 -> do
                 (p'',e2') <- withEnv (bindAllEnv [(x,p1),(xs,p2)]) (eval e2)
                 sink <- reThrow SinkError (sinkTm p1)
-                e'' <- reThrow handleRuntimeCutError (cut x sink e2')
-                return (p'', substVar e'' z xs)
+                -- e'' <- reThrow handleRuntimeCutError (cut x sink e2')
+                return (p'', substVar (TmCut x sink e2') z xs)
             _ -> throwError (NotPlusPrefix z p))
 
 eval (TmCut x e1 e2) = do
@@ -162,7 +166,8 @@ eval (TmFix args g s e) = do
     eval e''
     where
         cutAll EmpCtx e = return e
-        cutAll (SngCtx x e') e = reThrow handleRuntimeCutError (cut x e' e)
+        -- cutAll (SngCtx x e') e = reThrow handleRuntimeCutError (cut x e' e)
+        cutAll (SngCtx x e') e = return (TmCut x e' e)
         cutAll (SemicCtx g g') e = do
             e' <- cutAll g' e
             cutAll g e'
@@ -228,7 +233,7 @@ doRunPgm p = do
             (e,g,s) <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to e)xecute unbound function " ++ f)) return
             case runIdentity $ runExceptT $ runReaderT (eval e) rho of
                                     Right (p',e') -> do
-                                        lift (putStrLn $ "Result of executing " ++ f ++ ": " ++ pp p')
+                                        lift (putStrLn $ "Result of executing " ++ f ++ " on " ++ show rho ++ ": " ++ show p' ++ "\n")
                                         lift (putStrLn $ "Final core term: " ++  pp e' ++ "\n")
                                         () <- hasTypeB p' s >>= guard
                                         -- g' <- doDeriv rho g
@@ -240,7 +245,7 @@ doRunPgm p = do
             (e,g,s) <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to execute unbound function " ++ f)) return
             case runIdentity $ runExceptT $ runReaderT (eval e) rho of
                                     Right (p',e') -> do
-                                        lift (putStrLn $ "Result of executing " ++ f ++ ": " ++ pp p')
+                                        lift (putStrLn $ "Result of executing " ++ f ++ " on " ++ show rho ++ ": " ++ show p' ++ "\n")
                                         lift (putStrLn $ "Final core term (stepping): " ++  pp e' ++ "\n")
                                         () <- hasTypeB p' s >>= guard
                                         g' <- doDeriv rho g
