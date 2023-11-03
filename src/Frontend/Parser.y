@@ -69,6 +69,7 @@ WildVar : '_'     { Nothing }
         | Var     { Just $1 }
 
 Exp   : let '(' WildVar ';' WildVar ')' '=' Exp in Exp             { TmCatL $3 $5 $8 $10 }
+      | let '(' WildVar ',' WildVar ')' '=' Exp in Exp             { TmParL $3 $5 $8 $10 }
       | inl Exp1                                                   { TmInl $2 }
       | inr Exp1                                                   { TmInr $2 }
       | case Exp of inl WildVar '=>' Exp '|' inr WildVar '=>' Exp  { TmPlusCase $2 $5 $7 $10 $12}
@@ -84,6 +85,7 @@ Exp1  : int                                                       { TmLitR (LInt
       | Var                                                       { TmVar $1 }
       | rec '(' Args ')'                                          { TmRec $3 }
       | '(' Exp ';' Exp ')'                                       { TmCatR $2 $4 }
+      | '(' Exp ',' Exp ')'                                       { TmParR $2 $4 }
       | '(' Exp ')'                                               { $2 }
       | '{' HistPgm '}'                                           { TmHistPgm $2 }
 

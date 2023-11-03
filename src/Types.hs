@@ -21,12 +21,18 @@ instance PrettyPrint Ty where
   pp (TyPlus s t) = concat ["(", pp s," + ", pp t, ")"]
   pp (TyStar s) = concat ["(", pp s,")*"]
 
-data Ctx v t = EmpCtx | SngCtx v t | SemicCtx (Ctx v t) (Ctx v t) deriving (Eq,Ord,Show,Functor, Foldable, Traversable)
+data Ctx v t =
+    EmpCtx 
+  | SngCtx v t
+  | SemicCtx (Ctx v t) (Ctx v t)
+  | CommaCtx (Ctx v t) (Ctx v t)
+  deriving (Eq,Ord,Show,Functor, Foldable, Traversable)
 
 ctxMap :: (v -> t -> (v',t')) -> Ctx v t -> Ctx v' t'
 ctxMap _ EmpCtx = EmpCtx
 ctxMap f (SngCtx x y) = let (x',y') = f x y in SngCtx x' y'
 ctxMap f (SemicCtx g g') = SemicCtx (ctxMap f g) (ctxMap f g')
+ctxMap f (CommaCtx g g') = CommaCtx (ctxMap f g) (ctxMap f g')
 
 ctxFoldM :: (Monad m) => m a -> (v -> t -> m a) -> (a -> a -> m a) -> Ctx v t -> m a
 ctxFoldM x f g EmpCtx = x
@@ -35,11 +41,16 @@ ctxFoldM x f g (SemicCtx g1 g2) = do
   a1 <- ctxFoldM x f g g1
   a2 <- ctxFoldM x f g g2
   g a1 a2
+ctxFoldM x f g (CommaCtx g1 g2) = do
+  a1 <- ctxFoldM x f g g1
+  a2 <- ctxFoldM x f g g2
+  g a1 a2
 
 instance Bifunctor Ctx where
   bimap _ _ EmpCtx = EmpCtx
   bimap f g (SngCtx x t) = SngCtx (f x) (g t)
   bimap f g (SemicCtx l r) = SemicCtx (bimap f g l) (bimap f g r)
+  bimap f g (CommaCtx l r) = CommaCtx (bimap f g l) (bimap f g r)
 
 
 ctxBindings :: (Ord v) => Ctx v t -> M.Map v t
@@ -52,11 +63,13 @@ ctxAssoc :: Ctx v t -> [(v,t)]
 ctxAssoc EmpCtx = []
 ctxAssoc (SngCtx x s) = [(x,s)]
 ctxAssoc (SemicCtx g g') = ctxAssoc g ++ ctxAssoc g'
+ctxAssoc (CommaCtx g g') = ctxAssoc g ++ ctxAssoc g'
 
 instance (PrettyPrint v, PrettyPrint t) => PrettyPrint (Ctx v t) where
   pp EmpCtx = "(.)"
   pp (SngCtx v t) = concat ["[",pp v," : ", pp t,"]"]
   pp (SemicCtx g g') = concat ["(", pp g, " ; ", pp g', ")"]
+  pp (CommaCtx g g') = concat ["(", pp g, " , ", pp g', ")"]
 
 
 class TypeLike t where
@@ -75,6 +88,7 @@ instance TypeLike t => TypeLike (Ctx v t) where
   isNull EmpCtx = True
   isNull (SngCtx _ s) = isNull s
   isNull (SemicCtx g g') = isNull g && isNull g'
+  isNull (CommaCtx g g') = isNull g && isNull g'
 
 instance TypeLike t => TypeLike (M.Map v t) where
   isNull = all isNull
@@ -211,6 +225,7 @@ instance (Ord v, ValueLike Prefix Ty) => ValueLike (Env v Prefix) (Ctx v Ty) whe
                           Just p -> withExceptT (promotePrefixTypeErr x) (hasType p t)
       go (SemicCtx g g') = do
         go g >> go g' >> guard (all maximal (ctxVars g) || all empty (ctxVars g')) (IllTyped rho (SemicCtx g g'))
+      go (CommaCtx g g') = go g >> go g'
 
       maximal x = maybe False isMaximal (Values.lookupEnv x rho)
       empty x = maybe False isEmpty (Values.lookupEnv x rho)
@@ -220,6 +235,7 @@ instance (Ord v, ValueLike Prefix Ty) => ValueLike (Env v Prefix) (Ctx v Ty) whe
                                  Nothing -> throwError (IllTyped rho (SngCtx x s))
                                  Just p -> withExceptT (promotePrefixDerivErr x) (SngCtx x <$> deriv p s)
   deriv rho (SemicCtx g g') = SemicCtx <$> deriv rho g <*> deriv rho g'
+  deriv rho (CommaCtx g g') = CommaCtx <$> deriv rho g <*> deriv rho g'
 
 instance (Ord v, ValueLike p t) => ValueLike (Env v p) (M.Map v t) where
   hasType rho m = M.foldrWithKey go (return ()) m
@@ -236,7 +252,6 @@ instance (Ord v, ValueLike p t) => ValueLike (Env v p) (M.Map v t) where
                 Just p -> withExceptT (\(IllTyped p' t') -> IllTyped (singletonEnv x p') (M.singleton x t')) $ deriv p t
                 Nothing -> throwError (IllTyped rho m)
         M.insert x t' <$> k
-
 
 emptyPrefix :: Ty -> Prefix
 emptyPrefix TyInt = LitPEmp

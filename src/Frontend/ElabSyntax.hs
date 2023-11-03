@@ -28,6 +28,8 @@ data Term =
     | TmVar Var
     | TmCatL Var Var Var Term
     | TmCatR Term Term
+    | TmParL Var Var Var Term
+    | TmParR Term Term
     | TmInl Term
     | TmInr Term
     | TmPlusCase Var Var Term Var Term
@@ -48,9 +50,11 @@ instance PrettyPrint Term where
             go _ (TmVar (Var x)) = x
             go _ TmNil = "nil"
             go _ (TmCatR e1 e2) = concat ["(",go False e1,";",go False e2,")"]
+            go _ (TmParR e1 e2) = concat ["(",go False e1,",",go False e2,")"]
             go _ (TmHistPgm eh) = concat ["{",pp eh,"}"]
             go True e = concat ["(", go False e, ")"]
             go False (TmCatL (Var x) (Var y) (Var z) e) = concat ["let (",x,";",y,") = ",z," in ",go False e]
+            go False (TmParL (Var x) (Var y) (Var z) e) = concat ["let (",x,",",y,") = ",z," in ",go False e]
             go False (TmInl e) = "inl " ++ go True e
             go False (TmInr e) = "inl " ++ go True e
             go False (TmPlusCase (Var z) (Var x) e1 (Var y) e2) = concat ["case ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
@@ -125,6 +129,18 @@ elab (Surf.TmCatR e1 e2) = do
     e1' <- elab e1
     e2' <- elab e2
     return (TmCatR e1' e2')
+elab (Surf.TmParL mx my e1 e2) = do
+    case sameBinder mx my of
+        Just x -> throwError (EqualBoundVars x)
+        _ -> return ()
+    e1' <- elab e1
+    ((e2',y),x) <- withUnshadow mx $ withUnshadow my $ elab e2
+    z <- freshElabVar
+    return $ TmCut z e1' (TmParL x y z e2')
+elab (Surf.TmParR e1 e2) = do
+    e1' <- elab e1
+    e2' <- elab e2
+    return (TmParR e1' e2')
 elab (Surf.TmInl e) = TmInl <$> elab e
 elab (Surf.TmInr e) = TmInr <$> elab e
 elab (Surf.TmPlusCase e mx e1 my e2) = do

@@ -16,6 +16,8 @@ data Term =
     | TmVar Var.Var
     | TmCatL (Maybe Var.Var) (Maybe Var.Var) Term Term
     | TmCatR Term Term
+    | TmParL (Maybe Var.Var) (Maybe Var.Var) Term Term
+    | TmParR Term Term
     | TmInl Term
     | TmInr Term
     | TmPlusCase Term (Maybe Var.Var) Term (Maybe Var.Var) Term

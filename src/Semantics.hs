@@ -182,6 +182,10 @@ eval (TmFix args g s e) = do
         cutAll (SemicCtx g g') e = do
             e' <- cutAll g' e
             cutAll g e'
+        cutAll (CommaCtx g g') e = do
+            e' <- cutAll g' e
+            cutAll g e'
+
 
 eval (TmRec _) = error "Impossible."
 

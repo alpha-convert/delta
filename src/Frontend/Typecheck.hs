@@ -210,6 +210,19 @@ checkElab (TyCat s t) (Elab.TmCatR e1 e2) = do
     return $ CR p' (Core.TmCatR e1' e2')
 checkElab t (Elab.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
 
+checkElab r e@(Elab.TmParL x y z e') = do
+    (s,t) <- lookupTyPar e z
+    (CR p e'') <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkElab r e')
+    p' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    return $ CR p' (Core.TmParL x y z e'')
+
+checkElab (TyPar s t) e@(Elab.TmParR e1 e2) = do
+    CR p1 e1' <- checkElab s e1
+    CR p2 e2' <- checkElab t e2
+    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    return $ CR p' (Core.TmParR e1' e2')
+checkElab t (Elab.TmParR e1 e2) = throwError (WrongTypeParR e1 e2 t)
+
 checkElab (TyPlus s _) (Elab.TmInl e) = do
     CR p e' <- checkElab s e
     return $ CR p (Core.TmInl e')
@@ -295,6 +308,7 @@ elabRec (SemicCtx g1 g2) es = do
     reThrow (error "asdf") (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (error "Arguments use variables inconsistently")) $ P.concat p p'
     return (es'',(p'',SemicCtx g1' g2'))
+elabRec (CommaCtx g1 g2) _ = undefined
 
 
 inferElab :: (TckM Elab.Term m) => Elab.Term -> m InferElabResult
@@ -323,6 +337,18 @@ inferElab e@(Elab.TmCatR e1 e2) = do
     p' <- reThrow (handleOutOfOrder e) $ P.concat p1 p2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
     return $ IR (TyCat s t) p' (Core.TmCatR e1' e2')
+
+inferElab e@(Elab.TmParL x y z e') = do
+    (s,t) <- lookupTyPar e z
+    (IR r p e'') <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferElab e')
+    p' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    return $ IR r p' (Core.TmParL x y z e'')
+
+inferElab e@(Elab.TmParR e1 e2) = do
+    IR s p1 e1' <- inferElab e1
+    IR t p2 e2' <- inferElab e2
+    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    return $ IR (TyPar s t) p' (Core.TmParR e1' e2')
 
 inferElab e@(Elab.TmInl {}) = throwError (CheckTermInferPos e)
 inferElab e@(Elab.TmInr {}) = throwError (CheckTermInferPos e)
@@ -665,6 +691,7 @@ checkUntypedPrefixCtx (SemicCtx g g') ps = do
     if allEnv isMaximal rho || allEnv isEmpty rho' then
         runExceptT (unionDisjointEnv rho rho') >>= either (\(v,p,p') -> throwError (NotDisjointCtx v p p')) (return . (ps'',))
     else throwError (OrderIssueCtx rho rho')
+checkUntypedPrefixCtx (CommaCtx g g') ps = undefined
 
 type FileInfo = M.Map String (Ctx Var Ty, Ty)
 
