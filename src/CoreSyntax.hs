@@ -2,8 +2,8 @@
 module CoreSyntax (
   Var,
   Term(..),
-  Program, FunDef(..),
-  RunCmd(..),
+  Program,
+  Cmd(..),
   substVar,
   sinkTm,
   cut,
@@ -38,11 +38,13 @@ data Term =
     | TmHistPgm Ty Hist.Term
     deriving (Eq, Ord, Show)
 
-data FunDef = FD String (Ctx Var.Var Ty) Ty Term deriving (Eq,Ord,Show)
+data Cmd =
+    FunDef String (Ctx Var.Var Ty) Ty Term
+  | RunCommand String (Env Var Prefix)
+  | RunStepCommand String (Env Var Prefix)
+    deriving (Eq,Ord,Show)
 
-data RunCmd = RC String (Env Var Prefix)
-
-type Program = [Either FunDef RunCmd]
+type Program = [Cmd]
 
 instance PrettyPrint Term where
     pp = go False

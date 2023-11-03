@@ -1,6 +1,6 @@
 {
-module Frontend.Parser(parseSurfaceSyntax, parseFunDef, parseProgram, lexer) where
-import Frontend.SurfaceSyntax(Term(..), FunDef(..), UntypedPrefix(..), RunCmd(..))
+module Frontend.Parser(parseSurfaceSyntax, parseProgram, lexer) where
+import Frontend.SurfaceSyntax(Term(..), Cmd(..), UntypedPrefix(..))
 import Values ( Lit(..))
 import Var(Var(..))
 import Types
@@ -11,7 +11,6 @@ import qualified HistPgm as Hist
 
 %name parseSurfaceSyntax Exp
 %name parseTy Ty
-%name parseFunDef FunDef
 %name parseProgram Pgm
 %name parsePrefix Pfx
 %tokentype { Token }
@@ -36,6 +35,7 @@ import qualified HistPgm as Hist
       tyEps           { TokenTyEps }
       emp             { TokenEmp }
       exec            { TokenExec }
+      step            { TokenStep }
       wait            { TokenWait }
       rec             { TokenRec }
       do              { TokenDo }
@@ -129,15 +129,11 @@ VarList : {-empty-}                                               { [] }
         | Var                                                     { [$1] }
         | Var ',' VarList                                         { $1 : $3 }
 
-FunDef      : fun var '(' Params ')' ':' Ty '=' Exp                      { FD $2 $4 $7 $9 }
 
 Params  : {-empty-}                                                 { EmpCtx }
         | Var ':' Ty                                                { SngCtx $1 $3 }
         | Var ':' Ty ';' Params                                       { SemicCtx (SngCtx $1 $3) $5 }
 
-Pgm   : {-empty-}                                                 { [] }
-      | FunDef Pgm                                                { (Left $1) : $2 }
-      | RunCmd Pgm                                                { (Right $1) : $2 }
 
 Pfx   : '(' Pfx ';' ')'                                           { CatPA $2 }
       | '(' Pfx ';' Pfx ')'                                       { CatPB $2 $4 }
@@ -153,10 +149,16 @@ Stp   : {-empty-}                                                 { [] }
       | Pfx ';' Stp                                               { $1 : $3 }
 
 Bindings : {- empty -}                                            { [] }
-          | Var '=' Pfx                                           { [($1,$3)] }
-          | Var '=' Pfx ';' Bindings                              { ($1,$3) : $5 }
+          | Pfx                                                   { [$1] }
+          | Pfx ';' Bindings                                      { $1 : $3 }
 
-RunCmd : exec var '(' Bindings ')'                                { RC $2 $4 }
+Cmd   : fun var '(' Params ')' ':' Ty '=' Exp                     { FunDef $2 $4 $7 $9 }
+      | exec var '(' Bindings ')'                                 { RunCommand $2 $4 }
+      | exec step var '(' Bindings ')'                            { RunStepCommand $3 $5 }
+
+Pgm   : {-empty-}                                                  { [] }
+      | Cmd Pgm                                                    { $1 : $2 }
+
 
 {
 
@@ -199,6 +201,7 @@ data Token
       | TokenAmps
       | TokenPipes
       | TokenExec
+      | TokenStep
       | TokenDo
       | TokenWait
       | TokenPlus
@@ -258,6 +261,7 @@ lexVar cs =
       ("true",rest)  -> TokenBool True : lexer rest
       ("false",rest)  -> TokenBool False : lexer rest
       ("exec",rest)  -> TokenExec : lexer rest
+      ("step",rest)  -> TokenStep : lexer rest
       ("Eps",rest)  -> TokenTyEps : lexer rest
       ("Int",rest)  -> TokenTyInt : lexer rest
       ("Bool",rest)  -> TokenTyBool : lexer rest

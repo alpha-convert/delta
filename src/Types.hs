@@ -79,6 +79,9 @@ instance TypeLike t => TypeLike (M.Map v t) where
 
 data ValueLikeErr a t = IllTyped a t
 
+instance (PrettyPrint a, PrettyPrint t) => PrettyPrint (ValueLikeErr a t) where
+  pp (IllTyped a t) = concat ["Value ", pp a, " does not have type ", pp t]
+
 promotePrefixTypeErr :: Ord v => v -> ValueLikeErr p t -> ValueLikeErr (Env v p) (Ctx v t)
 promotePrefixTypeErr x (IllTyped p' t') = IllTyped (bindEnv x p' emptyEnv) (SngCtx x t')
 

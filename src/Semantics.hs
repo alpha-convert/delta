@@ -2,7 +2,7 @@
 module Semantics where
 
 import CoreSyntax
-    ( Term(..), Program, FunDef(..), RunCmd(..), substVar, sinkTm, cut, maximalPrefixSubst)
+    ( Term(..), Program, Cmd(..), substVar, sinkTm, cut, maximalPrefixSubst)
 import qualified Data.Map as M
 import Control.Monad.Reader
     ( Monad(return), sequence, MonadReader(ask, local), ReaderT (runReaderT), guard )
@@ -13,7 +13,7 @@ import Types (emptyPrefix, Ty (..), Ctx (..), ValueLike (..))
 import Values (Prefix (..), Env, isMaximal, bindAllEnv, bindEnv, bindAllEnv, lookupEnv, prefixConcat, concatEnv, emptyEnv, Lit (..), maximalLift, MaximalPrefix, maximalDemote)
 import Data.Map (Map, unionWith)
 import Control.Applicative (Applicative(liftA2))
-import Control.Monad.State (runStateT, StateT, modify', gets, get, lift)
+import Control.Monad.State (runStateT, StateT, modify', gets, get, lift, modify)
 import Util.PrettyPrint (PrettyPrint (pp))
 
 import qualified Var (Var(..))
@@ -21,6 +21,7 @@ import Frontend.Typecheck (doCheckCoreTm)
 import Test.HUnit
 import Debug.Trace (trace)
 import qualified HistPgm as Hist
+import GHC.IO.Handle.Types (Handle__(Handle__))
 
 data SemError =
       VarLookupFailed Var.Var
@@ -221,22 +222,31 @@ doRunPgm p = do
     !_ <- runStateT (mapM go p) M.empty
     return ()
     where
-        go :: Either FunDef RunCmd -> StateT TopLevel IO ()
-        go (Left (FD f g s e)) = modify' (M.insert f (e,g,s))
-        go (Right (RC f rho)) = do
-            tl <- get
-            case M.lookup f tl of
-                Just (e,g,s) -> case runIdentity $ runExceptT $ runReaderT (eval e) rho of
+        go :: Cmd -> StateT TopLevel IO ()
+        go (FunDef f g s e) = modify' (M.insert f (e,g,s))
+        go (RunCommand f rho) = do
+            (e,g,s) <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to e)xecute unbound function " ++ f)) return
+            case runIdentity $ runExceptT $ runReaderT (eval e) rho of
                                     Right (p',e') -> do
                                         lift (putStrLn $ "Result of executing " ++ f ++ ": " ++ pp p')
                                         lift (putStrLn $ "Final core term: " ++  pp e' ++ "\n")
                                         () <- hasTypeB p' s >>= guard
-                                        g' <- doDeriv rho g
-                                        s' <- doDeriv p' s
+                                        -- g' <- doDeriv rho g
+                                        -- s' <- doDeriv p' s
                                         -- () <- doCheckCoreTm g' s' e'
                                         return ()
                                     Left err -> error $ "Runtime Error: " ++ pp err
-                Nothing -> error ("Runtime Error: Tried to execute unbound function " ++ f)
+        go (RunStepCommand f rho) = do
+            (e,g,s) <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to execute unbound function " ++ f)) return
+            case runIdentity $ runExceptT $ runReaderT (eval e) rho of
+                                    Right (p',e') -> do
+                                        lift (putStrLn $ "Result of executing " ++ f ++ ": " ++ pp p')
+                                        lift (putStrLn $ "Final core term (stepping): " ++  pp e' ++ "\n")
+                                        () <- hasTypeB p' s >>= guard
+                                        g' <- doDeriv rho g
+                                        s' <- doDeriv p' s
+                                        modify (M.insert f (e',g',s'))
+                                    Left err -> error $ "Runtime Error: " ++ pp err
 
 evalSingle e xs = runIdentity (runExceptT (runReaderT (eval e) (bindAllEnv (map (\(x,p) -> (var x, p)) xs) emptyEnv)))
 

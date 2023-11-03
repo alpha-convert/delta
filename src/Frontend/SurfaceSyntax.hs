@@ -1,10 +1,9 @@
 {-# LANGUAGE DeriveTraversable, DeriveFoldable, DeriveFunctor #-}
 module Frontend.SurfaceSyntax(
   Term(..),
-  FunDef(..),
+  Cmd(..),
   Program,
   UntypedPrefix(..),
-  RunCmd(..)
 ) where
 import Values ( Lit(..), Prefix)
 import Var(Var(..))
@@ -39,8 +38,10 @@ data UntypedPrefix =
     | Stp [UntypedPrefix]
     deriving (Eq, Ord, Show)
 
-data FunDef = FD String (Ctx Var.Var Ty) Ty Term deriving (Eq,Ord,Show)
+data Cmd =
+    FunDef String (Ctx Var.Var Ty) Ty Term
+  | RunCommand String [UntypedPrefix]
+  | RunStepCommand String [UntypedPrefix]
+ deriving (Eq,Ord,Show)
 
-data RunCmd = RC String [(Var.Var,UntypedPrefix)]
-
-type Program = [Either FunDef RunCmd]
+type Program = [Cmd]

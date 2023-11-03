@@ -1,5 +1,5 @@
 -- AUTHORS: Emeka Nkurumeh, Joe Cutler
-{-# LANGUAGE FlexibleContexts, FlexibleInstances, MultiParamTypeClasses, BangPatterns #-}
+{-# LANGUAGE FlexibleContexts, FlexibleInstances, MultiParamTypeClasses, BangPatterns, TupleSections #-}
 
 module Frontend.Typecheck(
     doCheckElabPgm,
@@ -14,12 +14,12 @@ import Control.Monad.Except (MonadError (throwError), runExceptT, ExceptT)
 import Types (Ctx (..), Ty(..), ctxBindings, ctxVars, emptyPrefix, ctxAssoc, deriv, ValueLikeErr (IllTyped), ValueLike (hasType), ctxMap)
 import Control.Monad.Reader (MonadReader (ask, local), asks, ReaderT (runReaderT), withReaderT)
 import Var (Var (Var))
-import Values (Lit(..), Env, Prefix (..), emptyEnv, bindEnv, isMaximal, isEmpty, allEnv, unionDisjointEnv)
+import Values (Lit(..), Env, Prefix (..), emptyEnv, bindEnv, isMaximal, isEmpty, allEnv, unionDisjointEnv, singletonEnv)
 import qualified Data.Map as M
 import qualified Util.PartialOrder as P
 import Control.Monad.Identity (Identity (runIdentity))
 import Util.PrettyPrint (PrettyPrint,pp)
-import Control.Monad.State.Strict (StateT(runStateT), MonadState (put, get), MonadTrans (lift))
+import Control.Monad.State.Strict (StateT(runStateT), MonadState (put, get), MonadTrans (lift), gets, modify)
 import qualified Frontend.SurfaceSyntax as Surf
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Util.PartialOrder (substSingAll)
@@ -613,16 +613,17 @@ checkUntypedStp s (p:ps) = do
     else if null ps then return (StpA p')
     else throwError (IllegalStp p')
 
-checkUntypedPrefixCtx :: (Monad m) => Ctx Var Ty -> M.Map Var Surf.UntypedPrefix -> ExceptT PrefixCheckErr m (Env Var Prefix)
-checkUntypedPrefixCtx EmpCtx _ = return emptyEnv
-checkUntypedPrefixCtx (SngCtx x s) m = do
-    p' <- maybe (return (emptyPrefix s)) (checkUntypedPrefix s) (M.lookup x m)
-    return (bindEnv x p' emptyEnv)
-checkUntypedPrefixCtx (SemicCtx g g') m = do
-    rho <- checkUntypedPrefixCtx g m
-    rho' <- checkUntypedPrefixCtx g' m
+checkUntypedPrefixCtx :: (Monad m) => Ctx Var Ty -> [Surf.UntypedPrefix] -> ExceptT PrefixCheckErr m ([Surf.UntypedPrefix],(Env Var Prefix))
+checkUntypedPrefixCtx EmpCtx xs = return (xs,emptyEnv)
+checkUntypedPrefixCtx (SngCtx x s) [] = return ([],singletonEnv x (emptyPrefix s))
+checkUntypedPrefixCtx (SngCtx x s) (p:ps) = do
+    p' <- checkUntypedPrefix s p
+    return (ps,singletonEnv x p')
+checkUntypedPrefixCtx (SemicCtx g g') ps = do
+    (ps',rho) <- checkUntypedPrefixCtx g ps
+    (ps'',rho') <- checkUntypedPrefixCtx g' ps'
     if allEnv isMaximal rho || allEnv isEmpty rho' then
-        runExceptT (unionDisjointEnv rho rho') >>= either (\(v,p,p') -> throwError (NotDisjointCtx v p p')) return
+        runExceptT (unionDisjointEnv rho rho') >>= either (\(v,p,p') -> throwError (NotDisjointCtx v p p')) (return . (ps'',))
     else throwError (OrderIssueCtx rho rho')
 
 type FileInfo = M.Map String (Ctx Var Ty, Ty)
@@ -654,21 +655,28 @@ doCheckCoreTm g t e = do
 doCheckElabPgm :: (MonadIO m) => Elab.Program -> m Core.Program
 doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
     where
-        go :: (MonadIO m) => Either Elab.FunDef Elab.RunCmd -> StateT FileInfo m (Either Core.FunDef Core.RunCmd)
-        go (Left (Elab.FD f g t e)) = do
+        go :: (MonadIO m) => Elab.Cmd -> StateT FileInfo m Core.Cmd
+        go (Elab.FunDef f g t e) = do
             e' <- lift $ doCheckElabTm False g t e
             liftIO $ putStrLn $ "Function " ++ f ++ " typechecked OK. Core term: " ++ pp e'
             fi <- get
             put (M.insert f (g,t) fi)
-            return (Left (Core.FD f g t e'))
-        go (Right (Elab.RC f p)) = do
-            fi <- get -- Get the current file information
-            case M.lookup f fi of
-                Nothing -> error $ "Function " ++ f ++ " not defined."
-                Just (g,_) -> do
-                    mps <- lift (runExceptT (checkUntypedPrefixCtx g p))
-                    case mps of
-                        Left err -> error (show err)
-                        Right ps -> return (Right (Core.RC f ps))
+            return (Core.FunDef f g t e')
+        go (Elab.RunCommand f p) = do
+            (g,_) <- gets (M.lookup f) >>= maybe (error $ "Function " ++ f ++ " not defined.") return
+            mps <- lift (runExceptT (checkUntypedPrefixCtx g p))
+            case mps of
+                Left err -> error (show err)
+                Right (_,ps) -> return (Core.RunCommand f ps)
+
+        go (Elab.RunStepCommand f p) = do
+            (g,s) <- gets (M.lookup f) >>= maybe (error $ "Function " ++ f ++ " not defined.") return
+            mps <- lift (runExceptT (checkUntypedPrefixCtx g p))
+            case mps of
+                Left err -> error (show err)
+                Right (_,rho) -> do
+                    g' <- runExceptT (deriv rho g) >>= either (error . pp) return
+                    modify (M.insert f (g',s))
+                    return (Core.RunStepCommand f rho)
 
 tckTests = TestList []

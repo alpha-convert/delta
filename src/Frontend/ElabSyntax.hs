@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleContexts, FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
-module Frontend.ElabSyntax (doElab, Term(..), Program, FunDef(..), RunCmd(..), elabTests) where
+module Frontend.ElabSyntax (doElab, Term(..), Program, Cmd(..), elabTests) where
 
 import Values ( Lit(..) )
 import Var (Var(..))
@@ -165,11 +165,13 @@ elabHist (Hist.TmCons e1 e2) = Hist.TmCons <$> elabHist e1 <*> elabHist e2
 
 instance ElabM (StateT ElabState (ReaderT ElabInput (ExceptT ElabErr Identity))) where
 
-data FunDef = FD String (Ctx Var.Var Ty) Ty Term deriving (Eq,Ord,Show)
+data Cmd =
+      FunDef String (Ctx Var.Var Ty) Ty Term
+    | RunCommand String [Surf.UntypedPrefix]
+    | RunStepCommand String [Surf.UntypedPrefix]
+    deriving (Eq,Ord,Show)
 
-data RunCmd = RC String (M.Map Var.Var Surf.UntypedPrefix)
-
-type Program = [Either FunDef RunCmd]
+type Program = [Cmd]
 
 initShadowMap g =
     let bindings = ctxBindings g in
@@ -184,11 +186,12 @@ elabSingle e s = runIdentity (runExceptT (runReaderT (runStateT (elab e) (ES 0))
 
 doElab :: Surf.Program -> IO Program
 doElab = mapM $ \case
-                    Right (Surf.RC s xs) -> return (Right (RC s (M.fromList xs)))
-                    Left (Surf.FD f g s e) ->
+                    (Surf.RunCommand s xs) -> return (RunCommand s xs)
+                    (Surf.FunDef f g s e) ->
                         case elabSingle e (M.keysSet $ ctxBindings g) of
-                            Right (e',_) -> return (Left (FD f g s e'))
+                            Right (e',_) -> return (FunDef f g s e')
                             Left err -> error (pp err)
+                    (Surf.RunStepCommand s xs) -> return (RunStepCommand s xs)
 
 -- >>> elabSingle (Surf.TmCatL Nothing Nothing (Surf.TmCatR (Surf.TmLitR (LInt 4)) (Surf.TmLitR (LInt 4))) Surf.TmEpsR) (S.fromList [])
 -- Right (TmCut (Var "__x2") (TmCatR (TmLitR (LInt 4)) (TmLitR (LInt 4))) (TmCatL (Var "__x0") (Var "__x1") (Var "__x2") TmEpsR),ES {nextVar = 3})
