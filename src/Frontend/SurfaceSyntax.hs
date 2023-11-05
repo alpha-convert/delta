@@ -24,7 +24,7 @@ data Term =
     | TmNil
     | TmCons Term Term
     | TmStarCase Term Term (Maybe Var.Var) (Maybe Var.Var) Term
-    | TmRec [Term]
+    | TmRec (CtxStruct Term)
     | TmWait [Var] Term
     | TmHistPgm Hist.Term
     deriving (Eq,Ord,Show)

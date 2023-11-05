@@ -37,7 +37,7 @@ data Term =
     | TmCons Term Term
     | TmStarCase Var Term Var Var Term
     | TmCut Var Term Term
-    | TmRec [Term]
+    | TmRec (CtxStruct Term)
     | TmWait Var Term
     | TmHistPgm Hist.Term
     deriving (Eq, Ord, Show)
@@ -61,7 +61,7 @@ instance PrettyPrint Term where
             go False (TmCut (Var x) e1 e2) = concat ["let ",x," = ",go True e1," in ",go True e2]
             go False (TmCons e1 e2) = concat [go True e1," :: ", go True e2]
             go False (TmStarCase (Var z) e1 (Var x) (Var xs) e2) = concat ["case ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
-            go False (TmRec es) = concat ["rec (", intercalate ";" (map (go False) es), ")"]
+            go False (TmRec es) = concat ["rec (", pp (go False <$> es), ")"]
             go False (TmWait x e) = concat ["wait ", pp x," do ", go True e]
 
 data ElabState = ES { nextVar :: Int } deriving (Eq, Ord, Show)

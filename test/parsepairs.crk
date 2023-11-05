@@ -4,3 +4,6 @@ fun parsepairs(xs : Int*) : (Int . Int)* =
     | y :: ys => case ys of
                    nil => nil
                  | z :: zs => (y;z) :: rec(zs)
+
+exec step parsepairs([2))
+exec parsepairs((emp;[3)))

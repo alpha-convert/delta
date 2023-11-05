@@ -109,9 +109,13 @@ HP2         : int                                                 { Hist.TmLit (
             | '(' HistPgm ')'                                     { $2 }
             | '(' HistPgm ',' HistPgm ')'                         { Hist.TmPair $2 $4 }
 
-Args  : {- empty -}                                               { [] }
-      | Exp                                                       { [$1] }
-      | Exp ';' Args                                              { $1 : $3 }
+Args  : {- empty -}                                               { EmpCtx }
+      | Args1 ',' Args1                                           { CommaCtx $1 $3 }
+      | Args1 ';' Args1                                           { SemicCtx $1 $3 }
+      | Args1                                                     { $1 }
+
+Args1 : Exp                                                       { SngCtx $1 }
+      | '(' Args ')'                                              { $2 }
 
 Ty    : Ty1 '+' Ty1                                               { TyPlus $1 $3 }
       | Ty1                                                       { $1 }
@@ -132,9 +136,9 @@ VarList : {-empty-}                                               { [] }
         | Var ',' VarList                                         { $1 : $3 }
 
 
-Params  : {-empty-}                                                 { EmpCtx }
-        | Var ':' Ty                                                { SngCtx $1 $3 }
-        | Var ':' Ty ';' Params                                       { SemicCtx (SngCtx $1 $3) $5 }
+FunParams  : {-empty-}                                                 { EmpCtx }
+        | Var ':' Ty                                                    { SngCtx (CE $1 $3) }
+        | Var ':' Ty ';' FunParams                                       { SemicCtx (SngCtx (CE $1 $3)) $5 }
 
 
 Pfx   : '(' Pfx ';' ')'                                           { CatPA $2 }
@@ -152,13 +156,13 @@ Stp   : ']'                                                       { StpDone }
       | Pfx ']'                                                   { StpB $1 StpDone }
       | Pfx ';' Stp                                               { StpB $1 $3 }
 
-Bindings : {- empty -}                                            { [] }
+PrxArgs : {- empty -}                                            { [] }
           | Pfx                                                   { [$1] }
-          | Pfx ';' Bindings                                      { $1 : $3 }
+          | Pfx ';' PrxArgs                                      { $1 : $3 }
 
-Cmd   : fun var '(' Params ')' ':' Ty '=' Exp                     { FunDef $2 $4 $7 $9 }
-      | exec var '(' Bindings ')'                                 { RunCommand $2 $4 }
-      | exec step var '(' Bindings ')'                            { RunStepCommand $3 $5 }
+Cmd   : fun var '(' FunParams ')' ':' Ty '=' Exp                     { FunDef $2 $4 $7 $9 }
+      | exec var '(' PrxArgs ')'                                 { RunCommand $2 $4 }
+      | exec step var '(' PrxArgs ')'                            { RunStepCommand $3 $5 }
 
 Pgm   : {-empty-}                                                  { [] }
       | Cmd Pgm                                                    { $1 : $2 }

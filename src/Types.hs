@@ -1,5 +1,5 @@
-{-# LANGUAGE DeriveFoldable, DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, FlexibleContexts #-}
-module Types (Ty(..), Ctx(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc, ctxMap, ctxFoldM) where
+{-# LANGUAGE DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, FlexibleContexts, TupleSections #-}
+module Types (Ty(..), CtxStruct(..), Ctx, CtxEntry(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc, ctxMap, ctxFoldM) where
 
 import qualified Data.Map as M
 import Control.Monad.Except (ExceptT, throwError, withExceptT, runExceptT)
@@ -21,22 +21,30 @@ instance PrettyPrint Ty where
   pp (TyPlus s t) = concat ["(", pp s," + ", pp t, ")"]
   pp (TyStar s) = concat ["(", pp s,")*"]
 
-data Ctx v t =
-    EmpCtx 
-  | SngCtx v t
-  | SemicCtx (Ctx v t) (Ctx v t)
-  | CommaCtx (Ctx v t) (Ctx v t)
+data CtxStruct a =
+    EmpCtx
+  | SngCtx a
+  | SemicCtx (CtxStruct a) (CtxStruct a)
+  | CommaCtx (CtxStruct a) (CtxStruct a)
   deriving (Eq,Ord,Show,Functor, Foldable, Traversable)
+
+data CtxEntry v t = CE {_fst :: v, _snd :: t}
+  deriving (Eq,Ord,Show)
+
+instance (PrettyPrint v, PrettyPrint t) => PrettyPrint (CtxEntry v t) where
+  pp (CE x t) = pp x ++ " : " ++ pp t
+
+type Ctx v t = CtxStruct (CtxEntry v t)
 
 ctxMap :: (v -> t -> (v',t')) -> Ctx v t -> Ctx v' t'
 ctxMap _ EmpCtx = EmpCtx
-ctxMap f (SngCtx x y) = let (x',y') = f x y in SngCtx x' y'
+ctxMap f (SngCtx (CE x t)) = let (x',y') = f x t in SngCtx (CE x' y')
 ctxMap f (SemicCtx g g') = SemicCtx (ctxMap f g) (ctxMap f g')
 ctxMap f (CommaCtx g g') = CommaCtx (ctxMap f g) (ctxMap f g')
 
-ctxFoldM :: (Monad m) => m a -> (v -> t -> m a) -> (a -> a -> m a) -> Ctx v t -> m a
+ctxFoldM :: (Monad m) => m b -> (a -> m b) -> (b -> b -> m b) -> CtxStruct a -> m b
 ctxFoldM x f g EmpCtx = x
-ctxFoldM _ f g (SngCtx x t) = f x t
+ctxFoldM _ f g (SngCtx x) = f x
 ctxFoldM x f g (SemicCtx g1 g2) = do
   a1 <- ctxFoldM x f g g1
   a2 <- ctxFoldM x f g g2
@@ -46,13 +54,6 @@ ctxFoldM x f g (CommaCtx g1 g2) = do
   a2 <- ctxFoldM x f g g2
   g a1 a2
 
-instance Bifunctor Ctx where
-  bimap _ _ EmpCtx = EmpCtx
-  bimap f g (SngCtx x t) = SngCtx (f x) (g t)
-  bimap f g (SemicCtx l r) = SemicCtx (bimap f g l) (bimap f g r)
-  bimap f g (CommaCtx l r) = CommaCtx (bimap f g l) (bimap f g r)
-
-
 ctxBindings :: (Ord v) => Ctx v t -> M.Map v t
 ctxBindings = M.fromList . ctxAssoc
 
@@ -61,16 +62,15 @@ ctxVars = map fst . ctxAssoc
 
 ctxAssoc :: Ctx v t -> [(v,t)]
 ctxAssoc EmpCtx = []
-ctxAssoc (SngCtx x s) = [(x,s)]
+ctxAssoc (SngCtx (CE x s)) = [(x,s)]
 ctxAssoc (SemicCtx g g') = ctxAssoc g ++ ctxAssoc g'
 ctxAssoc (CommaCtx g g') = ctxAssoc g ++ ctxAssoc g'
 
-instance (PrettyPrint v, PrettyPrint t) => PrettyPrint (Ctx v t) where
+instance (PrettyPrint a) => PrettyPrint (CtxStruct a) where
   pp EmpCtx = "(.)"
-  pp (SngCtx v t) = concat ["[",pp v," : ", pp t,"]"]
+  pp (SngCtx x) = pp x
   pp (SemicCtx g g') = concat ["(", pp g, " ; ", pp g', ")"]
   pp (CommaCtx g g') = concat ["(", pp g, " , ", pp g', ")"]
-
 
 class TypeLike t where
   isNull :: t -> Bool
@@ -86,7 +86,7 @@ instance TypeLike Ty where
 
 instance TypeLike t => TypeLike (Ctx v t) where
   isNull EmpCtx = True
-  isNull (SngCtx _ s) = isNull s
+  isNull (SngCtx (CE _ s)) = isNull s
   isNull (SemicCtx g g') = isNull g && isNull g'
   isNull (CommaCtx g g') = isNull g && isNull g'
 
@@ -99,10 +99,10 @@ instance (PrettyPrint a, PrettyPrint t) => PrettyPrint (ValueLikeErr a t) where
   pp (IllTyped a t) = concat ["Value ", pp a, " does not have type ", pp t]
 
 promotePrefixTypeErr :: Ord v => v -> ValueLikeErr p t -> ValueLikeErr (Env v p) (Ctx v t)
-promotePrefixTypeErr x (IllTyped p' t') = IllTyped (bindEnv x p' emptyEnv) (SngCtx x t')
+promotePrefixTypeErr x (IllTyped p' t') = IllTyped (bindEnv x p' emptyEnv) (SngCtx (CE x t'))
 
 promotePrefixDerivErr :: Ord v => v -> ValueLikeErr p t -> ValueLikeErr (Env v p) (Ctx v t)
-promotePrefixDerivErr x (IllTyped p' t') = IllTyped (bindEnv x p' emptyEnv) (SngCtx x t')
+promotePrefixDerivErr x (IllTyped p' t') = IllTyped (bindEnv x p' emptyEnv) (SngCtx (CE x t'))
 
 
 class TypeLike t => ValueLike a t where
@@ -220,20 +220,19 @@ instance (Ord v, ValueLike Prefix Ty) => ValueLike (Env v Prefix) (Ctx v Ty) whe
   hasType rho = go
     where
       go EmpCtx = return ()
-      go (SngCtx x t) = case Values.lookupEnv x rho of
+      go (SngCtx (CE x t)) = case Values.lookupEnv x rho of
                           Nothing -> return ()
                           Just p -> withExceptT (promotePrefixTypeErr x) (hasType p t)
-      go (SemicCtx g g') = do
-        go g >> go g' >> guard (all maximal (ctxVars g) || all empty (ctxVars g')) (IllTyped rho (SemicCtx g g'))
+      go (SemicCtx g g') = go g >> go g' >> guard (all maximal (ctxVars g) || all empty (ctxVars g')) (IllTyped rho (SemicCtx g g'))
       go (CommaCtx g g') = go g >> go g'
 
       maximal x = maybe False isMaximal (Values.lookupEnv x rho)
       empty x = maybe False isEmpty (Values.lookupEnv x rho)
 
   deriv _ EmpCtx = return EmpCtx
-  deriv rho (SngCtx x s) = case Values.lookupEnv x rho of
-                                 Nothing -> throwError (IllTyped rho (SngCtx x s))
-                                 Just p -> withExceptT (promotePrefixDerivErr x) (SngCtx x <$> deriv p s)
+  deriv rho (SngCtx (CE x t)) = case Values.lookupEnv x rho of
+                                 Nothing -> throwError (IllTyped rho (SngCtx (CE x t)))
+                                 Just p -> withExceptT (promotePrefixDerivErr x) (SngCtx . (CE x) <$> deriv p t)
   deriv rho (SemicCtx g g') = SemicCtx <$> deriv rho g <*> deriv rho g'
   deriv rho (CommaCtx g g') = CommaCtx <$> deriv rho g <*> deriv rho g'
 

@@ -10,3 +10,6 @@ instance (PrettyPrint k, PrettyPrint v) => PrettyPrint (M.Map k v) where
     pp m = "{" ++ intercalate "," (go <$> M.assocs m) ++ "}"
         where
             go (k,v) = pp k ++ " = " ++ pp v
+
+instance PrettyPrint String where
+    pp s = s

@@ -9,7 +9,7 @@ import Control.Monad.Reader
 import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.Except ( ExceptT, runExceptT, MonadError(throwError) )
 import Prelude
-import Types (emptyPrefix, Ty (..), Ctx (..), ValueLike (..))
+import Types (emptyPrefix, Ty (..), CtxStruct(..), Ctx, ValueLike (..), CtxEntry (..))
 import Values (Prefix (..), Env, isMaximal, bindAllEnv, bindEnv, bindAllEnv, lookupEnv, prefixConcat, concatEnv, emptyEnv, Lit (..), maximalLift, MaximalPrefix, maximalDemote)
 import Data.Map (Map, unionWith)
 import Control.Applicative (Applicative(liftA2))
@@ -22,6 +22,7 @@ import Test.HUnit
 import Debug.Trace (trace)
 import qualified HistPgm as Hist
 import GHC.IO.Handle.Types (Handle__(Handle__))
+import qualified Data.Bifunctor
 
 data SemError =
       VarLookupFailed Var.Var
@@ -178,7 +179,7 @@ eval (TmFix args g s e) = do
     where
         cutAll EmpCtx e = return e
         -- cutAll (SngCtx x e') e = reThrow handleRuntimeCutError (cut x e' e)
-        cutAll (SngCtx x e') e = return (TmCut x e' e)
+        cutAll (SngCtx (CE x e')) e = return (TmCut x e' e)
         cutAll (SemicCtx g g') e = do
             e' <- cutAll g' e
             cutAll g e'
@@ -270,7 +271,7 @@ doRunPgm p = do
                                         modify (M.insert f (e',g',s'))
                                     Left err -> error $ "Runtime Error: " ++ pp err
 
-evalSingle e xs = runIdentity (runExceptT (runReaderT (eval e) (bindAllEnv (map (\(x,p) -> (var x, p)) xs) emptyEnv)))
+evalSingle e xs = runIdentity (runExceptT (runReaderT (eval e) (bindAllEnv (map (Data.Bifunctor.first var) xs) emptyEnv)))
 
 semTests :: Test
 semTests = TestList [
