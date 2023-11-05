@@ -1,0 +1,8 @@
+fun id(xs : Int*) : Int* =
+    case xs of
+      nil => nil
+    | y::ys => y::rec(ys)
+
+exec step id(xs = [emp))
+exec step id(xs = (3;emp))
+exec id(xs = [])

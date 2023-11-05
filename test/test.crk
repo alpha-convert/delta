@@ -12,17 +12,19 @@ fun bot (x : Int + Bool ; y : Bool) : (Int . Bool) + (Bool . Bool) =
       inl x' => inl (x' ; y)
     | inr x' => inr (x' ; y)
     
-exec bot (emp)
-exec bot (inl(emp))
-exec bot (inl(3))
-exec bot (inl(3);false)
+exec bot (x = emp; y = emp)
+exec bot (x = inl(emp); y = emp)
+exec bot (x = inl(3); y = emp)
+exec bot (x = inl(3); y = false)
 
 fun delaycase(y : Bool; x : Int + Bool) : (Bool . Int) + (Bool . Bool) =
   case x of
     inl x' => inl (y ; x')
   | inr x' => inr (y ; x')
 
-exec delaycase (emp)
-exec delaycase (false)
-exec delaycase (false;inl(emp))
-exec delaycase (false;inl(3))
+exec delaycase (y=emp;x=emp)
+exec delaycase (y=false;x=emp)
+exec delaycase (y=false;x=inl(emp))
+exec delaycase (y=false;x=inl(3))
+
+fun bigctx (x : Bool; y : Bool; z : Bool) : Bool = z

@@ -619,25 +619,30 @@ inferCore e@(Core.TmHistPgm s he) = do
     return (s,P.empty)
 
 checkRec :: (TckM Core.Term m) => Ctx Var Ty -> Ctx Var Core.Term -> m (P.Partial Var)
-checkRec g g' = go g g'
-    where
-        go EmpCtx EmpCtx = return P.empty
-        go g@EmpCtx g' = throwError (NonMatchingRecursiveArgs g g')
-        go (SngCtx (CE x t)) (SngCtx (CE y e)) | x == y = checkCore t e
-        go g@(SngCtx {}) g' = throwError (NonMatchingRecursiveArgs g g')
-        go (SemicCtx g1 g2) (SemicCtx g1' g2') = do
-            p1 <- go g1 g1'
-            p2 <- go g2 g2'
-            reThrow (handleReUse (error "ahhhh")) (P.checkDisjoint p1 p2)
-            reThrow (handleOutOfOrder (error "eek")) (P.concat p1 p2)
-        go g@(SemicCtx {}) g' = throwError (NonMatchingRecursiveArgs g g')
-        go (CommaCtx g1 g2) (CommaCtx g1' g2') = do
-            p1 <- go g1 g1'
-            p2 <- go g2 g2'
-            reThrow (handleOutOfOrder (error "eek")) (P.union p1 p2)
-        go g@(CommaCtx {}) g' = throwError (NonMatchingRecursiveArgs g g')
+checkRec EmpCtx EmpCtx = return P.empty
+checkRec g@EmpCtx g' = throwError (NonMatchingRecursiveArgs g g')
+checkRec (SngCtx (CE x t)) (SngCtx (CE y e)) | x == y = checkCore t e
+checkRec g@(SngCtx {}) g' = throwError (NonMatchingRecursiveArgs g g')
+checkRec (SemicCtx g1 g2) (SemicCtx g1' g2') = do
+    p1 <- checkRec g1 g1'
+    p2 <- checkRec g2 g2'
+    reThrow (handleReUse (error "ahhhh")) (P.checkDisjoint p1 p2)
+    reThrow (handleOutOfOrder (error "eek")) (P.concat p1 p2)
+checkRec g@(SemicCtx {}) g' = throwError (NonMatchingRecursiveArgs g g')
+checkRec (CommaCtx g1 g2) (CommaCtx g1' g2') = do
+    p1 <- checkRec g1 g1'
+    p2 <- checkRec g2 g2'
+    reThrow (handleOutOfOrder (error "eek")) (P.union p1 p2)
+checkRec g@(CommaCtx {}) g' = throwError (NonMatchingRecursiveArgs g g')
 
-data PrefixCheckErr = WrongType Ty Surf.UntypedPrefix | OrderIssue Prefix Prefix | NotDisjointCtx Var Prefix Prefix | OrderIssueCtx (Env Var Prefix) (Env Var Prefix) | IllegalStp Prefix deriving (Eq, Ord, Show)
+data PrefixCheckErr =
+      WrongType Ty Surf.UntypedPrefix
+    | WrongArgShape (Ctx Var Ty) (Ctx Var Surf.UntypedPrefix)
+    | OrderIssueCtx (Env Var Prefix) (Env Var Prefix)
+    | OrderIssue Prefix Prefix
+    | NotDisjointCtx Var Prefix Prefix
+    | IllegalStp Prefix
+    deriving (Eq, Ord, Show)
 
 checkUntypedPrefix :: (Monad m) => Ty -> Surf.UntypedPrefix -> ExceptT PrefixCheckErr m Prefix
 checkUntypedPrefix t Surf.EmpP = return (emptyPrefix t)
@@ -691,19 +696,25 @@ checkUntypedStp s (p:ps) = do
     else if null ps then return (StpA p')
     else throwError (IllegalStp p')
 
-checkUntypedPrefixCtx :: (Monad m) => Ctx Var Ty -> [Surf.UntypedPrefix] -> ExceptT PrefixCheckErr m ([Surf.UntypedPrefix],(Env Var Prefix))
-checkUntypedPrefixCtx EmpCtx xs = return (xs,emptyEnv)
-checkUntypedPrefixCtx (SngCtx (CE x s)) [] = return ([],singletonEnv x (emptyPrefix s))
-checkUntypedPrefixCtx (SngCtx (CE x s)) (p:ps) = do
-    p' <- checkUntypedPrefix s p
-    return (ps,singletonEnv x p')
-checkUntypedPrefixCtx (SemicCtx g g') ps = do
-    (ps',rho) <- checkUntypedPrefixCtx g ps
-    (ps'',rho') <- checkUntypedPrefixCtx g' ps'
-    if allEnv isMaximal rho || allEnv isEmpty rho' then
-        runExceptT (unionDisjointEnv rho rho') >>= either (\(v,p,p') -> throwError (NotDisjointCtx v p p')) (return . (ps'',))
-    else throwError (OrderIssueCtx rho rho')
-checkUntypedPrefixCtx (CommaCtx g g') ps = undefined
+checkUntypedPrefixCtx :: (Monad m) => Ctx Var Ty -> Ctx Var Surf.UntypedPrefix -> ExceptT PrefixCheckErr m (Env Var Prefix)
+checkUntypedPrefixCtx EmpCtx EmpCtx = return emptyEnv
+checkUntypedPrefixCtx g@EmpCtx g' = throwError (WrongArgShape g g')
+checkUntypedPrefixCtx g@(SngCtx (CE x s)) g'@(SngCtx (CE y p)) =
+    if x == y then singletonEnv x <$> checkUntypedPrefix s p
+    else throwError (WrongArgShape g g')
+checkUntypedPrefixCtx g@(SngCtx {}) g' = throwError (WrongArgShape g g')
+checkUntypedPrefixCtx (SemicCtx g1 g2) (SemicCtx g1' g2') = do
+    rho1 <- checkUntypedPrefixCtx g1 g1'
+    rho2 <- checkUntypedPrefixCtx g2 g2'
+    if allEnv isMaximal rho1 || allEnv isEmpty rho2 then
+        runExceptT (unionDisjointEnv rho1 rho2) >>= either (\(v,p,p') -> throwError (NotDisjointCtx v p p')) return
+    else throwError (OrderIssueCtx rho1 rho2)
+checkUntypedPrefixCtx g@(SemicCtx {}) g' = throwError (WrongArgShape g g')
+checkUntypedPrefixCtx (CommaCtx g1 g2) (CommaCtx g1' g2') = do
+    rho1 <- checkUntypedPrefixCtx g1 g1'
+    rho2 <- checkUntypedPrefixCtx g2 g2'
+    runExceptT (unionDisjointEnv rho1 rho2) >>= either (\(v,p,p') -> throwError (NotDisjointCtx v p p')) return
+checkUntypedPrefixCtx g@(CommaCtx {}) g' = throwError (WrongArgShape g g')
 
 type FileInfo = M.Map String (Ctx Var Ty, Ty)
 
@@ -746,14 +757,14 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
             mps <- lift (runExceptT (checkUntypedPrefixCtx g p))
             case mps of
                 Left err -> error (show err)
-                Right (_,ps) -> return (Core.RunCommand f ps)
+                Right ps -> return (Core.RunCommand f ps)
 
         go (Elab.RunStepCommand f p) = do
             (g,s) <- gets (M.lookup f) >>= maybe (error $ "Function " ++ f ++ " not defined.") return
             mps <- lift (runExceptT (checkUntypedPrefixCtx g p))
             case mps of
                 Left err -> error (show err)
-                Right (_,rho) -> do
+                Right rho -> do
                     g' <- runExceptT (deriv rho g) >>= either (error . pp) return
                     modify (M.insert f (g',s))
                     return (Core.RunStepCommand f rho)

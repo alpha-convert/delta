@@ -45,8 +45,8 @@ data UntypedPrefix =
 
 data Cmd =
     FunDef String (Ctx Var.Var Ty) Ty Term
-  | RunCommand String [UntypedPrefix]
-  | RunStepCommand String [UntypedPrefix]
+  | RunCommand String (Ctx Var UntypedPrefix)
+  | RunStepCommand String (Ctx Var UntypedPrefix)
  deriving (Eq,Ord,Show)
 
 type Program = [Cmd]

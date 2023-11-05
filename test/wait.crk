@@ -7,7 +7,7 @@ fun slowfirst(xs : (Int . Int)*) : Int* =
                 a :: rec(ys)
             end
 
-exec slowfirst(emp)
+exec slowfirst(xs = emp)
 
 fun addone(xs : Int*) : Int* =
     case xs of
@@ -16,7 +16,7 @@ fun addone(xs : Int*) : Int* =
                   {y + 1} :: rec(ys)
                  end
 
-exec addone(emp)
+exec addone(xs = emp)
 
 fun runningsum(z : Int; xs : Int*) : Int* =
     case xs of
@@ -25,5 +25,5 @@ fun runningsum(z : Int; xs : Int*) : Int* =
                     {y + z} :: rec({y + z};ys)
                  end
 
-exec runningsum(0;[1;2;3;4;emp))
+exec runningsum(z = 0;xs = [1;2;3;4;emp))
 

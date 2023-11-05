@@ -1,6 +1,6 @@
 fun foo (xs : (Int . Bool)*) : Int* =
     case xs of
       nil => nil
-    | y::ys => let (y;_) = y in y :: rec(ys)
+    | y::ys => let (lmn;_) = y in lmn :: rec(ys)
 
-exec foo (xs = [(1;false);(2;false)])
+exec foo (xs = [(1;false);emp))

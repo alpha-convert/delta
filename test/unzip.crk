@@ -7,4 +7,4 @@ fun unzip(xs : (Int + Bool)*) : Int* || Bool* =
                 inl x => (x::a,b)
               | inr x => (a,x::b)
 
-exec step unzip([inl(3); inr(false); inr(true)))
+exec step unzip(xs = [inl(3); inr(false); inr(true)))

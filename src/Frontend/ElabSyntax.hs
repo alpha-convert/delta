@@ -183,8 +183,8 @@ instance ElabM (StateT ElabState (ReaderT ElabInput (ExceptT ElabErr Identity)))
 
 data Cmd =
       FunDef String (Ctx Var.Var Ty) Ty Term
-    | RunCommand String [Surf.UntypedPrefix]
-    | RunStepCommand String [Surf.UntypedPrefix]
+    | RunCommand String (Ctx Var Surf.UntypedPrefix)
+    | RunStepCommand String (Ctx Var Surf.UntypedPrefix)
     deriving (Eq,Ord,Show)
 
 type Program = [Cmd]
@@ -202,11 +202,11 @@ elabSingle e s = runIdentity (runExceptT (runReaderT (runStateT (elab e) (ES 0))
 
 doElab :: Surf.Program -> IO Program
 doElab = mapM $ \case
-                    (Surf.RunCommand s xs) -> return (RunCommand s xs)
                     (Surf.FunDef f g s e) ->
                         case elabSingle e (M.keysSet $ ctxBindings g) of
                             Right (e',_) -> return (FunDef f g s e')
                             Left err -> error (pp err)
+                    (Surf.RunCommand s xs) -> return (RunCommand s xs)
                     (Surf.RunStepCommand s xs) -> return (RunStepCommand s xs)
 
 -- >>> elabSingle (Surf.TmCatL Nothing Nothing (Surf.TmCatR (Surf.TmLitR (LInt 4)) (Surf.TmLitR (LInt 4))) Surf.TmEpsR) (S.fromList [])

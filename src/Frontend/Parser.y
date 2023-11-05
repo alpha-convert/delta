@@ -162,9 +162,12 @@ Stp   : ']'                                                       { StpDone }
       | Pfx ']'                                                   { StpB $1 StpDone }
       | Pfx ';' Stp                                               { StpB $1 $3 }
 
-PfxArgs : {- empty -}                                            { [] }
-          | Pfx                                                   { [$1] }
-          | Pfx ';' PfxArgs                                      { $1 : $3 }
+PfxArgs     : PfxArgs1 ',' PfxArgs                                 { CommaCtx $1 $3 } 
+            | PfxArgs1 ';' PfxArgs                                 { SemicCtx $1 $3 }
+            | PfxArgs1                                             { $1 } 
+
+PfxArgs1    : Var '=' Pfx                                          { SngCtx (CE $1 $3) }
+            | '(' PfxArgs ')'                                      { $2 }
 
 Cmd   : fun var '(' FunParams ')' ':' Ty '=' Exp                     { FunDef $2 $4 $7 $9 }
       | exec var '(' PfxArgs ')'                                 { RunCommand $2 $4 }

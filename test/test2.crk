@@ -1,11 +1,11 @@
 fun foo(x : Int; y : Bool . Int) : Bool = 
     let (u;v) = y in u
 
-exec foo (x = 3; y = (false;emp))
+exec foo (x = 3;y = (false;emp))
 
-fun head(xs : Int *) : Int =
+fun head(xs : Int*) : Int . Int* =
     case xs of
-      nil => 0
-    | y :: ys => y
+      nil => (0;nil)
+    | y :: ys => (y;ys)
 
-exec head (xs = [3])
+exec head (xs = [3;4;5;emp))

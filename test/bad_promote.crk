@@ -1,3 +1,3 @@
 fun promote (x : Int, y : Bool) : Int . Bool = (x;y)
 
-exec promote(emp,false)
+exec promote(x=emp,y=false)

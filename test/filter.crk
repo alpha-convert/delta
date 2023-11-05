@@ -4,4 +4,4 @@ fun filter(xs : (Int + Bool)*) : Int* =
   | y::ys => (case y of inl u => u :: rec(ys) | inr _ => rec(ys))
 
 exec filter(xs = [])
-exec filter(xs = [emp;2])
+exec filter(xs = [inl(3)])
