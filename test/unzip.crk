@@ -1,0 +1,10 @@
+fun unzip(xs : (Int + Bool)*) : Int* || Bool* =
+    case xs of
+        nil => (nil,nil)
+      | y::ys =>
+            let (a,b) = rec(ys) in
+            case y of
+                inl x => (x::a,b)
+              | inr x => (a,x::b)
+
+exec step unzip([inl(3); inr(false); inr(true)))
