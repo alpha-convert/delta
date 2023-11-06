@@ -19,7 +19,7 @@ instance PrettyPrint MonOp where
     pp Not = "!!"
 
 
-data BinOp = Add | Sub | Mul | Div | Or | And
+data BinOp = Add | Sub | Mul | Div | Or | And | Lt | Gt | Leq | Geq | Eq | Mod
     deriving (Eq,Ord,Show)
 
 instance PrettyPrint BinOp where
@@ -29,6 +29,12 @@ instance PrettyPrint BinOp where
     pp Div = "/"
     pp Or = "||"
     pp And = "&&"
+    pp Lt = "<"
+    pp Gt = ">"
+    pp Leq = "<="
+    pp Geq = ">="
+    pp Eq = "=="
+    pp Mod = "%"
 
 data Term =
       TmLit Lit
@@ -41,6 +47,7 @@ data Term =
     | TmCons Term Term
     | TmMonOp MonOp Term
     | TmBinOp BinOp Term Term
+    | TmIte Term Term Term
     deriving (Eq,Ord,Show)
 
 
@@ -58,11 +65,13 @@ instance PrettyPrint Term where
             go False (TmCons e1 e2) = concat [go True e1," :: ", go True e2]
             go False (TmMonOp m e) = pp m ++ go True e
             go False (TmBinOp b e1 e2) = concat [go True e1," ",pp b," ",go True e2]
+            go False (TmIte e e1 e2) = concat ["if ", go True e," then ", go True e1, " else ",go True e2]
 
 data SemErr =
       NonClosed Var
     | BadCons MaximalPrefix Term Term
     | NotLit Term MaximalPrefix
+    | NotBool Term Lit
     | MonOpError MonOp Lit
     | BinOpError BinOp Lit Lit
     | DivideByZero
@@ -73,6 +82,7 @@ instance PrettyPrint SemErr where
     pp (NonClosed x) = "Term not closed, encountered variable " ++ pp x
     pp (BadCons p2 e1 e2) = concat ["Could not compute cons ", pp (TmCons e1 e2), " because ", pp e2, " evaluated to ", pp p2]
     pp (NotLit e p) = concat ["Expected term ", pp e," to evaluate to a literal, it evaluated to ", pp p]
+    pp (NotBool e l) = concat ["Expected term ", pp e," to evaluate to a boolean, it evaluated to ", pp l]
     pp (MonOpError m l) = concat ["Could not compute MonOp ", pp m, " of ", pp l]
     pp (BinOpError b l l') = concat ["Could not compute BinOp ", pp b, " of ", pp l, " and ", pp l']
     pp DivideByZero = "You divided by zero, silly!"
@@ -83,6 +93,12 @@ evalLit e = do
     case mp of
         LitMP l -> return l
         _ -> throwError (NotLit e mp)
+
+evalBool e = do
+    l <- evalLit e
+    case l of
+        LBool b -> return b
+        _ -> throwError (NotBool e l)
 
 evalMonOp :: (MonadError SemErr m) => MonOp -> Lit -> m Lit
 evalMonOp Neg (LInt n) = return (LInt (-n))
@@ -104,6 +120,18 @@ evalBinOp And (LBool x) (LBool y) = return (LBool (x && y))
 evalBinOp b@And l l' = throwError (BinOpError b l l')
 evalBinOp Or (LBool x) (LBool y) = return (LBool (x || y))
 evalBinOp b@Or l l' = throwError (BinOpError b l l')
+evalBinOp Lt (LInt x) (LInt y) = return (LBool (x < y))
+evalBinOp b@Lt l l' = throwError (BinOpError b l l')
+evalBinOp Gt (LInt x) (LInt y) = return (LBool (x > y))
+evalBinOp b@Gt l l' = throwError (BinOpError b l l')
+evalBinOp Geq (LInt x) (LInt y) = return (LBool (x >= y))
+evalBinOp b@Geq l l' = throwError (BinOpError b l l')
+evalBinOp Leq (LInt x) (LInt y) = return (LBool (x <= y))
+evalBinOp b@Leq l l' = throwError (BinOpError b l l')
+evalBinOp Eq (LInt x) (LInt y) = return (LBool (x == y))
+evalBinOp b@Eq l l' = throwError (BinOpError b l l')
+evalBinOp Mod (LInt x) (LInt y) = return (LInt (x `mod` y))
+evalBinOp b@Mod l l' = throwError (BinOpError b l l')
 
 eval :: (MonadError SemErr m) => Term -> m MaximalPrefix
 eval (TmLit l) = return (LitMP l)
@@ -129,6 +157,9 @@ eval (TmCons e1 e2) = do
     case p2 of
         StMP ps -> return (StMP (p1:ps))
         _ -> throwError (BadCons p2 e1 e2)
+eval (TmIte e e1 e2) = do
+    b <- evalBool e
+    if b then eval e1 else eval e2
 
 
 type HistCtx = M.Map Var Ty
@@ -139,6 +170,7 @@ data TckErr =
     | WrongTypeVar Var Ty Ty
     | CheckTerm Term
     | TurnAroundErr Term Ty Ty
+    | UnequalBranches Ty Ty Term
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint TckErr where
@@ -147,6 +179,7 @@ instance PrettyPrint TckErr where
     pp (WrongTypeVar x t t') = concat ["Expected type ", pp x, " to have type ", pp t," but it has type ", pp t']
     pp (CheckTerm e) = concat ["Term ", pp e, " cannot be inferred"]
     pp (TurnAroundErr e t t') = concat ["Expected term ", pp e," to have type ", pp t," but got type ", pp t']
+    pp (UnequalBranches s s' e) = concat ["Branches of term ", pp e, " had types ", pp s," and ", pp s']
 
 lookupVar :: (MonadReader (M.Map Var b) m, MonadError TckErr m) => Var -> m b
 lookupVar x = asks (M.lookup x) >>= maybe (throwError (UnboundVar x)) return
@@ -155,6 +188,12 @@ inferMonOp :: (MonadError TckErr m, MonadReader HistCtx m) => MonOp -> Term -> m
 inferMonOp Neg e = check e TyInt >> return TyInt
 inferMonOp Not e = check e TyBool >> return TyBool
 
+checkMonOp :: (MonadError TckErr m, MonadReader HistCtx m) => MonOp -> Term -> Ty -> m ()
+checkMonOp Neg e TyInt = check e TyInt
+checkMonOp m@Neg e t = throwError (WrongType (TmMonOp m e) t)
+checkMonOp Not e TyBool = check e TyBool
+checkMonOp m@Not e t = throwError (WrongType (TmMonOp m e) t)
+
 inferBinOp :: (MonadError TckErr m, MonadReader HistCtx m) => BinOp -> Term -> Term -> m Ty
 inferBinOp Add e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyInt
 inferBinOp Sub e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyInt
@@ -162,6 +201,47 @@ inferBinOp Mul e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyInt
 inferBinOp Div e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyInt
 inferBinOp Or e1 e2 = check e1 TyBool >> check e2 TyBool >> return TyBool
 inferBinOp And e1 e2 = check e1 TyBool >> check e2 TyBool >> return TyBool
+inferBinOp Lt e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyBool
+inferBinOp Gt e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyBool
+inferBinOp Leq e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyBool
+inferBinOp Geq e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyBool
+inferBinOp Eq e1 e2 = do
+    s <- infer e1
+    check e2 s
+    return TyBool
+inferBinOp Mod e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyInt
+
+checkBinOp :: (MonadError TckErr m, MonadReader HistCtx m) => BinOp -> Term -> Term -> Ty -> m ()
+checkBinOp Add e1 e2 TyInt = check e1 TyInt >> check e2 TyInt >> return ()
+checkBinOp b@Add e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
+checkBinOp Sub e1 e2 TyInt = check e1 TyInt >> check e2 TyInt >> return ()
+checkBinOp b@Sub e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
+checkBinOp Mul e1 e2 TyInt = check e1 TyInt >> check e2 TyInt >> return ()
+checkBinOp b@Mul e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
+checkBinOp Div e1 e2 TyInt = check e1 TyInt >> check e2 TyInt >> return ()
+checkBinOp b@Div e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
+checkBinOp And e1 e2 TyBool = check e1 TyBool >> check e2 TyBool >> return ()
+checkBinOp b@And e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
+checkBinOp Or e1 e2 TyBool = check e1 TyBool >> check e2 TyBool >> return ()
+checkBinOp b@Or e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
+checkBinOp Lt e1 e2 TyBool = check e1 TyInt >> check e2 TyInt >> return ()
+checkBinOp b@Lt e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
+checkBinOp Gt e1 e2 TyBool = check e1 TyInt >> check e2 TyInt >> return ()
+checkBinOp b@Gt e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
+checkBinOp Leq e1 e2 TyBool = check e1 TyInt >> check e2 TyInt >> return ()
+checkBinOp b@Leq e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
+checkBinOp Geq e1 e2 TyBool = check e1 TyInt >> check e2 TyInt >> return ()
+checkBinOp b@Geq e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
+checkBinOp Eq e1 e2 TyBool = do
+    s <- infer e1
+    check e2 s
+    return ()
+checkBinOp b@Eq e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
+checkBinOp Mod e1 e2 TyInt = check e1 TyInt >> check e2 TyInt >> return ()
+checkBinOp b@Mod e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
+
+
+
 
 infer :: (MonadError TckErr m, MonadReader HistCtx m) => Term -> m Ty
 infer (TmLit (LInt _)) = return TyInt
@@ -170,10 +250,7 @@ infer TmEps = return TyEps
 infer (TmVar x) = lookupVar x
 infer (TmMonOp m e) = inferMonOp m e
 infer (TmBinOp b e1 e2) = inferBinOp b e1 e2
-infer (TmPair e1 e2) = do
-    s <- infer e1
-    t <- infer e2
-    return (TyCat s t)
+infer (TmPair e1 e2) = error "Cannot infer type of pair -- could be cat or par."
 infer e@(TmInl _) = throwError (CheckTerm e)
 infer e@(TmInr _) = throwError (CheckTerm e)
 infer e@TmNil = throwError (CheckTerm e)
@@ -181,6 +258,12 @@ infer (TmCons e1 e2) = do
     s <- infer e1
     () <- check e2 (TyStar s)
     return (TyStar s)
+infer e0@(TmIte e e1 e2) = do
+    check e TyBool
+    s <- infer e1
+    s' <- infer e2
+    when (s /= s') (throwError (UnequalBranches s s' e0))
+    return s
 
 turnaround :: (MonadError TckErr m, MonadReader HistCtx m) => Term -> Ty -> m ()
 turnaround e t = do
@@ -223,9 +306,13 @@ check (TmCons e1 e2) (TyStar s) = do
     return ()
 check e@(TmCons {}) t = throwError (WrongType e t)
 
-check e@(TmMonOp {}) t = turnaround e t
-check e@(TmBinOp {}) t = turnaround e t
+check (TmMonOp m e) t = checkMonOp m e t
+check (TmBinOp b e e') t = checkBinOp b e e' t
 
+check (TmIte e e1 e2) s = do
+    check e TyBool
+    check e1 s
+    check e2 s
 
 substVar :: Term -> Var -> Var -> Term
 substVar e@(TmLit _) _ _ = e
@@ -239,6 +326,7 @@ substVar (TmInl e) x y = TmInl (substVar e x y)
 substVar (TmInr e) x y = TmInr (substVar e x y)
 substVar e@TmNil _ _ = e
 substVar (TmCons e1 e2) x y = TmCons (substVar e1 x y) (substVar e2 x y)
+substVar (TmIte e e1 e2) x y = TmIte (substVar e x y) (substVar e1 x y) (substVar e2 x y)
 
 
 maximalPrefixToTerm :: MaximalPrefix -> Term
@@ -279,3 +367,9 @@ maximalPrefixSubst p x (TmCons e1 e2) = do
   e1' <- maximalPrefixSubst p x e1
   e2' <- maximalPrefixSubst p x e2
   return (TmCons e1' e2')
+
+maximalPrefixSubst p x (TmIte e e1 e2) = do
+  e' <- maximalPrefixSubst p x e
+  e1' <- maximalPrefixSubst p x e1
+  e2' <- maximalPrefixSubst p x e2
+  return (TmIte e' e1' e2')

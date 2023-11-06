@@ -30,6 +30,9 @@ import qualified HistPgm as Hist
       bool            { TokenBool $$ }
       int             { TokenInt $$ }
       var             { TokenVar (Var.Var $$) }
+      if              { TokenIf }
+      then            { TokenThen }
+      else            { TokenElse }
       tyInt           { TokenTyInt }
       tyBool          { TokenTyBool }
       tyEps           { TokenTyEps }
@@ -60,6 +63,10 @@ import qualified HistPgm as Hist
       '/'             { TokenSlash }
       '||'            { TokenPipes }
       '&&'            { TokenAmps }
+      '<'             { TokenLt }
+      '>'             { TokenGt }
+      '<='            { TokenLeq }
+      '>='            { TokenGeq }
 
 %%
 
@@ -75,6 +82,7 @@ Exp   : let '(' WildVar ';' WildVar ')' '=' Exp in Exp             { TmCatL $3 $
       | case Exp of inl WildVar '=>' Exp '|' inr WildVar '=>' Exp  { TmPlusCase $2 $5 $7 $10 $12}
       | case Exp of nil '=>' Exp '|' WildVar '::' WildVar '=>' Exp { TmStarCase $2 $6 $8 $10 $12}
       | wait VarList do Exp end                                    { TmWait $2 $4 }
+      | if Exp1 then Exp else Exp                                  { TmIte $2 $4 $6 }
       | Exp1 '::' Exp                                              { TmCons $1 $3 }
       | Exp1                                                       { $1 }
 
@@ -89,19 +97,25 @@ Exp1  : int                                                       { TmLitR (LInt
       | '(' Exp ')'                                               { $2 }
       | '{' HistPgm '}'                                           { TmHistPgm $2 }
 
-HistPgm     : HP1 '+' HP1                                         { Hist.TmBinOp Hist.Add $1 $3 }
-            | HP1 '-' HP1                                         { Hist.TmBinOp Hist.Sub $1 $3 }
-            | HP1 '||' HP1                                        { Hist.TmBinOp Hist.Or $1 $3 }
+HistPgm     : HP1 '<' HP1                                         { Hist.TmBinOp Hist.Lt $1 $3 }
+            | HP1 '>' HP1                                         { Hist.TmBinOp Hist.Gt $1 $3 }
+            | HP1 '>=' HP1                                        { Hist.TmBinOp Hist.Geq $1 $3 }
+            | HP1 '<=' HP1                                        { Hist.TmBinOp Hist.Leq $1 $3 }
             | HP1 '::' HP1                                        { Hist.TmCons $1 $3 }
             | inl HP1                                             { Hist.TmInl $2 }
             | inr HP1                                             { Hist.TmInr $2 }
             | HP1                                                 { $1 }
 
-HP1         : HP2 '*' HP2                                         { Hist.TmBinOp Hist.Mul $1 $3 }
-            | HP2 '/' HP2                                         { Hist.TmBinOp Hist.Div $1 $3 }
+HP1         : HP2 '+' HP2                                         { Hist.TmBinOp Hist.Add $1 $3 }
+            | HP2 '-' HP2                                         { Hist.TmBinOp Hist.Sub $1 $3 }
+            | HP2 '||' HP2                                        { Hist.TmBinOp Hist.Or $1 $3 }
             | HP2                                                 { $1 }
 
-HP2         : int                                                 { Hist.TmLit (LInt $1) }
+HP2         : HP3 '*' HP3                                         { Hist.TmBinOp Hist.Mul $1 $3 }
+            | HP3 '/' HP3                                         { Hist.TmBinOp Hist.Div $1 $3 }
+            | HP3                                                 { $1 }
+
+HP3         : int                                                 { Hist.TmLit (LInt $1) }
             | bool                                                { Hist.TmLit (LBool $1) }
             | nil                                                 { Hist.TmNil }
             | '('')'                                              { Hist.TmEps }
@@ -126,7 +140,7 @@ Ty1   : Ty2 '||' Ty2                                              { TyPar $1 $3 
 Ty2   : Ty3 '.' Ty3                                               { TyCat $1 $3 }
       | Ty3                                                       { $1 }
 
-Ty3   : Ty4 '*'                                                   { TyStar $1 }
+Ty3   : Ty3 '*'                                                   { TyStar $1 }
       | Ty4                                                       { $1 }
 
 Ty4   : tyInt                                                     { TyInt }
@@ -187,6 +201,9 @@ data Token
       | TokenIn
       | TokenSink
       | TokenCase
+      | TokenIf
+      | TokenThen
+      | TokenElse
       | TokenOf
       | TokenInl
       | TokenInr
@@ -210,6 +227,10 @@ data Token
       | TokenCS
       | TokenOC
       | TokenCC
+      | TokenLt
+      | TokenGt
+      | TokenLeq
+      | TokenGeq
       | TokenDot
       | TokenStar
       | TokenDash
@@ -238,6 +259,10 @@ lexer ('|':'|':cs) = TokenPipes : lexer cs
 lexer ('&':'&':cs) = TokenAmps : lexer cs
 lexer ('=':'>':cs) = TokenArr : lexer cs
 lexer (':':':':cs) = TokenCons : lexer cs
+lexer ('<':'=':cs) = TokenLeq : lexer cs
+lexer ('>':'=':cs) = TokenGeq : lexer cs
+lexer ('<':cs) = TokenLt : lexer cs
+lexer ('>':cs) = TokenGt : lexer cs
 lexer ('=':cs) = TokenEq : lexer cs
 lexer (',':cs) = TokenComma : lexer cs
 lexer ('.':cs) = TokenDot : lexer cs
@@ -263,6 +288,9 @@ lexVar cs =
    case span (\c -> isAlpha c || c == '\'') cs of
       ("let",rest) -> TokenLet : lexer rest
       ("in",rest)  -> TokenIn : lexer rest
+      ("if",rest)  -> TokenIf : lexer rest
+      ("then",rest)  -> TokenThen : lexer rest
+      ("else",rest)  -> TokenElse : lexer rest
       ("sink",rest)  -> TokenSink : lexer rest
       ("case",rest)  -> TokenCase : lexer rest
       ("of",rest)  -> TokenOf : lexer rest

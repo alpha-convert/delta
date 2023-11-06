@@ -30,6 +30,7 @@ data Term =
     | TmInl Term
     | TmInr Term
     | TmPlusCase (M.Map Var Ty) (Env Var Prefix) Ty Var Var Term Var Term
+    | TmIte (M.Map Var Ty) (Env Var Prefix) Ty Var Term Term
     | TmNil
     | TmCons Term Term
     | TmStarCase (M.Map Var Ty) (Env Var Prefix) Ty Ty Var Term Var Var Term {- first return type, then star type -}
@@ -66,6 +67,7 @@ instance PrettyPrint Term where
             go _ (TmInl e) = "inl " ++ go True e
             go _ (TmInr e) = "inr " ++ go True e
             go _ (TmPlusCase m rho _ (Var z) (Var x) e1 (Var y) e2) = concat ["case_",pp rho,"|",pp m," ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
+            go _ (TmIte _ rho _ z e1 e2) = concat ["if_", pp rho," ", pp z," then ", go True e1," else ", go True e2]
             go _ (TmCons e1 e2) = concat [go True e1," :: ",go True e2]
             go _ (TmStarCase m rho _ _ (Var z) e1 (Var x) (Var xs) e2) = concat ["case_",pp rho,"|",pp m," ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
             go False (TmWait rho _ x e) = concat ["wait_",pp rho," ", pp x," do ", go True e]
@@ -97,6 +99,17 @@ substVar (TmPlusCase m rho r z x' e1 y' e2) x y | y == z = TmPlusCase m' rho' r 
            Just p -> bindEnv x p (unbindEnv z rho)
     m' = rebind m x z
 substVar (TmPlusCase m rho r z x' e1 y' e2) x y = TmPlusCase m' rho r z x' (substVar e1 x y) y' (substVar e2 x y)
+  where
+    m' = case M.lookup y m of
+           Nothing -> m
+           Just p -> M.insert x p (M.delete y m)
+substVar (TmIte m rho r z e1 e2) x y | y == z = TmIte m' rho' r x (substVar e1 x y) (substVar e2 x y)
+  where
+    rho' = case Values.lookupEnv z rho of
+           Nothing -> error "Impossible"
+           Just p -> bindEnv x p (unbindEnv z rho)
+    m' = rebind m x z
+substVar (TmIte m rho r z e1 e2) x y = TmIte m' rho r z (substVar e1 x y) (substVar e2 x y)
   where
     m' = case M.lookup y m of
            Nothing -> m
@@ -250,6 +263,14 @@ maximalPrefixSubst p x (TmPlusCase m rho t z x' e1 y' e2) | x /= z = do
 maximalPrefixSubst (SumMPA p) _ (TmPlusCase _ _ _ _ x' e1 _ _) = maximalPrefixSubst p x' e1
 maximalPrefixSubst (SumMPB p) _ (TmPlusCase _ _ _ _ _ _ y' e2) = maximalPrefixSubst p y' e2
 maximalPrefixSubst p x e@(TmPlusCase {}) = throwError (x,p,e)
+
+maximalPrefixSubst p x (TmIte m rho t z e1 e2) | x /= z = do
+  e1' <- maximalPrefixSubst p x e1
+  e2' <- maximalPrefixSubst p x e2
+  return (TmIte (M.delete x m) (unbindEnv x rho) t z e1' e2')
+maximalPrefixSubst (LitMP (LBool True)) _ (TmIte _ _ _ _ e1 _) = return e1
+maximalPrefixSubst (LitMP (LBool False)) _ (TmIte _ _ _ _ _ e2) = return e2
+maximalPrefixSubst p x e@(TmIte {}) = throwError (x,p,e)
 
 maximalPrefixSubst p x (TmStarCase m rho t r z e1 y' ys' e2) | x /= z = do
   e1' <- maximalPrefixSubst p x e1

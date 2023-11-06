@@ -90,7 +90,6 @@ eval (TmCatL t x y z e) = do
             (p',e') <- withEnv (bindAllEnv [(x,p1),(y,p2)]) (eval e)
             let e'' = substVar e' z y
             sink <- reThrow SinkError (sinkTm p1)
-            -- e''' <- reThrow handleRuntimeCutError (cut x sink e'')
             return (p', TmCut x sink e'')
         _ -> throwError (NotCatPrefix z p)
 
@@ -137,6 +136,21 @@ eval (TmPlusCase m rho' r z x e1 y e2) = do
                 (p'',e2') <- withEnv (bindEnv y p') (eval e2)
                 return (p'', substVar e2' z y)
             _ -> throwError (NotPlusPrefix z p))
+
+eval (TmIte m rho' r z e1 e2) = do
+    withEnvM (reThrow (uncurry ConcatError) . concatEnv rho') $ do
+        p <- lookupVar z
+        case p of
+            LitPEmp -> do
+                rho'' <- ask
+                return (emptyPrefix r, TmIte m rho'' r z e1 e2)
+            (LitPFull (LBool True)) -> do
+             (p',e1') <- eval e1
+             return (p', TmCut z TmEpsR e1')
+            (LitPFull (LBool False)) -> do
+                (p',e2') <- eval e2
+                return (p', TmCut z TmEpsR e2')
+            _ -> throwError (NotPlusPrefix z p)
 
 eval TmNil = return (StpDone,TmEpsR)
 
@@ -219,6 +233,7 @@ fixSubst g s e = go
         go (TmInl e') = TmInl (go e')
         go (TmInr e') = TmInr (go e')
         go (TmPlusCase m rho r z x e1 y e2) = TmPlusCase m rho r z x (go e1) y (go e2)
+        go (TmIte m rho r z e1 e2) = TmIte m rho r z (go e1) (go e2)
         go TmNil = TmNil
         go (TmCons e1 e2) = TmCons (go e1) (go e2)
         go (TmStarCase m rho r t z e1 y ys e2) = TmStarCase m rho r t z (go e1) y ys (go e2)
@@ -251,8 +266,8 @@ doRunPgm p = do
             (e,g,s) <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to e)xecute unbound function " ++ f)) return
             case runIdentity $ runExceptT $ runReaderT (eval e) rho of
                                     Right (p',e') -> do
-                                        lift (putStrLn $ "Result of executing " ++ f ++ " on " ++ show rho ++ ": " ++ show p' ++ "\n")
-                                        lift (putStrLn $ "Final core term: " ++  pp e' ++ "\n")
+                                        lift (putStrLn $ "Result of executing " ++ f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
+                                        -- lift (putStrLn $ "Final core term: " ++  pp e' ++ "\n")
                                         () <- hasTypeB p' s >>= guard
                                         -- g' <- doDeriv rho g
                                         -- s' <- doDeriv p' s

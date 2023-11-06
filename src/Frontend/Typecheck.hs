@@ -36,6 +36,7 @@ data TckErr t = VarNotFound Var t
             | ExpectedTyPar Var Ty t
             | ExpectedTyPlus Var Ty t
             | ExpectedTyStar Var Ty t
+            | ExpectedTyBool Var Ty t
             | CheckTermInferPos t
             | UnequalReturnTypes Ty Ty t
             | WrongTypeLit Lit Ty
@@ -63,6 +64,7 @@ instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (ExpectedTyPar (Var x) t e) = concat ["Variable ",x," expected to be of parallel type, but it has type ", pp t, " in term ", pp e]
     pp (ExpectedTyPlus (Var x) t e) = concat ["Variable ",x," expected to be of sum type, but it has type ", pp t, " in term ", pp e]
     pp (ExpectedTyStar (Var x) t e)= concat ["Variable ",x," expected to be of star type, but it has type ", pp t, " in term ", pp e]
+    pp (ExpectedTyBool (Var x) t e)= concat ["Variable ",x," expected to be of bool type, but it has type ", pp t, " in term ", pp e]
     pp (CheckTermInferPos e) = concat ["The type of the term ",pp e," cannot be inferred"]
     pp (UnequalReturnTypes t1 t2 e) = concat ["Different types ",pp t1," and ",pp t2," inferred for the branches of the term ", pp e]
     pp (WrongTypeLit l t) = concat ["Literal ", pp l, " does not have type ", pp t]
@@ -98,6 +100,13 @@ lookupTy :: (TckM t m) => t -> Var -> m Ty
 lookupTy e x = do
     m <- asks mp
     maybe (throwError (VarNotFound x e)) return (M.lookup x m)
+
+lookupTyBool :: (TckM t m) => t -> Var -> m ()
+lookupTyBool e x = do
+    s <- lookupTy e x
+    case s of
+        TyBool -> return ()
+        _ -> throwError (ExpectedTyBool x s e)
 
 lookupTyCat :: (TckM t m) => t -> Var -> m (Ty, Ty)
 lookupTyCat e x = do
@@ -253,6 +262,16 @@ checkElab r e@(Elab.TmPlusCase z x e1 y e2) = do
     m <- asks mp
     return $ CR p'' (Core.TmPlusCase m rho r z x e1' y e2')
 
+checkElab r e@(Elab.TmIte z e1 e2) = do
+    lookupTyBool e z
+    CR p1 e1' <- checkElab r e1
+    CR p2 e2' <- checkElab r e2
+    p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
+    rho <- asks emptyEnvOfType
+    m <- asks mp
+    return $ CR p' (Core.TmIte m rho r z e1' e2')
+
+
 checkElab (TyStar _) Elab.TmNil = return (CR P.empty Core.TmNil)
 checkElab t Elab.TmNil = throwError (WrongTypeNil t)
 
@@ -378,6 +397,16 @@ inferElab e@(Elab.TmPlusCase z x e1 y e2) = do
     m <- asks mp
     return $ IR r1 p' (Core.TmPlusCase m rho r1 z x e1' y e2')
 
+inferElab e@(Elab.TmIte z e1 e2) = do
+    lookupTyBool e z
+    IR r1 p1 e1' <- inferElab e1
+    IR r2 p2 e2' <- inferElab e2
+    guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
+    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    rho <- asks emptyEnvOfType
+    m <- asks mp
+    return $ IR r1 p' (Core.TmIte m rho r1 z e1' e2')
+
 inferElab e@Elab.TmNil = throwError (CheckTermInferPos e)
 
 inferElab e@(Elab.TmCons e1 e2) = do
@@ -478,6 +507,15 @@ checkCore r e@(Core.TmPlusCase m rho r' z x e1 y e2) = do
         p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
         reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
 
+checkCore r e@(Core.TmIte m rho r' z e1 e2) = do
+    reThrow handleHasTypeErr (hasType rho m)
+    withCtx m $ do
+        lookupTyBool e z
+        guard (r == r') (ListedTypeError r' r e)
+        p1 <- checkCore r e1
+        p2 <- checkCore r e2
+        reThrow (handleOutOfOrder e) (P.union p1 p2)
+
 checkCore (TyStar _) Core.TmNil = return P.empty
 checkCore t Core.TmNil = throwError (WrongTypeNil t)
 
@@ -577,6 +615,14 @@ inferCore e@(Core.TmPlusCase m rho r z x e1 y e2) = do
         p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
         p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
         return (r,p'')
+
+inferCore e@(Core.TmIte m rho r z e1 e2) = do
+    reThrow handleHasTypeErr (hasType rho m)
+    withCtx m $ do
+        lookupTyBool e z
+        p1 <- checkCore r e1
+        p2 <- checkCore r e2
+        (r,) <$> reThrow (handleOutOfOrder e) (P.union p1 p2)
 
 inferCore Core.TmNil = undefined
 

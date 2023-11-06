@@ -33,6 +33,7 @@ data Term =
     | TmInl Term
     | TmInr Term
     | TmPlusCase Var Var Term Var Term
+    | TmIte Var Term Term
     | TmNil
     | TmCons Term Term
     | TmStarCase Var Term Var Var Term
@@ -55,6 +56,7 @@ instance PrettyPrint Term where
             go True e = concat ["(", go False e, ")"]
             go False (TmCatL (Var x) (Var y) (Var z) e) = concat ["let (",x,";",y,") = ",z," in ",go False e]
             go False (TmParL (Var x) (Var y) (Var z) e) = concat ["let (",x,",",y,") = ",z," in ",go False e]
+            go False (TmIte z e1 e2) = concat ["if ", pp z, " then ", go True e1, " else ", go True e2]
             go False (TmInl e) = "inl " ++ go True e
             go False (TmInr e) = "inr " ++ go True e
             go False (TmPlusCase (Var z) (Var x) e1 (Var y) e2) = concat ["case ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
@@ -143,6 +145,12 @@ elab (Surf.TmParR e1 e2) = do
     return (TmParR e1' e2')
 elab (Surf.TmInl e) = TmInl <$> elab e
 elab (Surf.TmInr e) = TmInr <$> elab e
+elab (Surf.TmIte e e1 e2) = do
+    e' <- elab e
+    e1' <- elab e1
+    e2' <- elab e2
+    z <- freshElabVar
+    return $ TmCut z e' (TmIte z e1' e2')
 elab (Surf.TmPlusCase e mx e1 my e2) = do
     e' <- elab e
     (e1',x) <- withUnshadow mx $ elab e1
@@ -176,6 +184,7 @@ elabHist (Hist.TmInl e) = Hist.TmInl <$> elabHist e
 elabHist (Hist.TmInr e) = Hist.TmInr <$> elabHist e
 elabHist e@Hist.TmNil = return e
 elabHist (Hist.TmCons e1 e2) = Hist.TmCons <$> elabHist e1 <*> elabHist e2
+elabHist (Hist.TmIte e e1 e2) = Hist.TmIte <$> elabHist e <*> elabHist e1 <*> elabHist e2
 
 {-TODO: ensure that fundefs have unique vars-}
 
