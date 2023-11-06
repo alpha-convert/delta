@@ -115,8 +115,8 @@ HP2         : HP3 '*' HP3                                         { Hist.TmBinOp
             | HP3 '/' HP3                                         { Hist.TmBinOp Hist.Div $1 $3 }
             | HP3                                                 { $1 }
 
-HP3         : int                                                 { Hist.TmLit (LInt $1) }
-            | bool                                                { Hist.TmLit (LBool $1) }
+HP3         : int                                                 { Hist.TmValue (Hist.VInt $1) }
+            | bool                                                { Hist.TmValue (Hist.VBool $1) }
             | nil                                                 { Hist.TmNil }
             | '('')'                                              { Hist.TmEps }
             | Var                                                 { Hist.TmVar $1 }

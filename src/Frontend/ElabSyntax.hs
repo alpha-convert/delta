@@ -175,7 +175,7 @@ elab (Surf.TmWait xs e) = do
 
 elabHist :: (ElabM m) => Hist.Term -> m Hist.Term
 elabHist (Hist.TmVar x) = Hist.TmVar <$> unshadow x
-elabHist e@(Hist.TmLit _) = return e
+elabHist e@(Hist.TmValue _) = return e
 elabHist e@Hist.TmEps = return e
 elabHist (Hist.TmBinOp b e1 e2) = Hist.TmBinOp b <$> elabHist e1 <*> elabHist e2
 elabHist (Hist.TmMonOp m e) = Hist.TmMonOp m <$> elabHist e
@@ -213,7 +213,9 @@ doElab :: Surf.Program -> IO Program
 doElab = mapM $ \case
                     (Surf.FunDef f g s e) ->
                         case elabSingle e (M.keysSet $ ctxBindings g) of
-                            Right (e',_) -> return (FunDef f g s e')
+                            Right (e',_) -> do
+                                putStrLn $ "Function " ++ f ++ " elaborated OK. Elab term: " ++ pp e' ++ "\n"
+                                return (FunDef f g s e')
                             Left err -> error (pp err)
                     (Surf.RunCommand s xs) -> return (RunCommand s xs)
                     (Surf.RunStepCommand s xs) -> return (RunStepCommand s xs)

@@ -215,9 +215,11 @@ eval (TmWait rho' r x e) =
                 rho'' <- ask
                 return (emptyPrefix r, TmWait rho'' r x e)
 
-eval (TmHistPgm _ he) = do
-    mp <- reThrow (handleHistEvalErr he) (Hist.eval he)
-    let p = maximalDemote mp
+eval (TmHistPgm s he) = do
+    p <- reThrow (handleHistEvalErr he) $ do
+        v <- Hist.eval he
+        mp <- Hist.valueToMaximalPrefix s v
+        return (maximalDemote mp)
     e <- reThrow SinkError (sinkTm p)
     return (p,e)
 
@@ -268,7 +270,7 @@ doRunPgm p = do
                                     Right (p',e') -> do
                                         lift (putStrLn $ "Result of executing " ++ f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
                                         -- lift (putStrLn $ "Final core term: " ++  pp e' ++ "\n")
-                                        () <- hasTypeB p' s >>= guard
+                                        () <- hasTypeB p' s >>= (\b -> if b then return () else error ("Output: " ++ pp p' ++ " does not have type "++ pp s))
                                         -- g' <- doDeriv rho g
                                         -- s' <- doDeriv p' s
                                         -- () <- doCheckCoreTm g' s' e'

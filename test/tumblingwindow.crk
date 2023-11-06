@@ -8,4 +8,13 @@ fun tumble(k : Int ; n : Int ; xs : Int*) : Int* . Int** =
                     let (cur;rest) = rec({k};{n + 1};ys) in (y::cur;rest)
                end
 
-exec tumble(k=2;n=0;xs = [1;2;3;4;5;6;7])
+exec tumble(k=2;n=0;xs=emp)
+exec tumble(k=2;n=0;xs=[emp))
+exec tumble(k=2;n=0;xs=[3))
+exec tumble(k=2;n=0;xs=[3;emp))
+exec tumble(k=2;n=0;xs=[3;4))
+exec tumble(k=2;n=0;xs=[3;4;emp))
+exec tumble(k=2;n=0;xs=[3;4;5))
+exec tumble(k=2;n=0;xs=[3;4;5;6))
+exec tumble(k=2;n=0;xs=[3;4;5;6;7))
+exec tumble(k=2;n=0;xs=[3;4;5;6;7])

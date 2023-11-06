@@ -27,6 +27,7 @@ import Control.Monad (when)
 import Test.HUnit
 import Data.Bifunctor
 import qualified HistPgm as Hist
+import Debug.Trace (trace)
 
 data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
@@ -298,10 +299,9 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
 checkElab r (Elab.TmCut x e1 e2) = do
     IR s p e1' <- inferElab e1
     CR p' e2' <- withBind x s $ checkElab r e2
-    reThrow (handleReUse (Elab.TmCatR e1 e2)) (P.checkDisjoint p p')
+    reThrow (handleReUse (Elab.TmCut x e1 e2)) (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
-    e' <- reThrow handleImpossibleCut (Core.cut x e1' e2')
-    return (CR p'' e')
+    return (CR p'' (Core.TmCut x e1' e2'))
 
 checkElab r e@(Elab.TmRec es) = do
     Rec g r' <- asks rs

@@ -1,0 +1,13 @@
+fun puncWindow(xs : (Eps + Int)*) : Int* . Int** =
+    case xs of
+      nil => (nil;nil)
+    | y::ys => let (cur;rest) = rec(ys) in
+               case y of
+                 inl _ => (nil;(cur::rest))
+               | inr z => (z :: cur; rest)
+
+exec puncWindow(xs = emp)
+exec puncWindow(xs = [inr(3)))
+exec puncWindow(xs = [inr(3);emp))
+exec puncWindow(xs = [inr(3);inr(4);inl(emp)))
+exec puncWindow(xs = [inl(emp);inr(5)))

@@ -13,3 +13,9 @@ instance (PrettyPrint k, PrettyPrint v) => PrettyPrint (M.Map k v) where
 
 instance PrettyPrint String where
     pp s = s
+
+instance PrettyPrint Int where
+    pp = show
+
+instance PrettyPrint Bool where
+    pp = show

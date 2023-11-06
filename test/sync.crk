@@ -1,0 +1,16 @@
+fun sync(xs : Int*, ys : Int*) : (Int || Int)* =
+    case xs of
+      nil => nil
+    | x'::xs' => case ys of
+                   nil => nil
+                 | y'::ys' => wait x',y' do
+                                {(x',y')} :: rec(xs',ys')
+                              end
+
+exec sync(xs = emp,ys = emp)
+exec sync(xs = [4;5;6;7),ys = emp)
+exec sync(xs = [4;5;6;7),ys = [1;emp))
+exec sync(xs = [4;5;6;7),ys = [1;2;emp))
+
+exec step sync(xs = [1;2;3;4],ys = emp)
+exec sync(xs=emp,ys=[5;6;7;8])
