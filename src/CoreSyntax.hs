@@ -64,7 +64,7 @@ instance PrettyPrint Term where
             go _ (TmCatL t (Var x) (Var y) (Var z) e) = concat ["let_{",pp t,"} (",x,";",y,") = ",z," in ",go False e]
             go _ (TmParL (Var x) (Var y) (Var z) e) = concat ["let (",x,",",y,") = ",z," in ",go False e]
             go _ (TmInl e) = "inl " ++ go True e
-            go _ (TmInr e) = "inl " ++ go True e
+            go _ (TmInr e) = "inr " ++ go True e
             go _ (TmPlusCase m rho _ (Var z) (Var x) e1 (Var y) e2) = concat ["case_",pp rho,"|",pp m," ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
             go _ (TmCons e1 e2) = concat [go True e1," :: ",go True e2]
             go _ (TmStarCase m rho _ _ (Var z) e1 (Var x) (Var xs) e2) = concat ["case_",pp rho,"|",pp m," ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]

@@ -11,6 +11,7 @@ module Util.PartialOrder
     , empty
     , insert
     , lessThan
+    , comparable
     , map
     , set
     , singleton
@@ -20,6 +21,7 @@ module Util.PartialOrder
     , substSingAll
     , union
     , consistentWith
+    , ConsistentWithErr(..)
     ) where
 
 import Control.Monad
@@ -30,6 +32,10 @@ import GHC.Stack
 import Prelude             hiding (concat, map)
 import Control.Monad.Except
 import Data.Set (Set)
+import Types (CtxStruct (..))
+import Control.Monad.Loops
+import Data.Foldable (toList)
+
 
 newtype Partial a
   = Partial { unPartial :: Set (a, a) }
@@ -75,6 +81,9 @@ insert (Partial p) a b = Partial $ transClosure (Set.insert (a, b) p)
 
 lessThan :: (Ord a) => Partial a -> a -> a -> Bool
 lessThan (Partial p) a b = Set.member (a, b) p
+
+comparable :: (Ord a) => Partial a -> a -> a -> Bool
+comparable p x y = lessThan p x y || lessThan p y x
 
 checkAntiSymm :: (Ord a, Monad m) => Partial a -> ExceptT (a, a) m ()
 checkAntiSymm (Partial p) = maybe (return ()) throwError $ foldl f Nothing p
@@ -122,8 +131,26 @@ subOrder :: (Ord a) => Partial a -> Partial a -> Maybe (Partial a)
 subOrder (Partial sub) (Partial super) =
   let d = Set.difference sub super in
     if null d then Nothing else Just (Partial d)
+  
+data ConsistentWithErr a =
+    OutOfOrder a a
+  | SomeOrder  a a
+  deriving (Eq,Ord,Show)
 
-consistentWith :: (Ord a, Monad m) => Partial a -> [a] -> ExceptT (a,a) m ()
-consistentWith _ [] = return ()
-consistentWith _ [_] = return ()
-consistentWith p (x:y:xs) = if not (lessThan p y x) then consistentWith p (y:xs) else throwError (x,y)
+
+pm g g' f = mapM_ (\x -> mapM_ (f x) g') g
+
+consistentWith :: (Ord a, Monad m) => Partial a -> CtxStruct a -> ExceptT (ConsistentWithErr a) m ()
+consistentWith _ EmpCtx = return ()
+consistentWith _ (SngCtx _) = return ()
+consistentWith p (SemicCtx g g') = do
+  consistentWith p g
+  consistentWith p g'
+  pm g g' $ \x y -> when (lessThan p y x) (throwError (OutOfOrder x y))
+consistentWith p (CommaCtx g g') = do
+  consistentWith p g
+  consistentWith p g'
+  pm g g' $ \x y -> when (comparable p x y) (throwError (SomeOrder x y))
+
+
+-- = if not (lessThan p y x) then consistentWith p (y:xs) else throwError (x,y)

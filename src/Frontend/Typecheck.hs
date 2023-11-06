@@ -10,7 +10,7 @@ module Frontend.Typecheck(
 
 import qualified Frontend.ElabSyntax as Elab
 import qualified CoreSyntax as Core
-import Control.Monad.Except (MonadError (throwError), runExceptT, ExceptT)
+import Control.Monad.Except (MonadError (throwError), runExceptT, ExceptT, withExceptT)
 import Types (Ctx, CtxStruct(..), Ty(..), ctxBindings, ctxVars, emptyPrefix, ctxAssoc, deriv, ValueLikeErr (IllTyped), ValueLike (hasType), ctxMap, CtxEntry (..))
 import Control.Monad.Reader (MonadReader (ask, local), asks, ReaderT (runReaderT), withReaderT)
 import Var (Var (Var))
@@ -30,6 +30,7 @@ import qualified HistPgm as Hist
 
 data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
+            | SomeOrder Var Var t
             | ReUse Var t
             | ExpectedTyCat Var Ty t
             | ExpectedTyPar Var Ty t
@@ -48,7 +49,7 @@ data TckErr t = VarNotFound Var t
             | WrongTypeCons t t Ty
             | ListedTypeError Ty Ty Core.Term
             | ImpossibleCut Var Core.Term Core.Term
-            | UnsaturatedRecursiveCall (Ctx Var Ty) (CtxStruct InferElabResult)
+            | UnsaturatedRecursiveCall (Ctx Var Ty) (CtxStruct t)
             | HasTypeErr (Env Var.Var Prefix) (M.Map Var.Var Ty)
             | NonMatchingRecursiveArgs (Ctx Var Ty) (Ctx Var t)
             | HistTckErr t Hist.TckErr
@@ -56,6 +57,7 @@ data TckErr t = VarNotFound Var t
 instance PrettyPrint t => PrettyPrint (TckErr t) where
     pp (VarNotFound (Var x) e) = concat ["Variable ",x," not found in term ", pp e]
     pp (OutOfOrder (Var x) (Var y) e) = concat ["Variable ",y," came before ",x," in term ",pp e," but expected the other order."]
+    pp (SomeOrder (Var x) (Var y) e) = concat ["Variables ",x," and ",y," used in some order in term ",pp e," but expected them to be used in parallel."]
     pp (ReUse (Var x) e) = concat ["Variable ",x," was reused in disjoint branches of ", pp e]
     pp (ExpectedTyCat (Var x) t e) = concat ["Variable ",x," expected to be of concatenation type, but it has type ", pp t, " in term ", pp e]
     pp (ExpectedTyPar (Var x) t e) = concat ["Variable ",x," expected to be of parallel type, but it has type ", pp t, " in term ", pp e]
@@ -161,6 +163,10 @@ reThrow k x = runExceptT x >>= either (throwError . k) return
 handleOutOfOrder :: t -> (Var,Var) -> TckErr t
 handleOutOfOrder e (x,y) = OutOfOrder x y e
 
+handleConsistentWith :: t -> P.ConsistentWithErr Var -> TckErr t
+handleConsistentWith e (P.OutOfOrder x y) = OutOfOrder x y e
+handleConsistentWith e (P.SomeOrder x y) = SomeOrder x y e
+
 handleReUse :: t -> Var -> TckErr t
 handleReUse e x = ReUse x e
 
@@ -216,6 +222,7 @@ checkElab t (Elab.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
 checkElab r e@(Elab.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
     (CR p e'') <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkElab r e')
+    when (P.comparable p y x) (throwError (SomeOrder x y e'))
     p' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return $ CR p' (Core.TmParL x y z e'')
 
@@ -280,8 +287,9 @@ checkElab r (Elab.TmCut x e1 e2) = do
 checkElab r e@(Elab.TmRec es) = do
     Rec g r' <- asks rs
     when (r /= r') $ throwError (UnequalReturnTypes r r' e) -- ensure the return type is the proper one
-    es' <- mapM inferElab es -- infer all the arguments
-    (p,args) <- elabRec g es'
+    (p,args) <- elabRec g es
+    -- es' <- mapM inferElab es -- infer all the arguments
+    -- (p,args) <- elabRec g es'
     return (CR p (Core.TmRec args))
 
 checkElab r e@(Elab.TmWait x e') = do
@@ -295,13 +303,12 @@ checkElab r e@(Elab.TmHistPgm he) = do
     return (CR P.empty (Core.TmHistPgm r he))
 
 
--- Given a context and a list of inferred terms, return the "context" mapping variables to terms.
-elabRec :: (TckM Elab.Term m) => Ctx Var Ty -> CtxStruct InferElabResult -> m (P.Partial Var,Ctx Var Core.Term)
+elabRec :: (TckM Elab.Term m) => Ctx Var Ty -> CtxStruct Elab.Term -> m (P.Partial Var,Ctx Var Core.Term)
 elabRec EmpCtx EmpCtx = return (P.empty,EmpCtx)
 elabRec g@EmpCtx g' = throwError (UnsaturatedRecursiveCall g g')
-elabRec (SngCtx (CE x s)) (SngCtx (IR s' p e)) = do
-    when (s /= s') $ throwError (error "HERE!!")
-    return (p,SngCtx (CE x e))
+elabRec (SngCtx (CE x s)) (SngCtx e) = do
+    CR p e' <- checkElab s e
+    return (p,SngCtx (CE x e'))
 elabRec g@(SngCtx {}) g' = throwError (UnsaturatedRecursiveCall g g')
 elabRec (SemicCtx g1 g2) (SemicCtx args1 args2) = do
     (p,args1') <- elabRec g1 args1
@@ -309,13 +316,13 @@ elabRec (SemicCtx g1 g2) (SemicCtx args1 args2) = do
     reThrow (error "asdf") (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (error "Arguments use variables inconsistently")) $ P.concat p p'
     return (p'',SemicCtx args1' args2')
-elabRec g@(SemicCtx g1 g2) g' = throwError (UnsaturatedRecursiveCall g g')
+elabRec g@(SemicCtx {}) g' = throwError (UnsaturatedRecursiveCall g g')
 elabRec (CommaCtx g1 g2) (CommaCtx args1 args2) = do
     (p,args1') <- elabRec g1 args1
     (p',args2') <- elabRec g2 args2
     p'' <- reThrow (handleOutOfOrder (error "Arguments use variables inconsistently")) $ P.union p p'
     return (p'',CommaCtx args1' args2')
-elabRec g@(CommaCtx g1 g2) g' = throwError (UnsaturatedRecursiveCall g g')
+elabRec g@(CommaCtx {}) g' = throwError (UnsaturatedRecursiveCall g g')
 
 
 inferElab :: (TckM Elab.Term m) => Elab.Term -> m InferElabResult
@@ -348,6 +355,7 @@ inferElab e@(Elab.TmCatR e1 e2) = do
 inferElab e@(Elab.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
     (IR r p e'') <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferElab e')
+    when (P.comparable p y x) (throwError (SomeOrder x y e'))
     p' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return $ IR r p' (Core.TmParL x y z e'')
 
@@ -399,8 +407,7 @@ inferElab e@(Elab.TmCut x e1 e2) = do
 
 inferElab e@(Elab.TmRec es) = do
     Rec g r <- asks rs
-    es' <- mapM inferElab es -- infer all the arguments
-    (p,args) <- elabRec g es'
+    (p,args) <- elabRec g es
     return (IR r p (Core.TmRec args))
 
 inferElab e@(Elab.TmWait x e') = do
@@ -429,7 +436,6 @@ checkCore t e@(Core.TmVar x) = do
 checkCore r e@(Core.TmCatL t' x y z e') = do
     (s,t) <- lookupTyCat e z
     guard (t == t') (ListedTypeError t' t e)
-    m <- asks mp
     p <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkCore r e')
     guard (not $ P.lessThan p y x) (OutOfOrder x y e')
     -- Replace x and y with z in the output
@@ -445,6 +451,7 @@ checkCore t (Core.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
 checkCore r e@(Core.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
     p <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkCore r e')
+    when (P.comparable p y x) (throwError (SomeOrder x y e'))
     reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
 
 checkCore (TyPar s t) e@(Core.TmParR e1 e2) = do
@@ -493,7 +500,6 @@ checkCore r e@(Core.TmStarCase m rho r' s' z e1 x xs e2) = do
         p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
         reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
 
--- NOTE: this just checks that we have all the binders we expect for the term, not that they arrive in the right order!
 checkCore r e@(Core.TmRec args) = do
     TckCtx g_bound (Rec g r') _ <- ask
     guard (r == r') (UnequalReturnTypes r r' e) --return types are the same
@@ -502,7 +508,7 @@ checkCore r e@(Core.TmRec args) = do
 checkCore r e@(Core.TmFix args g s e') = do
     p <- checkRec g args
     p' <- withRecSig g s (checkCore r e')
-    reThrow (handleOutOfOrder e) (P.consistentWith p' (ctxVars g))
+    reThrow (handleConsistentWith e) (P.consistentWith p' (_fst <$> g))
     return p
 
 checkCore r e@(Core.TmCut x e1 e2) = do
@@ -549,6 +555,7 @@ inferCore e@(Core.TmCatR e1 e2) = do
 inferCore e@(Core.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
     (r,p) <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferCore e')
+    when (P.comparable p y x) (throwError (SomeOrder x y e'))
     p'' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return (r,p'')
 
@@ -725,10 +732,10 @@ doCheckElabTm doubleCheck g t e = do
     case ck of
         Left err -> error (pp err)
         Right (CR usages tm) -> do
-            usageConsist <- runExceptT (P.consistentWith usages (ctxVars g))
             let tm' = Core.TmFix (ctxMap (\x _ -> (x,Core.TmVar x)) g) g t tm -- put the ``fix'' on the outside, just pass the inputs along.
+            usageConsist <- runExceptT (withExceptT (handleConsistentWith e) $ P.consistentWith usages (_fst <$> g))
             case usageConsist of
-                Left (x,y) -> error $ pp $ OutOfOrder x y e
+                Left err -> error (pp err)
                 Right _ -> if doubleCheck then doCheckCoreTm g t tm' >> return tm' else return tm'
 
 doCheckCoreTm :: (MonadIO m) => Ctx Var Ty -> Ty -> Core.Term -> m ()
@@ -737,10 +744,8 @@ doCheckCoreTm g t e = do
     case ck of
         Left err -> error ("ERROR: " ++ pp err ++ " while checking " ++ pp e ++ " against type " ++ pp t ++ " in context " ++ pp g)
         Right usages -> do
-            usageConsist <- runExceptT (P.consistentWith usages (ctxVars g))
-            case usageConsist of
-                Left (x,y) -> error $ pp $ OutOfOrder x y e
-                Right _ -> return ()
+            usageConsist <- runExceptT (withExceptT (handleConsistentWith e) $ P.consistentWith usages (_fst <$> g))
+            either (error . pp) return usageConsist
 
 doCheckElabPgm :: (MonadIO m) => Elab.Program -> m Core.Program
 doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
