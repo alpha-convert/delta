@@ -111,16 +111,18 @@ prefixConcat (StpB p1 p2) p' = do
 
 
 
-unionWithM :: (Monad m, Ord k) => (v -> v -> m v) -> M.Map k v -> M.Map k v -> m (M.Map k v)
-unionWithM f m m' = sequence (M.unionWith (bindM2 f) (return <$> m) (return <$> m'))
+unionWithM :: (Monad m, Ord k) => (k -> v -> v -> m v) -> M.Map k v -> M.Map k v -> m (M.Map k v)
+unionWithM f m m' = sequence (M.unionWithKey g (return <$> m) (return <$> m'))
     where
-        bindM2 g a b = do {x <- a; y <- b; g x y}
+        g k a b = do {x <- a; y <- b; f k x y}
 
 unionWithkM :: (Monad m, Ord k) => (k -> v -> v -> m v) -> M.Map k v -> M.Map k v -> m (M.Map k v)
 unionWithkM f m m' = sequence (M.unionWithKey (\k a b -> do {x <- a; y <- b; f k x y}) (return <$> m) (return <$> m'))
 
-concatEnv :: (Monad m, Ord v) => Env v Prefix -> Env v Prefix -> ExceptT (Prefix,Prefix) m (Env v Prefix)
-concatEnv (Env m1) (Env m2) = Env <$> unionWithM prefixConcat m1 m2
+concatEnv :: (Monad m, Ord v) => Env v Prefix -> Env v Prefix -> ExceptT (v,Prefix,Prefix) m (Env v Prefix)
+concatEnv (Env m1) (Env m2) = Env <$> unionWithM go m1 m2
+  where
+    go v p1 p2 = withExceptT (\(p1',p2') -> (v,p1',p2')) (prefixConcat p1 p2)
 
 unionDisjointEnv :: (Monad m, Ord v) => Env v Prefix -> Env v Prefix -> ExceptT (v,Prefix,Prefix) m (Env v Prefix)
 unionDisjointEnv (Env m1) (Env m2) = Env <$> unionWithkM (\v p p' -> throwError (v,p,p')) m1 m2

@@ -10,7 +10,7 @@ import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.Except ( ExceptT, runExceptT, MonadError(throwError) )
 import Prelude
 import Types (emptyPrefix, Ty (..), CtxStruct(..), Ctx, ValueLike (..), CtxEntry (..))
-import Values (Prefix (..), Env, isMaximal, bindAllEnv, bindEnv, bindAllEnv, lookupEnv, prefixConcat, concatEnv, emptyEnv, Lit (..), maximalLift, MaximalPrefix, maximalDemote)
+import Values (Prefix (..), Env, isMaximal, bindAllEnv, bindEnv, bindAllEnv, lookupEnv, prefixConcat, concatEnv, emptyEnv, Lit (..), maximalLift, MaximalPrefix, maximalDemote, unbindEnv)
 import Data.Map (Map, unionWith)
 import Control.Applicative (Applicative(liftA2))
 import Control.Monad.State (runStateT, StateT, modify', gets, get, lift, modify)
@@ -29,7 +29,7 @@ data SemError =
     | NotCatPrefix Var.Var Prefix
     | NotParPrefix Var.Var Prefix
     | NotPlusPrefix Var.Var Prefix
-    | ConcatError Prefix Prefix
+    | ConcatError Term Var.Var Prefix Prefix
     | RuntimeCutError Var.Var Term Term
     | SinkError Prefix
     | MaximalPrefixSubstErr Var.Var Values.MaximalPrefix Term
@@ -41,7 +41,7 @@ instance PrettyPrint SemError where
     pp (NotCatPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a cat-prefix. Instead got: ",pp p]
     pp (NotParPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a par-prefix. Instead got: ",pp p]
     pp (NotPlusPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a plus-prefix. Instead got: ",pp p]
-    pp (ConcatError p p') = concat ["Tried to concatenate prefixes ", pp p," and ",pp p']
+    pp (ConcatError e x p p') = concat ["Tried to concatenate prefixes ", pp p," and ",pp p', " for variable ", pp x, " in term ", pp e]
     pp (RuntimeCutError x e e') = concat ["Error occurred when trying to cut ",pp x," = ",pp e, " in ", pp e',". This is a bug."]
     pp (SinkError p) = concat ["Tried to build sink term for prefix ", pp p, ". This is a bug."]
     pp (MaximalPrefixSubstErr x p e) = concat ["Failed to substitute prefix ", pp p," for ", pp x, " in term ", pp e]
@@ -84,13 +84,14 @@ eval (TmCatL t x y z e) = do
     p <- lookupVar z
     case p of
         CatPA p1 -> do
-            (p',e') <- withEnv (bindAllEnv [(x,p1),(y,emptyPrefix t)]) (eval e)
+            (p',e') <- withEnv (bindAllEnv [(x,p1),(y,emptyPrefix t)] . unbindEnv z) (eval e)
             return (p',TmCatL t x y z e')
         CatPB p1 p2 -> do
-            (p',e') <- withEnv (bindAllEnv [(x,p1),(y,p2)]) (eval e)
+            (p',e') <- withEnv (bindAllEnv [(x,p1),(y,p2)] . unbindEnv z) (eval e)
             let e'' = substVar e' z y
             sink <- reThrow SinkError (sinkTm p1)
-            return (p', TmCut x sink e'')
+            e''' <- reThrow handleRuntimeCutError (cut x sink e'')
+            return (p', e''')
         _ -> throwError (NotCatPrefix z p)
 
 eval (TmCatR e1 e2) = do
@@ -105,7 +106,7 @@ eval (TmParL x y z e) = do
     p <- lookupVar z
     case p of
         ParP p1 p2 -> do
-            (p',e') <- withEnv (bindAllEnv [(x,p1),(y,p2)]) (eval e)
+            (p',e') <- withEnv (bindAllEnv [(x,p1),(y,p2)] . unbindEnv z) (eval e)
             return (p', TmParL x y z e')
         _ -> throwError (NotParPrefix z p)
 
@@ -122,23 +123,23 @@ eval (TmInr e) = do
     (p,e') <- eval e
     return (SumPB p, e')
 
-eval (TmPlusCase m rho' r z x e1 y e2) = do
-    withEnvM (reThrow (uncurry ConcatError) . concatEnv rho') $ do
+eval e@(TmPlusCase m rho' r z x e1 y e2) = do
+    withEnvM (reThrow (handleConcatError e) . concatEnv rho') $ do
         p <- lookupVar z
         (case p of
             SumPEmp -> do
                 rho'' <- ask
                 return (emptyPrefix r, TmPlusCase m rho'' r z x e1 y e2)
             SumPA p' -> do
-                (p'',e1') <- withEnv (bindEnv x p') (eval e1)
+                (p'',e1') <- withEnv (bindEnv x p' . unbindEnv z) (eval e1)
                 return (p'', substVar e1' z x)
             SumPB p' -> do
-                (p'',e2') <- withEnv (bindEnv y p') (eval e2)
+                (p'',e2') <- withEnv (bindEnv y p' . unbindEnv z) (eval e2)
                 return (p'', substVar e2' z y)
             _ -> throwError (NotPlusPrefix z p))
 
-eval (TmIte m rho' r z e1 e2) = do
-    withEnvM (reThrow (uncurry ConcatError) . concatEnv rho') $ do
+eval e@(TmIte m rho' r z e1 e2) = do
+    withEnvM (reThrow (handleConcatError e) . concatEnv rho') $ do
         p <- lookupVar z
         case p of
             LitPEmp -> do
@@ -146,10 +147,12 @@ eval (TmIte m rho' r z e1 e2) = do
                 return (emptyPrefix r, TmIte m rho'' r z e1 e2)
             (LitPFull (LBool True)) -> do
              (p',e1') <- eval e1
-             return (p', TmCut z TmEpsR e1')
+             e1'' <- reThrow handleRuntimeCutError (cut z TmEpsR e1')
+             return (p', e1'')
             (LitPFull (LBool False)) -> do
                 (p',e2') <- eval e2
-                return (p', TmCut z TmEpsR e2')
+                e2'' <- reThrow handleRuntimeCutError (cut z TmEpsR e2')
+                return (p', e2'')
             _ -> throwError (NotPlusPrefix z p)
 
 eval TmNil = return (StpDone,TmEpsR)
@@ -163,7 +166,10 @@ eval (TmCons e1 e2) = do
         return (StpB p p',e2')
 
 eval e@(TmStarCase m rho' r s z e1 x xs e2) = do
-    withEnvM (reThrow (uncurry ConcatError) . concatEnv rho') $ do
+    rho <- ask
+    !() <- trace ("RHO IS: " ++ pp rho) (return ())
+    !() <- trace ("RHO' IS: " ++ pp rho') (return ())
+    withEnvM (reThrow (handleConcatError e) . concatEnv rho') $ do
         p <- lookupVar z
         (case p of
             StpEmp -> do
@@ -171,20 +177,22 @@ eval e@(TmStarCase m rho' r s z e1 x xs e2) = do
                 return (emptyPrefix r, TmStarCase m rho'' r s z e1 x xs e2)
             StpDone -> eval e1
             StpA p' -> do
-                (p'',e2') <- withEnv (bindAllEnv [(x,p'),(xs,StpEmp)]) (eval e2)
+                (p'',e2') <- withEnv (bindAllEnv [(x,p'),(xs,StpEmp)] . unbindEnv z) (eval e2)
                 return (p'', TmCatL (TyStar s) x xs z e2')
             StpB p1 p2 -> do
-                (p'',e2') <- withEnv (bindAllEnv [(x,p1),(xs,p2)]) (eval e2)
+                (p'',e2') <- withEnv (bindAllEnv [(x,p1),(xs,p2)] . unbindEnv z) (eval e2)
                 sink <- reThrow SinkError (sinkTm p1)
-                -- e'' <- reThrow handleRuntimeCutError (cut x sink e2')
-                return (p'', substVar (TmCut x sink e2') z xs)
+                e'' <- reThrow handleRuntimeCutError (cut x sink e2')
+                return (p'', substVar e'' z xs)
             _ -> throwError (NotPlusPrefix z p))
 
 eval (TmCut x e1 e2) = do
     (p,e1') <- eval e1
     withEnv (bindEnv x p) $ do
         (p',e2') <- eval e2
-        return (p',TmCut x e1' e2')
+        e' <- reThrow handleRuntimeCutError (cut x e1' e2')
+        -- return (p',TmCut x e1' e2')
+        return (p',e')
 
 eval (TmFix args g s e) = do
     let e' = fixSubst g s e e
@@ -193,7 +201,7 @@ eval (TmFix args g s e) = do
     where
         cutAll EmpCtx e = return e
         -- cutAll (SngCtx x e') e = reThrow handleRuntimeCutError (cut x e' e)
-        cutAll (SngCtx (CE x e')) e = return (TmCut x e' e)
+        cutAll (SngCtx (CE x e')) e = reThrow handleRuntimeCutError (cut x e' e)
         cutAll (SemicCtx g g') e = do
             e' <- cutAll g' e
             cutAll g e'
@@ -204,16 +212,16 @@ eval (TmFix args g s e) = do
 
 eval (TmRec _) = error "Impossible."
 
-eval (TmWait rho' r x e) =
-    withEnvM (reThrow (uncurry ConcatError) . concatEnv rho') $ do
+eval e@(TmWait rho' r x e') = do
+    withEnvM (reThrow (handleConcatError e) . concatEnv rho') $ do
         p <- lookupVar x
         case maximalLift p of
             Just p' -> do
-                e' <- reThrow handlePrefixSubstError $ maximalPrefixSubst p' x e
-                eval e'
+                e'' <- reThrow handlePrefixSubstError $ maximalPrefixSubst p' x e'
+                withEnv (unbindEnv x) (eval e'')
             Nothing -> do
                 rho'' <- ask
-                return (emptyPrefix r, TmWait rho'' r x e)
+                return (emptyPrefix r, TmWait rho'' r x e')
 
 eval (TmHistPgm s he) = do
     p <- reThrow (handleHistEvalErr he) $ do
@@ -222,6 +230,9 @@ eval (TmHistPgm s he) = do
         return (maximalDemote mp)
     e <- reThrow SinkError (sinkTm p)
     return (p,e)
+
+handleConcatError :: Term -> (Var.Var,Prefix, Prefix) -> SemError
+handleConcatError e (x,p,p') = ConcatError e x p p'
 
 fixSubst g s e = go
     where
@@ -280,7 +291,7 @@ doRunPgm p = do
             (e,g,s) <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to execute unbound function " ++ f)) return
             case runIdentity $ runExceptT $ runReaderT (eval e) rho of
                                     Right (p',e') -> do
-                                        lift (putStrLn $ "Result of executing " ++ f ++ " on " ++ show rho ++ ": " ++ show p' ++ "\n")
+                                        lift (putStrLn $ "Result of executing " ++ f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
                                         lift (putStrLn $ "Final core term (stepping): " ++  pp e' ++ "\n")
                                         () <- hasTypeB p' s >>= guard
                                         g' <- doDeriv rho g

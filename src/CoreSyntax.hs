@@ -18,6 +18,7 @@ import Util.PrettyPrint (PrettyPrint(..))
 import Control.Monad.Except (MonadError (throwError), ExceptT, withExceptT)
 import Data.Bifunctor
 import qualified HistPgm as Hist
+import Debug.Trace (trace)
 
 data Term =
       TmLitR Lit
@@ -94,93 +95,106 @@ substVar (TmInl e) x y = TmInl (substVar e x y)
 substVar (TmInr e) x y = TmInr (substVar e x y)
 substVar (TmPlusCase m rho r z x' e1 y' e2) x y | y == z = TmPlusCase m' rho' r x x' (substVar e1 x y) y' (substVar e2 x y)
   where
-    rho' = case Values.lookupEnv z rho of
-           Nothing -> error "Impossible"
-           Just p -> bindEnv x p (unbindEnv z rho)
+    rho' = rebindEnv rho x y
     m' = rebind m x z
-substVar (TmPlusCase m rho r z x' e1 y' e2) x y = TmPlusCase m' rho r z x' (substVar e1 x y) y' (substVar e2 x y)
+substVar (TmPlusCase m rho r z x' e1 y' e2) x y = TmPlusCase m' rho' r z x' (substVar e1 x y) y' (substVar e2 x y)
   where
     m' = case M.lookup y m of
            Nothing -> m
            Just p -> M.insert x p (M.delete y m)
+    rho' = rebindEnv rho x y
 substVar (TmIte m rho r z e1 e2) x y | y == z = TmIte m' rho' r x (substVar e1 x y) (substVar e2 x y)
   where
-    rho' = case Values.lookupEnv z rho of
-           Nothing -> error "Impossible"
-           Just p -> bindEnv x p (unbindEnv z rho)
+    rho' = rebindEnv rho x y
     m' = rebind m x z
-substVar (TmIte m rho r z e1 e2) x y = TmIte m' rho r z (substVar e1 x y) (substVar e2 x y)
+substVar (TmIte m rho r z e1 e2) x y = TmIte m' rho' r z (substVar e1 x y) (substVar e2 x y)
   where
     m' = case M.lookup y m of
            Nothing -> m
            Just p -> M.insert x p (M.delete y m)
+    rho' = rebindEnv rho x y
 
 substVar TmNil _ _ = TmNil
 substVar (TmCons e1 e2) x y = TmCons (substVar e1 x y) (substVar e2 x y)
 substVar (TmStarCase m rho r s z e1 x' xs' e2) x y | y == z = TmStarCase m' rho' r s z (substVar e1 x y) x' xs' (substVar e2 x y)
   where
-    rho' = case Values.lookupEnv z rho of
-           Nothing -> error "Impossible"
-           Just p -> bindEnv x p (unbindEnv z rho)
+    rho' = rebindEnv rho x y
     m' = rebind m x z
-substVar (TmStarCase m rho r s z e1 x' xs' e2) x y = TmStarCase m' rho r s z (substVar e1 x y) x' xs' (substVar e2 x y)
+substVar (TmStarCase m rho r s z e1 x' xs' e2) x y = TmStarCase m' rho' r s z (substVar e1 x y) x' xs' (substVar e2 x y)
   where
+    rho' = rebindEnv rho x y
     m' = case M.lookup y m of
            Nothing -> m
            Just p -> M.insert x p (M.delete y m)
 
 -- TODO: are these correct?
-substVar (TmRec args) x y = TmRec $ (\(CE u e) -> (CE u (substVar e x y))) <$> args
-substVar (TmFix args g s e) x y = TmFix ((\(CE u e') -> (CE u (substVar e' x y))) <$> args) g s e
+substVar (TmRec args) x y = TmRec $ (\(CE u e) -> CE u (substVar e x y)) <$> args
+substVar (TmFix args g s e) x y = TmFix ((\(CE u e') -> CE u (substVar e' x y)) <$> args) g s e
 substVar (TmWait rho t u e) x y = if x == u then TmWait rho' t y (substVar e x y) else TmWait rho' t u (substVar e x y)
   where
-    rho' = rebindEnv rho y u
+    rho' = rebindEnv rho y x
 
+substVar (TmCut x' e1 e2) x y | x' == y = error "UH OH"
 substVar (TmCut x' e1 e2) x y = TmCut x' (substVar e1 x y) (substVar e2 x y)
-
 substVar (TmHistPgm t he) x y = TmHistPgm t (Hist.substVar he x y)
 
 cut :: (MonadError (Var,Term,Term) m) => Var -> Term -> Term -> m Term
+cut x (TmVar y) e' = return (substVar e' y x)
 cut _ _ e'@(TmLitR _) = return e'
 cut _ _ e'@TmEpsR = return e'
 cut _ _ e'@TmNil = return e'
 cut x e e'@(TmVar y) = if x == y then return e else return e'
-
-cut x (TmCatL t' x'' y'' z' e'') e' = TmCatL t' x'' y'' z' <$> cut x e'' e'
-cut x (TmPlusCase m rho r z x'' e1 y'' e2) e' = do
-    e1' <- cut x e1 e'
-    e2' <- cut x e2 e'
-    -- FIXME: Is this "rho" correct here? I think it might not be.
-    return (TmPlusCase m rho r z x'' e1' y'' e2')
-
-cut x e                     (TmCatL t x' y' z e') | x /= z = TmCatL t x' y' z <$> cut x e e'
-cut _ (TmVar z)        (TmCatL t x' y' _ e') = return (TmCatL t  x' y' z e')
-cut _ (TmCatR e1 e2)   (TmCatL _ x' y' _ e') = cut x' e1 e' >>= cut y' e2
--- cut x e                     e'@(TmCatL {}) = throwError (x,e,e')
-
-cut x e                 (TmPlusCase m rho t z x' e1 y' e2) | x /= z = do
-    e1' <- cut x e e1
-    e2' <- cut x e e2
-    return (TmPlusCase (M.delete x m) rho t z x' e1' y' e2')
-cut z (TmVar x)    (TmPlusCase m rho t _ x' e1 y' e2) = return (TmPlusCase (rebind m x z) rho t x x' e1 y' e2)
-cut _ (TmInl e)    (TmPlusCase _ _ _ _ x' e1 _ _) = cut x' e e1
-cut _ (TmInr e)    (TmPlusCase _ _ _ _ _ _ y' e2) = cut y' e e2
--- cut x e                 e'@(TmPlusCase {}) = throwError (x,e,e')
-
-cut x e (TmCatR e1 e2) = TmCatR <$> cut x e e1 <*> cut x e e2
-cut x e (TmInl e') = TmInl <$> cut x e e'
-cut x e (TmInr e') = TmInr <$> cut x e e'
-
 cut x e (TmCons e1 e2) = TmCons <$> cut x e e1 <*> cut x e e2
+cut x e (TmParR e1 e2) = TmParR <$> cut x e e1 <*> cut x e e2
+cut x e (TmCatR e1 e2) = TmCatR <$> cut x e e1 <*> cut x e e2
 
-cut x e                     (TmStarCase m rho t s z e1 y ys e2) | x /= z = do
-    e1' <- cut x e e1
-    e2' <- cut x e e2
-    return (TmStarCase (M.delete x m) rho t s z e1' y ys e2')
+cut x e e' = return (TmCut x e e')
 
-cut z (TmVar x)        (TmStarCase m rho t s _ e1 y ys e2) = return (TmStarCase (rebind m x z) rho t s x e1 y ys e2)
-cut _ TmNil            (TmStarCase _ _ _ _ _ e1 _ _ _) = return e1
-cut _ (TmCons eh et)   (TmStarCase _ _ _ _ _ _ y ys e2) = cut y eh e2 >>= cut ys et
+{-
+
+z:t | G(x:s) |- wait_rho(e') : r
+rho : env(G(x:s)(z:t))
+---------------------------------
+. | G(x : s)(z:t) |- wait_rho(e') : r
+
+
+. | G(.)(z : t) |- wait_
+
+-}
+
+-- cut x (TmCatL t' x'' y'' z' e'') e' = TmCatL t' x'' y'' z' <$> cut x e'' e'
+-- cut x (TmPlusCase m rho r z x'' e1 y'' e2) e' = do
+--     e1' <- cut x e1 e'
+--     e2' <- cut x e2 e'
+--     -- FIXME: Is this "rho" correct here? I think it might not be.
+--     return (TmPlusCase m rho r z x'' e1' y'' e2')
+
+-- cut x e                     (TmCatL t x' y' z e') | x /= z = TmCatL t x' y' z <$> cut x e e'
+-- cut _ (TmVar z)        (TmCatL t x' y' _ e') = return (TmCatL t  x' y' z e')
+-- cut _ (TmCatR e1 e2)   (TmCatL _ x' y' _ e') = cut x' e1 e' >>= cut y' e2
+-- -- cut x e                     e'@(TmCatL {}) = throwError (x,e,e')
+
+-- cut x e                 (TmPlusCase m rho t z x' e1 y' e2) | x /= z = do
+--     e1' <- cut x e e1
+--     e2' <- cut x e e2
+--     return (TmPlusCase (M.delete x m) rho t z x' e1' y' e2')
+-- cut z (TmVar x)    (TmPlusCase m rho t _ x' e1 y' e2) = return (TmPlusCase (rebind m x z) rho t x x' e1 y' e2)
+-- cut _ (TmInl e)    (TmPlusCase _ _ _ _ x' e1 _ _) = cut x' e e1
+-- cut _ (TmInr e)    (TmPlusCase _ _ _ _ _ _ y' e2) = cut y' e e2
+-- -- cut x e                 e'@(TmPlusCase {}) = throwError (x,e,e')
+
+-- cut x e (TmInl e') = TmInl <$> cut x e e'
+-- cut x e (TmInr e') = TmInr <$> cut x e e'
+
+
+-- cut x e                     (TmStarCase m rho t s z e1 y ys e2) | x /= z = do
+--     e1' <- cut x e e1
+--     e2' <- cut x e e2
+--     return (TmStarCase (M.delete x m) rho t s z e1' y ys e2')
+
+-- cut z (TmVar x)        (TmStarCase m rho t s _ e1 y ys e2) = return (TmStarCase (rebind m x z) rho t s x e1 y ys e2)
+-- cut _ TmNil            (TmStarCase _ _ _ _ _ e1 _ _ _) = return e1
+-- cut _ (TmCons eh et)   (TmStarCase _ _ _ _ _ _ y ys e2) = cut y eh e2 >>= cut ys et
 -- cut x e                     e'@(TmStarCase {}) = throwError (x,e,e')
 
 cut x e (TmFix args g s e') = do

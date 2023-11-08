@@ -23,7 +23,7 @@ import Control.Monad.State.Strict (StateT(runStateT), MonadState (put, get), Mon
 import qualified Frontend.SurfaceSyntax as Surf
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Util.PartialOrder (substSingAll)
-import Control.Monad (when)
+import Control.Monad (when, foldM)
 import Test.HUnit
 import Data.Bifunctor
 import qualified HistPgm as Hist
@@ -145,6 +145,9 @@ withBind x s = local (\t -> TckCtx (M.insert x s (mp t)) (rs t) (histCtx t))
 
 withBindAll :: (TckM t m) => [(Var,Ty)] -> m a -> m a
 withBindAll xs = local $ \t -> TckCtx (foldr (\(x,s) -> (M.insert x s .)) id xs (mp t)) (rs t) (histCtx t)
+
+withUnbindAll :: (TckM t m) => [Var] -> m a -> m a
+withUnbindAll xs = local (\t -> TckCtx (foldr M.delete (mp t) xs) (rs t) (histCtx t))
 
 withRecSig :: (TckM t m) => Ctx Var Ty -> Ty -> m a -> m a
 withRecSig g s = local $ \t -> TckCtx (mp t) (Rec g s) (histCtx t)
@@ -296,10 +299,10 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
     m <- asks mp
     return $ CR p'' (Core.TmStarCase m rho r s z e1' x xs e2')
 
-checkElab r (Elab.TmCut x e1 e2) = do
+checkElab r e@(Elab.TmCut x e1 e2) = do
     IR s p e1' <- inferElab e1
-    CR p' e2' <- withBind x s $ checkElab r e2
-    reThrow (handleReUse (Elab.TmCut x e1 e2)) (P.checkDisjoint p p')
+    CR p' e2' <- withBind x s . withUnbindAll (P.list p) $ checkElab r e2
+    reThrow (handleReUse e) (P.checkDisjoint p p')
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     return (CR p'' (Core.TmCut x e1' e2'))
 
@@ -428,8 +431,8 @@ inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
 
 inferElab e@(Elab.TmCut x e1 e2) = do
     IR s p e1' <- inferElab e1
-    IR t p' e2' <- withBind x s $ inferElab e2
-    reThrow (handleReUse e) (P.checkDisjoint p p')
+    IR t p' e2' <- withBind x s . withUnbindAll (P.list p) $ inferElab e2
+    reThrow (handleReUse e) (P.checkDisjoint p p') {- this should be guaranteed by the fact that we unbind all the vars in p -}
     p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     e' <- reThrow handleImpossibleCut (Core.cut x e1' e2')
     return (IR t p'' e')

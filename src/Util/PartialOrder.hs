@@ -14,6 +14,7 @@ module Util.PartialOrder
     , comparable
     , map
     , set
+    , list
     , singleton
     , subOrder
     , subst
@@ -59,6 +60,9 @@ delete (Partial p) x = Partial $ Set.foldl' f Set.empty p
 
 set :: (Ord a) => Partial a -> Set a
 set (Partial p) = foldMap (\(x,y)-> Set.fromList [x,y]) p
+
+list :: (Ord a) => Partial a -> [a]
+list p = Set.toList (set p)
 
 map :: (Ord b) => (a -> b) -> Partial a -> Partial b
 map f (Partial p) = Partial (Set.map g p)
