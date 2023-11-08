@@ -35,8 +35,8 @@ data Term =
     | TmNil
     | TmCons Term Term
     | TmStarCase (M.Map Var Ty) (Env Var Prefix) Ty Ty Var Term Var Var Term {- first return type, then star type -}
-    | TmFix (Ctx Var Term) (Ctx Var Ty) Ty Term
-    | TmRec (Ctx Var Term)
+    | TmFix (CtxStruct Term) (Ctx Var Ty) Ty Term
+    | TmRec (CtxStruct Term)
     | TmWait (Env Var Prefix) Ty Var Term
     | TmCut Var Term Term
     | TmHistPgm Ty Hist.Term
@@ -128,8 +128,8 @@ substVar (TmStarCase m rho r s z e1 x' xs' e2) x y = TmStarCase m' rho' r s z (s
            Just p -> M.insert x p (M.delete y m)
 
 -- TODO: are these correct?
-substVar (TmRec args) x y = TmRec $ (\(CE u e) -> CE u (substVar e x y)) <$> args
-substVar (TmFix args g s e) x y = TmFix ((\(CE u e') -> CE u (substVar e' x y)) <$> args) g s e
+substVar (TmRec args) x y = TmRec $ (\e -> substVar e x y) <$> args
+substVar (TmFix args g s e) x y = TmFix ((\e' -> substVar e' x y) <$> args) g s e
 substVar (TmWait rho t u e) x y = if x == u then TmWait rho' t y (substVar e x y) else TmWait rho' t u (substVar e x y)
   where
     rho' = rebindEnv rho y x
@@ -147,6 +147,11 @@ cut x e e'@(TmVar y) = if x == y then return e else return e'
 cut x e (TmCons e1 e2) = TmCons <$> cut x e e1 <*> cut x e e2
 cut x e (TmParR e1 e2) = TmParR <$> cut x e e1 <*> cut x e e2
 cut x e (TmCatR e1 e2) = TmCatR <$> cut x e e1 <*> cut x e e2
+
+-- cut x e (TmFix args g s e') = do
+--   args' <- mapM (\(CE u e'') -> (CE u) <$> cut x e e'') args
+--   return (TmFix args' g s e')
+cut x e (TmRec args) = TmRec <$> mapM (cut x e) args
 
 cut x e e' = return (TmCut x e e')
 
@@ -197,13 +202,6 @@ rho : env(G(x:s)(z:t))
 -- cut _ (TmCons eh et)   (TmStarCase _ _ _ _ _ _ y ys e2) = cut y eh e2 >>= cut ys et
 -- cut x e                     e'@(TmStarCase {}) = throwError (x,e,e')
 
-cut x e (TmFix args g s e') = do
-  args' <- mapM (\(CE u e'') -> (CE u) <$> cut x e e'') args
-  return (TmFix args' g s e')
-cut x e (TmRec args) = TmRec <$> mapM (\(CE u e') -> (CE u) <$> cut x e e') args
-
--- We don't know how to cut into a wait. 
-cut x e e' = return (TmCut x e e')
 
 
 -- Throws p if p is not maximal. if p : s and p maximal, the sinkTm : d_p s.
@@ -306,10 +304,10 @@ maximalPrefixSubst p x (TmWait rho s z e') | x /= z = TmWait (unbindEnv x rho) s
 maximalPrefixSubst p _ (TmWait _ _ x e') = maximalPrefixSubst p x e'
 
 maximalPrefixSubst p x (TmFix args g s e') = do
-  args' <- mapM (\(CE u e'') -> CE u <$> maximalPrefixSubst p x e'') args
+  args' <- mapM (maximalPrefixSubst p x) args
   return (TmFix args' g s e')
 
-maximalPrefixSubst p x (TmRec args) = TmRec <$> mapM (\(CE u e') -> CE u <$> maximalPrefixSubst p x e') args
+maximalPrefixSubst p x (TmRec args) = TmRec <$> mapM (maximalPrefixSubst p x) args
 
 maximalPrefixSubst p x (TmCut y e1 e2) = do
   e1' <- maximalPrefixSubst p x e1

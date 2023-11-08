@@ -53,7 +53,7 @@ data TckErr t = VarNotFound Var t
             | ImpossibleCut Var Core.Term Core.Term
             | UnsaturatedRecursiveCall (Ctx Var Ty) (CtxStruct t)
             | HasTypeErr (Env Var.Var Prefix) (M.Map Var.Var Ty)
-            | NonMatchingRecursiveArgs (Ctx Var Ty) (Ctx Var t)
+            | NonMatchingRecursiveArgs (Ctx Var Ty) (CtxStruct t)
             | HistTckErr t Hist.TckErr
 
 instance PrettyPrint t => PrettyPrint (TckErr t) where
@@ -325,12 +325,12 @@ checkElab r e@(Elab.TmHistPgm he) = do
     return (CR P.empty (Core.TmHistPgm r he))
 
 
-elabRec :: (TckM Elab.Term m) => Ctx Var Ty -> CtxStruct Elab.Term -> m (P.Partial Var,Ctx Var Core.Term)
+elabRec :: (TckM Elab.Term m) => Ctx Var Ty -> CtxStruct Elab.Term -> m (P.Partial Var,CtxStruct Core.Term)
 elabRec EmpCtx EmpCtx = return (P.empty,EmpCtx)
 elabRec g@EmpCtx g' = throwError (UnsaturatedRecursiveCall g g')
 elabRec (SngCtx (CE x s)) (SngCtx e) = do
     CR p e' <- checkElab s e
-    return (p,SngCtx (CE x e'))
+    return (p,SngCtx e')
 elabRec g@(SngCtx {}) g' = throwError (UnsaturatedRecursiveCall g g')
 elabRec (SemicCtx g1 g2) (SemicCtx args1 args2) = do
     (p,args1') <- elabRec g1 args1
@@ -674,10 +674,10 @@ inferCore e@(Core.TmHistPgm s he) = do
     () <- liftHistCheck e (Hist.check he s)
     return (s,P.empty)
 
-checkRec :: (TckM Core.Term m) => Ctx Var Ty -> Ctx Var Core.Term -> m (P.Partial Var)
+checkRec :: (TckM Core.Term m) => Ctx Var Ty -> CtxStruct Core.Term -> m (P.Partial Var)
 checkRec EmpCtx EmpCtx = return P.empty
 checkRec g@EmpCtx g' = throwError (NonMatchingRecursiveArgs g g')
-checkRec (SngCtx (CE x t)) (SngCtx (CE y e)) | x == y = checkCore t e
+checkRec (SngCtx (CE x t)) (SngCtx e) = checkCore t e
 checkRec g@(SngCtx {}) g' = throwError (NonMatchingRecursiveArgs g g')
 checkRec (SemicCtx g1 g2) (SemicCtx g1' g2') = do
     p1 <- checkRec g1 g1'
@@ -781,7 +781,7 @@ doCheckElabTm doubleCheck g t e = do
     case ck of
         Left err -> error (pp err)
         Right (CR usages tm) -> do
-            let tm' = Core.TmFix (ctxMap (\x _ -> (x,Core.TmVar x)) g) g t tm -- put the ``fix'' on the outside, just pass the inputs along.
+            let tm' = Core.TmFix (fmap (\(CE x _) -> Core.TmVar x) g) g t tm -- put the ``fix'' on the outside, just pass the inputs along.
             usageConsist <- runExceptT (withExceptT (handleConsistentWith e) $ P.consistentWith usages (_fst <$> g))
             case usageConsist of
                 Left err -> error (pp err)

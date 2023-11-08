@@ -34,6 +34,7 @@ data SemError =
     | SinkError Prefix
     | MaximalPrefixSubstErr Var.Var Values.MaximalPrefix Term
     | HistSemErr Hist.SemErr Hist.Term
+    | NonMatchingArgs (Ctx Var.Var Ty) (CtxStruct Term)
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint SemError where
@@ -46,6 +47,7 @@ instance PrettyPrint SemError where
     pp (SinkError p) = concat ["Tried to build sink term for prefix ", pp p, ". This is a bug."]
     pp (MaximalPrefixSubstErr x p e) = concat ["Failed to substitute prefix ", pp p," for ", pp x, " in term ", pp e]
     pp (HistSemErr err he) = concat ["Encountered error while evaluating historical term ", pp he, ": ", pp err]
+    pp (NonMatchingArgs g g') = concat ["Arguments ", pp g', " do not match ", pp g]
 
 class (MonadReader (Env Var.Var Prefix) m, MonadError SemError m) => EvalM m where
 
@@ -196,18 +198,19 @@ eval (TmCut x e1 e2) = do
 
 eval (TmFix args g s e) = do
     let e' = fixSubst g s e e
-    e'' <- cutAll args e'
+    e'' <- cutAll args g e'
     eval e''
     where
-        cutAll EmpCtx e = return e
+        cutAll EmpCtx EmpCtx e = return e
         -- cutAll (SngCtx x e') e = reThrow handleRuntimeCutError (cut x e' e)
-        cutAll (SngCtx (CE x e')) e = reThrow handleRuntimeCutError (cut x e' e)
-        cutAll (SemicCtx g g') e = do
-            e' <- cutAll g' e
-            cutAll g e'
-        cutAll (CommaCtx g g') e = do
-            e' <- cutAll g' e
-            cutAll g e'
+        cutAll (SngCtx e') (SngCtx (CE x _)) e = reThrow handleRuntimeCutError (cut x e' e)
+        cutAll (SemicCtx g1 g2) (SemicCtx g1' g2') e = do
+            e' <- cutAll g1 g1' e
+            cutAll g2 g2' e'
+        cutAll (CommaCtx g1 g2) (CommaCtx g1' g2') e = do
+            e' <- cutAll g1 g1' e
+            cutAll g2 g2' e'
+        cutAll g g' e = throwError (NonMatchingArgs g' g)
 
 
 eval (TmRec _) = error "Impossible."
