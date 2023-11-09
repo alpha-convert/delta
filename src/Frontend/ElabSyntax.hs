@@ -191,7 +191,7 @@ elabHist (Hist.TmIte e e1 e2) = Hist.TmIte <$> elabHist e <*> elabHist e1 <*> el
 instance ElabM (StateT ElabState (ReaderT ElabInput (ExceptT ElabErr Identity))) where
 
 data Cmd =
-      FunDef String (Ctx Var.Var Ty) Ty Term
+      FunDef String (Ctx Var.Var (TyScheme Var.Var)) (TyScheme Var.Var) Term
     | RunCommand String (Ctx Var Surf.UntypedPrefix)
     | RunStepCommand String (Ctx Var Surf.UntypedPrefix)
     deriving (Eq,Ord,Show)
@@ -240,49 +240,3 @@ elabTests = TestList [
             case elabSingle e (S.fromList $ Var.Var <$> xs) of
                 Right _ -> assertFailure "Expected failure"
                 Left _ -> return ()
-
--- TODO: add this as a failing test:
--- fun foo (x : Int*) : Int* =
---     case xs of
---       nil => nil
---     | y::ys => ys
-
--- >>> elabSingle (Surf.TmCatL (Just (Var.Var "y")) (Just (Var.Var "z")) (Surf.TmVar (Var.Var "z")) (Surf.TmVar (Var.Var "y"))) (S.fromList $ Var.Var <$> ["z"])
--- Right (TmCut (Var "__x1") (TmVar (Var "z")) (TmCatL (Var "y") (Var "__x0") (Var "__x1") (TmVar (Var "y"))),ES {nextVar = 2})
-
--- Found hole: _ :: Term
--- In the first argument of `elab', namely `(_)'
--- In the expression: elab (_)
--- In an equation for `it_aGCJH': it_aGCJH = elab (_)
--- Relevant bindings include
---   it_aGCJH :: m_aGEPa[sk:1] Term
---     (bound at /Users/jwc/Documents/research/Creek/src/Frontend/ElabSyntax.hs:146:2)
--- Constraints include
---   ElabM
---     m_aGEPa[sk:1] (from /Users/jwc/Documents/research/Creek/src/Frontend/ElabSyntax.hs:146:2-9)
--- Valid hole fits include
---   TmEpsR
---   TmNil
--- Valid refinement hole fits include
---   TmInl _
---   TmInr _
---   TmLitR _
---   TmVar _
---   head _
---   minimum _
---   last _
---   maximum _
---   id _
---   ask _
---   (Some refinement hole fits suppressed; use -fmax-refinement-hole-fits=N or -fno-max-refinement-hole-fits)
-
--- parseTests = TestList $ [
---         testParse "x" (Surf.TmVar (Var.Var "x")),
---         testParse "3" (Surf.TmLitR (LInt 3)),
---         testParse "true" (Surf.TmLitR (LBool True)),
---         testParse "x :: 5" (Surf.TmCons (Surf.TmVar $ Var.Var "x") (Surf.TmLitR $ LInt 5)),
---         testParse "let (x;_) = (5;false) in inl (a :: nil)" (Surf.TmCatL (Just (Var.Var "x")) Nothing (Surf.TmCatR (Surf.TmLitR $ LInt 5) (Surf.TmLitR $ LBool False)) (Surf.TmInl (Surf.TmCons (Surf.TmVar (Var.Var "a")) Surf.TmNil))),
---         testParse "case (x :: (let (u;v) = l in u) :: ys) of nil => 4 | z :: _ => (z;ys)" (Surf.TmStarCase (Surf.TmCons (Surf.TmVar (Var.Var "x")) (Surf.TmCons (Surf.TmCatL (Just (Var.Var "u")) (Just (Var.Var "v")) (Surf.TmVar (Var.Var "l")) (Surf.TmVar (Var.Var "u"))) (Surf.TmVar (Var.Var "ys")))) (Surf.TmLitR (LInt 4)) (Just $ Var.Var "z") Nothing (Surf.TmCatR (Surf.TmVar (Var.Var "z")) (Surf.TmVar (Var.Var "ys"))))
---     ]
---     where
---         testParse s e = TestCase $ e @?= parseSurfaceSyntax (lexer s)

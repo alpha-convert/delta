@@ -2,7 +2,7 @@
 module Automata.Event() where
 
 import Values (Lit(..), Prefix(..))
-import Types ( Ty(..), TypeLike(..), ValueLike(..), ValueLikeErr(..))
+import Types ( TyF(..), Ty, TypeLike(..), ValueLike(..), ValueLikeErr(..))
 import Control.Monad.Except(ExceptT, MonadError (..), withExceptT)
 import Util.ErrUtil(guard)
 

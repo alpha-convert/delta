@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, FlexibleContexts, TupleSections #-}
-module Types (Ty(..), CtxStruct(..), Ctx, CtxEntry(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc, ctxMap, ctxFoldM) where
+module Types (TyF(..), Ty, TyScheme, CtxStruct(..), Ctx, CtxEntry(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc, ctxMap, ctxFoldM) where
 
 import qualified Data.Map as M
 import Control.Monad.Except (ExceptT, throwError, withExceptT, runExceptT)
@@ -9,10 +9,25 @@ import Util.PrettyPrint
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad (foldM)
 import Data.Bifunctor (Bifunctor (..))
+import Data.Void
 
-data Ty = TyEps | TyInt | TyBool | TyCat Ty Ty | TyPar Ty Ty | TyPlus Ty Ty | TyStar Ty deriving (Eq,Ord,Show)
+data TyF v u =
+    TyVar v
+  | TyUnif u
+  | TyEps
+  | TyInt
+  | TyBool
+  | TyCat (TyF v u) (TyF v u)
+  | TyPar (TyF v u) (TyF v u)
+  | TyPlus (TyF v u) (TyF v u)
+  | TyStar (TyF v u)
+  deriving (Eq,Ord,Show)
 
-instance PrettyPrint Ty where
+type Ty = TyF Void Void
+
+type TyScheme v = TyF v Void
+
+instance (PrettyPrint v, PrettyPrint u) => PrettyPrint (TyF u v) where
   pp TyEps = "Eps"
   pp TyInt = "Int"
   pp TyBool = "Bool"
@@ -20,6 +35,8 @@ instance PrettyPrint Ty where
   pp (TyPar s t) = concat ["(", pp s," || ", pp t, ")"]
   pp (TyPlus s t) = concat ["(", pp s," + ", pp t, ")"]
   pp (TyStar s) = concat ["(", pp s,")*"]
+  pp (TyVar x) = pp x
+  pp (TyUnif x) = pp x
 
 data CtxStruct a =
     EmpCtx
@@ -83,6 +100,8 @@ instance TypeLike Ty where
   isNull (TyPlus _ _) = False
   isNull (TyStar _) = False
   isNull (TyPar s t) = isNull s && isNull t
+  isNull (TyVar x) = absurd x
+  isNull (TyUnif x) = absurd x
 
 instance TypeLike t => TypeLike (Ctx v t) where
   isNull EmpCtx = True
@@ -260,3 +279,5 @@ emptyPrefix (TyCat s _) = CatPA (emptyPrefix s)
 emptyPrefix (TyPar s t) = ParP (emptyPrefix s) (emptyPrefix t)
 emptyPrefix (TyPlus _ _) = SumPEmp
 emptyPrefix (TyStar _) = StpEmp
+emptyPrefix (TyVar x) = absurd x
+emptyPrefix (TyUnif x) = absurd x

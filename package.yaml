@@ -1,9 +1,9 @@
-name:                stream-types2
+name:                Schuylkill
 version:             0.1.0.0
-github:              "githubuser/stream-types2"
+github:              "jdublu10/Schuylkill"
 license:             BSD-3-Clause
-author:              "Author name here"
-maintainer:          "example@example.com"
+author:              "Joseph W. Cutler"
+maintainer:          "jwc@seas.upenn.edu"
 copyright:           "2023 Author name here"
 
 extra-source-files:
@@ -17,15 +17,20 @@ extra-source-files:
 # To avoid duplicated efforts in documentation and dealing with the
 # complications of embedding Haddock markup inside cabal files, it is
 # common to point users to the README.md file.
-description:         Please see the README on GitHub at <https://github.com/githubuser/stream-types2#readme>
+description:         Please see the README on GitHub at <https://github.com/jdublu10/Schuylkill#readme>
 
 dependencies:
 - base >= 4.7 && < 5
 - containers
 - mtl
+- parsec
+- array
+- HUnit
+- monad-loops
 
 ghc-options:
 - -Wall
+- -Werror=incomplete-patterns
 - -Wcompat
 - -Widentities
 - -Wincomplete-record-updates
@@ -34,6 +39,10 @@ ghc-options:
 - -Wmissing-home-modules
 - -Wpartial-fields
 - -Wredundant-constraints
+- -Wno-missing-export-lists
+- -Wno-unused-imports
+- -Wno-unused-top-binds
+- -Wno-missing-signatures
 
 library:
   source-dirs: src
@@ -47,7 +56,7 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - stream-types2
+    - Schuylkill
 
 tests:
   stream-types2-test:
@@ -58,4 +67,4 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - stream-types2
+    - Schuylkill

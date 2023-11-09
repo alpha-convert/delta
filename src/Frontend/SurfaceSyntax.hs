@@ -45,7 +45,7 @@ data UntypedPrefix =
     deriving (Eq, Ord, Show)
 
 data Cmd =
-    FunDef String (Ctx Var.Var Ty) Ty Term
+    FunDef String (Ctx Var.Var (TyScheme Var.Var)) (TyScheme Var.Var) Term
   | RunCommand String (Ctx Var UntypedPrefix)
   | RunStepCommand String (Ctx Var UntypedPrefix)
  deriving (Eq,Ord,Show)

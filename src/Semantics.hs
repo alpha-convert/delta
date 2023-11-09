@@ -9,7 +9,7 @@ import Control.Monad.Reader
 import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.Except ( ExceptT, runExceptT, MonadError(throwError) )
 import Prelude
-import Types (emptyPrefix, Ty (..), CtxStruct(..), Ctx, ValueLike (..), CtxEntry (..))
+import Types (emptyPrefix, TyF (..), Ty, CtxStruct(..), Ctx, ValueLike (..), CtxEntry (..))
 import Values (Prefix (..), Env, isMaximal, bindAllEnv, bindEnv, bindAllEnv, lookupEnv, prefixConcat, concatEnv, emptyEnv, Lit (..), maximalLift, MaximalPrefix, maximalDemote, unbindEnv)
 import Data.Map (Map, unionWith)
 import Control.Applicative (Applicative(liftA2))

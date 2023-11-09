@@ -2,6 +2,7 @@
 module Util.PrettyPrint(PrettyPrint, pp) where
 import qualified Data.Map as M
 import Data.List (intercalate)
+import Data.Void
 
 class PrettyPrint a where
     pp :: a -> String
@@ -19,3 +20,6 @@ instance PrettyPrint Int where
 
 instance PrettyPrint Bool where
     pp = show
+
+instance PrettyPrint Void where
+    pp = absurd
