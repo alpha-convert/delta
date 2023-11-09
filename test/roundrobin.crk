@@ -1,8 +1,8 @@
-fun roundRobin(b : Eps + Eps;xs : Int*) : Int* || Int* =
+fun roundRobin[s](b : Eps + Eps;xs : s*) : s* || s* =
     case xs of
       nil => (nil,nil)
     | y::ys => case b of
                   inl _ => let (zs,ws) = rec(inr sink;ys) in (y::zs,ws)
                 | inr _ => let (zs,ws) = rec(inl sink;ys) in (zs,y::ws)
 
-exec roundRobin(b=inl(emp);xs=[3;4;5;6;7])
+exec roundRobin[Int](b=inl(emp);xs=[3;4;5;6;7])

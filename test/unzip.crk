@@ -1,4 +1,4 @@
-fun unzip(xs : (Int + Bool)*) : Int* || Bool* =
+fun unzip[s,t](xs : (s + t)*) : s* || t* =
     case xs of
         nil => (nil,nil)
       | y::ys =>
@@ -6,5 +6,3 @@ fun unzip(xs : (Int + Bool)*) : Int* || Bool* =
             case y of
                 inl x => (x::a,b)
               | inr x => (a,x::b)
-
-exec step unzip(xs = [inl(3); inr(false); inr(true)))

@@ -1,0 +1,12 @@
+fun foo(xs : Int*,ys : Int*) : Int* =
+    case xs of
+      nil => nil
+    | x'::xs' => case ys of
+                   nil => nil
+                 | y' :: ys' =>
+                    wait x' do
+                        {x'} :: rec(xs',ys')
+                    end
+
+exec step foo(xs = [1],ys = emp)
+exec foo(xs=emp,ys=[emp))

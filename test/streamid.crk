@@ -1,8 +1,4 @@
-fun id(xs : Int*) : Int* =
+fun id[s](xs : s*) : s* =
     case xs of
       nil => nil
     | y::ys => y::rec(ys)
-
-exec step id(xs = [emp))
-exec step id(xs = (3;emp))
-exec id(xs = [])
