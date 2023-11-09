@@ -264,13 +264,13 @@ checkElab r e@(Elab.TmPlusCase z x e1 y e2) = do
     p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
     p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
     m_rho <- asks emptyEnvOfType
-    -- m <- asks mp
-    m <- undefined
+    m_m <- asks (mapM monomorphizeTy . mp)
     return $ CR p'' $ do
         r' <- monomorphizeTy r
         me1' <- e1'
         me2' <- e2'
         rho <- m_rho
+        m <- m_m
         return (Core.TmPlusCase m rho r' z x me1' y me2')
 
 checkElab r e@(Elab.TmIte z e1 e2) = do
@@ -278,11 +278,11 @@ checkElab r e@(Elab.TmIte z e1 e2) = do
     CR p1 e1' <- checkElab r e1
     CR p2 e2' <- checkElab r e2
     p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
-    -- rho <- asks emptyEnvOfType
-    rho <- undefined
-    -- m <- asks mp
-    m <- undefined
+    m_rho <- asks emptyEnvOfType
+    m_m <- asks (mapM monomorphizeTy . mp)
     return $ CR p' $ do
+        m <- m_m
+        rho <- m_rho
         r' <- monomorphizeTy r
         Core.TmIte m rho r' z <$> e1' <*> e2'
 
@@ -307,14 +307,14 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
     p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
     m_rho <- asks emptyEnvOfType
-    -- m <- asks mp
-    m <- undefined
+    m_m <- asks (mapM monomorphizeTy . mp)
     return $ CR p'' $ do
         s' <- monomorphizeTy s
         r' <- monomorphizeTy r
         me1' <- e1'
         me2' <- e2'
         rho <- m_rho
+        m <- m_m
         return (Core.TmStarCase m rho r' s' z me1' x xs me2')
 
 checkElab r e@(Elab.TmCut x e1 e2) = do
@@ -331,11 +331,11 @@ checkElab r e@(Elab.TmRec es) = do
     return (CR p (Core.TmRec <$> args))
 
 checkElab r e@(Elab.TmWait x e') = do
-    -- rho <- asks emptyEnvOfType
-    rho <- undefined
+    m_rho <- asks emptyEnvOfType
     s <- lookupTy e x
     CR p e'' <- withBindHist x s $ withUnbind x $ checkElab r e'
     return $ CR p $ do
+        rho <- m_rho
         s' <- monomorphizeTy s
         Core.TmWait rho s' x <$> e''
 
@@ -417,14 +417,14 @@ inferElab e@(Elab.TmPlusCase z x e1 y e2) = do
     IR r2 p2 e2' <- withBind y t $ withUnbind z $ inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
-    -- rho <- asks emptyEnvOfType
-    rho <- undefined
-    -- m <- asks mp
-    m <- undefined
+    m_rho <- asks emptyEnvOfType
+    m_m <- asks (mapM monomorphizeTy . mp)
     return $ IR r1 p' $ do
         r1' <- monomorphizeTy r1
         me1' <- e1'
         me2' <- e2'
+        rho <- m_rho
+        m <- m_m
         return (Core.TmPlusCase m rho r1' z x me1' y me2')
 
 inferElab e@(Elab.TmIte z e1 e2) = do
@@ -434,11 +434,10 @@ inferElab e@(Elab.TmIte z e1 e2) = do
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
     m_rho <- asks emptyEnvOfType
-    -- rho <- undefined
-    -- m <- asks mp
-    m <- undefined
+    m_m <- asks (mapM monomorphizeTy . mp)
     return $ IR r1 p' $ do
         rho <- m_rho
+        m <- m_m
         r <- monomorphizeTy r1
         Core.TmIte m rho r z <$> e1' <*> e2'
 
@@ -457,15 +456,15 @@ inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
     IR r2 p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z $ inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
-    -- rho <- asks emptyEnvOfType
-    rho <- undefined
-    -- m <- asks mp
-    m <- undefined
+    m_rho <- asks emptyEnvOfType
+    m_m <- asks (mapM monomorphizeTy . mp)
     return $ IR r1 p' $ do
         mr <- monomorphizeTy r1
         ms <- monomorphizeTy s
         me1' <- e1'
         me2' <- e2'
+        rho <- m_rho
+        m <- m_m
         return (Core.TmStarCase m rho mr ms z me1' x xs me2')
 
 inferElab e@(Elab.TmCut x e1 e2) = do
@@ -482,12 +481,12 @@ inferElab e@(Elab.TmRec es) = do
     return (IR r p (Core.TmRec <$> args))
 
 inferElab e@(Elab.TmWait x e') = do
-    -- rho <- asks emptyEnvOfType
-    rho <- undefined
+    m_rho <- asks emptyEnvOfType
     s <- lookupTy e x
     IR t p e'' <- withBindHist x s $ withUnbind x $ inferElab e'
     return $ IR t p $ do
         s' <- monomorphizeTy s
+        rho <- m_rho
         Core.TmWait rho s' x <$>e''
 
 inferElab e@(Elab.TmHistPgm he) = undefined

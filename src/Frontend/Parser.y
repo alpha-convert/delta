@@ -196,6 +196,7 @@ PfxArgs1    : Var '=' Pfx                                          { SngCtx (CE 
             | '(' PfxArgs ')'                                      { $2 }
 
 Cmd   : fun var '[' TyVarList ']' '(' FunParams ')' ':' Ty '=' Exp      { FunDef $2 $4 $7 $10 $12 }
+      | fun var '(' FunParams ')' ':' Ty '=' Exp                        { FunDef $2 [] $4 $7 $9 }
       | exec var '(' PfxArgs ')'                                        { RunCommand $2 [] $4 }
       | exec var '[' TyList ']' '(' PfxArgs ')'                         { RunCommand $2 $4 $7 }
       | exec step var '(' PfxArgs ')'                                   { RunStepCommand $3 $5 }

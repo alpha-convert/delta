@@ -1,0 +1,4 @@
+fun filter[s,t](xs : (s + t)*) : s* =
+    case xs of
+      nil => nil
+    | y::ys => (case y of inl u => u :: rec(ys) | inr _ => rec(ys))
