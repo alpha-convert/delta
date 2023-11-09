@@ -6,7 +6,7 @@ module Frontend.SurfaceSyntax(
   UntypedPrefix(..),
 ) where
 import Values ( Lit(..), Prefix)
-import Var(Var(..))
+import qualified Var
 import Types
 import qualified HistPgm as Hist
 
@@ -26,7 +26,7 @@ data Term =
     | TmCons Term Term
     | TmStarCase Term Term (Maybe Var.Var) (Maybe Var.Var) Term
     | TmRec (CtxStruct Term)
-    | TmWait [Var] Term
+    | TmWait [Var.Var] Term
     | TmHistPgm Hist.Term
     deriving (Eq,Ord,Show)
   
@@ -45,9 +45,9 @@ data UntypedPrefix =
     deriving (Eq, Ord, Show)
 
 data Cmd =
-    FunDef String (Ctx Var.Var (TyScheme Var.Var)) (TyScheme Var.Var) Term
-  | RunCommand String (Ctx Var UntypedPrefix)
-  | RunStepCommand String (Ctx Var UntypedPrefix)
+    FunDef String [Var.TyVar] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
+  | RunCommand String [TyF Var.TyVar] (Ctx Var.Var UntypedPrefix)
+  | RunStepCommand String (Ctx Var.Var UntypedPrefix)
  deriving (Eq,Ord,Show)
 
 type Program = [Cmd]

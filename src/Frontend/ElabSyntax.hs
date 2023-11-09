@@ -3,7 +3,7 @@
 module Frontend.ElabSyntax (doElab, Term(..), Program, Cmd(..), elabTests) where
 
 import Values ( Lit(..) )
-import Var (Var(..))
+import Var (Var(..), TyVar)
 import Control.Monad.State (MonadState (put), get, StateT (runStateT))
 import Control.Monad.Except (MonadError (throwError), ExceptT, runExceptT)
 import Types
@@ -191,8 +191,8 @@ elabHist (Hist.TmIte e e1 e2) = Hist.TmIte <$> elabHist e <*> elabHist e1 <*> el
 instance ElabM (StateT ElabState (ReaderT ElabInput (ExceptT ElabErr Identity))) where
 
 data Cmd =
-      FunDef String (Ctx Var.Var (TyScheme Var.Var)) (TyScheme Var.Var) Term
-    | RunCommand String (Ctx Var Surf.UntypedPrefix)
+      FunDef String [Var.TyVar] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
+    | RunCommand String [Ty] (Ctx Var Surf.UntypedPrefix)
     | RunStepCommand String (Ctx Var Surf.UntypedPrefix)
     deriving (Eq,Ord,Show)
 
@@ -211,13 +211,16 @@ elabSingle e s = runIdentity (runExceptT (runReaderT (runStateT (elab e) (ES 0))
 
 doElab :: Surf.Program -> IO Program
 doElab = mapM $ \case
-                    (Surf.FunDef f g s e) ->
+                    (Surf.FunDef f tvs g s e) ->
                         case elabSingle e (M.keysSet $ ctxBindings g) of
                             Right (e',_) -> do
                                 putStrLn $ "Function " ++ f ++ " elaborated OK. Elab term: " ++ pp e' ++ "\n"
-                                return (FunDef f g s e')
+                                return (FunDef f tvs g s e')
                             Left err -> error (pp err)
-                    (Surf.RunCommand s xs) -> return (RunCommand s xs)
+                    (Surf.RunCommand s ts xs) ->
+                        case mapM closeTy ts of
+                            Left x -> error $ "Tried to run term " ++ s ++ ", but provided type with type variable " ++ pp x
+                            Right ts' -> return (RunCommand s ts' xs)
                     (Surf.RunStepCommand s xs) -> return (RunStepCommand s xs)
 
 -- >>> elabSingle (Surf.TmCatL Nothing Nothing (Surf.TmCatR (Surf.TmLitR (LInt 4)) (Surf.TmLitR (LInt 4))) Surf.TmEpsR) (S.fromList [])

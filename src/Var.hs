@@ -1,9 +1,15 @@
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-{-# HLINT ignore "Use newtype instead of data" #-}
-module Var(Var(..)) where
+module Var(
+    Var(..),
+    TyVar(..)
+) where
 import Util.PrettyPrint (PrettyPrint (..))
 
 data Var = Var String deriving (Eq, Ord, Show)
 
+data TyVar = TyVar String deriving (Eq,Ord,Show)
+
 instance PrettyPrint Var where
     pp (Var x) = x
+
+instance PrettyPrint TyVar where
+    pp (TyVar x) = x

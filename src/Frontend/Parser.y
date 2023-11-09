@@ -2,7 +2,7 @@
 module Frontend.Parser(parseSurfaceSyntax, parseProgram, lexer) where
 import Frontend.SurfaceSyntax(Term(..), Cmd(..), UntypedPrefix(..))
 import Values ( Lit(..))
-import Var(Var(..))
+import Var
 import Types
 import Data.Char ( isDigit, isAlpha, isSpace )
 import qualified HistPgm as Hist
@@ -71,6 +71,7 @@ import qualified HistPgm as Hist
 %%
 
 Var     : var     { Var.Var $1 }
+TyVar     : var     { Var.TyVar $1 }
 
 WildVar : '_'     { Nothing }
         | Var     { Just $1 }
@@ -146,11 +147,22 @@ Ty3   : Ty3 '*'                                                   { TyStar $1 }
 Ty4   : tyInt                                                     { TyInt }
       | tyBool                                                    { TyBool }
       | tyEps                                                     { TyEps }
+      | TyVar                                                     { Types.TyVar $1 }
       | '(' Ty ')'                                                { $2 }
 
 VarList : {-empty-}                                               { [] }
         | Var                                                     { [$1] }
         | Var ',' VarList                                         { $1 : $3 }
+
+TyVarList : {-empty-}                                               { [] }
+        | TyVar                                                     { [$1] }
+        | TyVar ',' TyVarList                                         { $1 : $3 }
+
+TyList : {-empty-}                                               { [] }
+        | Ty                                                     { [$1] }
+        | Ty ',' TyList                                         { $1 : $3 }
+
+
 
 
 FunParams  : FunParams1 ',' FunParams                            { CommaCtx $1 $3 } 
@@ -183,9 +195,10 @@ PfxArgs     : PfxArgs1 ',' PfxArgs                                 { CommaCtx $1
 PfxArgs1    : Var '=' Pfx                                          { SngCtx (CE $1 $3) }
             | '(' PfxArgs ')'                                      { $2 }
 
-Cmd   : fun var '(' FunParams ')' ':' Ty '=' Exp                     { FunDef $2 $4 $7 $9 }
-      | exec var '(' PfxArgs ')'                                 { RunCommand $2 $4 }
-      | exec step var '(' PfxArgs ')'                            { RunStepCommand $3 $5 }
+Cmd   : fun var '[' TyVarList ']' '(' FunParams ')' ':' Ty '=' Exp      { FunDef $2 $4 $7 $10 $12 }
+      | exec var '(' PfxArgs ')'                                        { RunCommand $2 [] $4 }
+      | exec var '[' TyList ']' '(' PfxArgs ')'                         { RunCommand $2 $4 $7 }
+      | exec step var '(' PfxArgs ')'                                   { RunStepCommand $3 $5 }
 
 Pgm   : {-empty-}                                                  { [] }
       | Cmd Pgm                                                    { $1 : $2 }

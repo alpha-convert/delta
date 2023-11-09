@@ -12,13 +12,14 @@ module CoreSyntax (
 
 import Types ( Ty , CtxStruct (EmpCtx, SngCtx, SemicCtx), Ctx, ctxFoldM, CtxEntry (..) )
 import Values ( Lit(..), Env, lookupEnv, bindEnv, unbindEnv, Prefix (..), rebindEnv, MaximalPrefix (..))
-import Var (Var (..))
+import Var (Var (..), TyVar)
 import qualified Data.Map as M
 import Util.PrettyPrint (PrettyPrint(..))
 import Control.Monad.Except (MonadError (throwError), ExceptT, withExceptT)
 import Data.Bifunctor
 import qualified HistPgm as Hist
 import Debug.Trace (trace)
+import Frontend.Monomorphizer (Mono)
 
 data Term =
       TmLitR Lit
@@ -40,13 +41,12 @@ data Term =
     | TmWait (Env Var Prefix) Ty Var Term
     | TmCut Var Term Term
     | TmHistPgm Ty Hist.Term
-    deriving (Eq, Ord, Show)
+    deriving (Eq,Ord,Show)
 
 data Cmd =
-    FunDef String (Ctx Var.Var Ty) Ty Term
-  | RunCommand String (Env Var Prefix)
-  | RunStepCommand String (Env Var Prefix)
-    deriving (Eq,Ord,Show)
+    FunDef String [Var.TyVar] (Mono Var.TyVar (Ctx Var.Var Ty)) (Mono Var.TyVar Ty) (Mono Var.TyVar Term)
+  | RunCommand String [Ty] (Env Var Prefix)
+  | RunStepCommand String (Mono Var.TyVar (Env Var Prefix))
 
 type Program = [Cmd]
 
@@ -55,7 +55,7 @@ instance PrettyPrint Term where
         where
             go _ (TmLitR l) = pp l
             go _ TmEpsR = "sink"
-            go _ (TmVar (Var x)) = x
+            go _ (TmVar x) = pp x
             go _ (TmCatR e1 e2) = concat ["(",go False e1,";",go False e2,")"]
             go _ (TmParR e1 e2) = concat ["(",go False e1,",",go False e2,")"]
             go _ TmNil = "nil"
@@ -63,14 +63,14 @@ instance PrettyPrint Term where
             go _ (TmHistPgm _ he) = concat ["{", pp he, "}"]
             go True e = concat ["(", go False e, ")"]
             go _ (TmFix args _ _ e) = concat ["fix(",go False e,")[",pp args,"]"]
-            go _ (TmCatL t (Var x) (Var y) (Var z) e) = concat ["let_{",pp t,"} (",x,";",y,") = ",z," in ",go False e]
-            go _ (TmParL (Var x) (Var y) (Var z) e) = concat ["let (",x,",",y,") = ",z," in ",go False e]
+            go _ (TmCatL t x y z e) = concat ["let_{",pp t,"} (",pp x,";",pp y,") = ",pp z," in ",go False e]
+            go _ (TmParL x y z e) = concat ["let (",pp x,",",pp y,") = ",pp z," in ",go False e]
             go _ (TmInl e) = "inl " ++ go True e
             go _ (TmInr e) = "inr " ++ go True e
-            go _ (TmPlusCase m rho _ (Var z) (Var x) e1 (Var y) e2) = concat ["case_",pp rho,"|",pp m," ",z," of inl ",x," => ",go True e1," | inr",y," => ",go True e2]
+            go _ (TmPlusCase m rho _ z x e1 y e2) = concat ["case_",pp rho,"|",pp m," ",pp z," of inl ",pp x," => ",go True e1," | inr",pp y," => ",go True e2]
             go _ (TmIte _ rho _ z e1 e2) = concat ["if_", pp rho," ", pp z," then ", go True e1," else ", go True e2]
             go _ (TmCons e1 e2) = concat [go True e1," :: ",go True e2]
-            go _ (TmStarCase m rho _ _ (Var z) e1 (Var x) (Var xs) e2) = concat ["case_",pp rho,"|",pp m," ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
+            go _ (TmStarCase m rho _ _ z e1 x xs e2) = concat ["case_",pp rho,"|",pp m," ",pp z," of nil => ",go True e1," | ",pp x,"::",pp xs," => ",go True e2]
             go False (TmWait rho _ x e) = concat ["wait_",pp rho," ", pp x," do ", go True e]
             go _ (TmCut x e e') = concat ["let ",pp x," = ", go True e, " in ", go True e']
 

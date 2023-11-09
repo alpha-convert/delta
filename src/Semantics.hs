@@ -16,13 +16,15 @@ import Control.Applicative (Applicative(liftA2))
 import Control.Monad.State (runStateT, StateT, modify', gets, get, lift, modify)
 import Util.PrettyPrint (PrettyPrint (pp))
 
-import qualified Var (Var(..))
-import Frontend.Typecheck (doCheckCoreTm)
+import qualified Var (Var(..), TyVar)
+-- import Frontend.Typecheck (doCheckCoreTm)
 import Test.HUnit
 import Debug.Trace (trace)
 import qualified HistPgm as Hist
 import GHC.IO.Handle.Types (Handle__(Handle__))
 import qualified Data.Bifunctor
+import Frontend.Monomorphizer
+import Control.Monad.Error (ErrorT(runErrorT), when)
 
 data SemError =
       VarLookupFailed Var.Var
@@ -52,6 +54,9 @@ instance PrettyPrint SemError where
 class (MonadReader (Env Var.Var Prefix) m, MonadError SemError m) => EvalM m where
 
 instance EvalM (ReaderT (Env Var.Var Prefix) (ExceptT SemError Identity)) where
+
+doEval :: ReaderT (Env Var.Var Prefix) (ExceptT SemError Identity) a -> Env Var.Var Prefix -> Either SemError a
+doEval x rho = runIdentity (runExceptT (runReaderT x rho))
 
 reThrow :: (EvalM m) => (e -> SemError) -> ExceptT e m a -> m a
 reThrow k x = runExceptT x >>= either (throwError . k) return
@@ -265,11 +270,10 @@ handleRuntimeCutError (x,e,e') = RuntimeCutError x e e'
 handlePrefixSubstError :: (Var.Var,Values.MaximalPrefix, Term) -> SemError
 handlePrefixSubstError (x,p,e) = MaximalPrefixSubstErr x p e
 
-
 handleHistEvalErr :: Hist.Term -> Hist.SemErr -> SemError
 handleHistEvalErr e err = HistSemErr err e
 
-type TopLevel = M.Map String (Term, Ctx Var.Var Ty, Ty)
+type TopLevel = M.Map String ([Var.TyVar], Mono Var.TyVar Term, Mono Var.TyVar (Ctx Var.Var Ty), Mono Var.TyVar Ty)
 
 doRunPgm :: Program -> IO ()
 doRunPgm p = do
@@ -277,22 +281,24 @@ doRunPgm p = do
     return ()
     where
         go :: Cmd -> StateT TopLevel IO ()
-        go (FunDef f g s e) = modify' (M.insert f (e,g,s))
-        go (RunCommand f rho) = do
-            (e,g,s) <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to e)xecute unbound function " ++ f)) return
-            case runIdentity $ runExceptT $ runReaderT (eval e) rho of
-                                    Right (p',e') -> do
-                                        lift (putStrLn $ "Result of executing " ++ f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
-                                        -- lift (putStrLn $ "Final core term: " ++  pp e' ++ "\n")
-                                        () <- hasTypeB p' s >>= (\b -> if b then return () else error ("Output: " ++ pp p' ++ " does not have type "++ pp s))
-                                        -- g' <- doDeriv rho g
-                                        -- s' <- doDeriv p' s
-                                        -- () <- doCheckCoreTm g' s' e'
-                                        return ()
-                                    Left err -> error $ "Runtime Error: " ++ pp err
-        go (RunStepCommand f rho) = do
+        go (FunDef f tvs g s e) = modify' (M.insert f (tvs,e,g,s))
+        go (RunCommand f ts rho) = do
+            (tvs,me,_,ms) <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to e)xecute unbound function " ++ f)) return
+            when (length ts /= length tvs) $ error "Unsaturated type arguments"
+            -- Build the map from type variables to closed types being applied
+            let monomap = foldr (uncurry M.insert) M.empty (zip tvs ts)
+            -- Monomorphize the term toe be run and the return type
+            case runMono ((,) <$> me <*> ms) monomap of
+                Left err -> error (pp err)
+                Right (e,s) -> case doEval (eval e) rho of
+                                 Right (p',e') -> do
+                                   lift (putStrLn $ "Result of executing " ++ f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
+                                   () <- hasTypeB p' s >>= (\b -> if b then return () else error ("Output: " ++ pp p' ++ " does not have type "++ pp s))
+                                   return ()
+                                 Left err -> error $ "Runtime Error: " ++ pp err
+        go (RunStepCommand f rho) = undefined {-do
             (e,g,s) <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to execute unbound function " ++ f)) return
-            case runIdentity $ runExceptT $ runReaderT (eval e) rho of
+            case doEval (eval e) rho of
                                     Right (p',e') -> do
                                         lift (putStrLn $ "Result of executing " ++ f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
                                         lift (putStrLn $ "Final core term (stepping): " ++  pp e' ++ "\n")
@@ -301,6 +307,7 @@ doRunPgm p = do
                                         s' <- doDeriv p' s
                                         modify (M.insert f (e',g',s'))
                                     Left err -> error $ "Runtime Error: " ++ pp err
+                                    -}
 
 evalSingle e xs = runIdentity (runExceptT (runReaderT (eval e) (bindAllEnv (map (Data.Bifunctor.first var) xs) emptyEnv)))
 
