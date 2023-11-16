@@ -56,7 +56,7 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - Schuylkill
+    - Delta
 
 tests:
   stream-types2-test:
@@ -67,4 +67,4 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - Schuylkill
+    - Delta

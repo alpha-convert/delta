@@ -1,10 +1,14 @@
-fun puncWindow[s](xs : (Eps + s)*) : s* . s** =
-    case xs of
-      nil => (nil;nil)
-    | y::ys => let (cur;rest) = rec(ys) in
-               case y of
-                 inl _ => (nil;(cur::rest))
-               | inr z => (z :: cur; rest)
+fun tilFirstPunc[s](xs : (Eps + s)*) : s* . (Eps + s)* =
+  case xs of
+    nil => (nil;nil)
+  | y::ys => case y of
+               inl _ => (nil;ys)
+             | inr s => let (cur;rest) = tilFirstPunc(ys) in
+                        (s::cur;rest)
+
+fun puncWindow[s](xs : (Eps + s)*) : s** =
+  let (run;rest) = tilFirstPunc[s](xs) in
+  run :: puncWindow(rest)
 
 exec puncWindow[Int](xs = emp)
 exec puncWindow[Int](xs = [inr(3)))
