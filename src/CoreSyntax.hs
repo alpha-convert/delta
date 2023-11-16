@@ -44,9 +44,9 @@ data Term =
     deriving (Eq,Ord,Show)
 
 data Cmd =
-    FunDef Var.FunVar [Var.TyVar] (Mono Var.TyVar (Ctx Var.Var Ty)) (Mono Var.TyVar Ty) (Mono Var.TyVar Term)
+    FunDef Var.FunVar [Var.TyVar] (Mono (Ctx Var.Var Ty)) (Mono Ty) (Mono Term)
   | RunCommand Var.FunVar [Ty] (Env Var Prefix)
-  | RunStepCommand Var.FunVar (Mono Var.TyVar (Env Var Prefix))
+  | RunStepCommand Var.FunVar (Mono (Env Var Prefix))
 
 type Program = [Cmd]
 

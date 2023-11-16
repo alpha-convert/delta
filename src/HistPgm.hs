@@ -193,20 +193,20 @@ eval (TmIte e e1 e2) = do
     if b then eval e1 else eval e2
 
 
-type HistCtx v = M.Map Var (TyF v)
+type HistCtx = M.Map Var OpenTy
 
-data TckErr v =
+data TckErr =
      UnboundVar Var
-    | WrongType Term (TyF v)
-    | WrongTypeValue Value (TyF v)
-    | WrongTypeVar Var (TyF v) (TyF v)
+    | WrongType Term OpenTy
+    | WrongTypeValue Value OpenTy
+    | WrongTypeVar Var OpenTy OpenTy
     | CheckTerm Term
     | CheckValue Value
-    | TurnAroundErr Term (TyF v) (TyF v)
-    | UnequalBranches (TyF v) (TyF v) Term
+    | TurnAroundErr Term OpenTy OpenTy
+    | UnequalBranches OpenTy OpenTy Term
     deriving (Eq, Ord, Show)
 
-instance PrettyPrint v => PrettyPrint (TckErr v) where
+instance PrettyPrint TckErr where
     pp (UnboundVar x) = "Unbound variable " ++ pp x ++ ". May not be in historical context."
     pp (WrongType e t) = concat ["Term ", pp e, " does not have type ", pp t]
     pp (WrongTypeValue v t) = concat ["Value ", pp v, " does not have type ", pp t]
@@ -216,20 +216,20 @@ instance PrettyPrint v => PrettyPrint (TckErr v) where
     pp (TurnAroundErr e t t') = concat ["Expected term ", pp e," to have type ", pp t," but got type ", pp t']
     pp (UnequalBranches s s' e) = concat ["Branches of term ", pp e, " had types ", pp s," and ", pp s']
 
-lookupVar :: (MonadReader (M.Map Var b) m, MonadError (TckErr v) m) => Var -> m b
+lookupVar :: (MonadReader (M.Map Var b) m, MonadError TckErr m) => Var -> m b
 lookupVar x = asks (M.lookup x) >>= maybe (throwError (UnboundVar x)) return
 
-inferMonOp :: (Eq v, MonadError (TckErr v) m, MonadReader (HistCtx v) m) => MonOp -> Term -> m (TyF v)
+inferMonOp :: (MonadError TckErr m, MonadReader HistCtx m) => MonOp -> Term -> m OpenTy
 inferMonOp Neg e = check e TyInt >> return TyInt
 inferMonOp Not e = check e TyBool >> return TyBool
 
-checkMonOp :: (Eq v, MonadError (TckErr v) m, MonadReader (HistCtx v) m) => MonOp -> Term -> TyF v -> m ()
+checkMonOp :: (MonadError TckErr m, MonadReader HistCtx m) => MonOp -> Term -> OpenTy -> m ()
 checkMonOp Neg e TyInt = check e TyInt
 checkMonOp m@Neg e t = throwError (WrongType (TmMonOp m e) t)
 checkMonOp Not e TyBool = check e TyBool
 checkMonOp m@Not e t = throwError (WrongType (TmMonOp m e) t)
 
-inferBinOp :: (Eq v, MonadError (TckErr v) m, MonadReader (HistCtx v) m) => BinOp -> Term -> Term -> m (TyF v)
+inferBinOp :: (MonadError TckErr m, MonadReader HistCtx m) => BinOp -> Term -> Term -> m OpenTy
 inferBinOp Add e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyInt
 inferBinOp Sub e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyInt
 inferBinOp Mul e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyInt
@@ -246,7 +246,7 @@ inferBinOp Eq e1 e2 = do
     return TyBool
 inferBinOp Mod e1 e2 = check e1 TyInt >> check e2 TyInt >> return TyInt
 
-checkBinOp :: (Eq v, MonadError (TckErr v) m, MonadReader (HistCtx v) m) => BinOp -> Term -> Term -> TyF v -> m ()
+checkBinOp :: (MonadError TckErr m, MonadReader HistCtx m) => BinOp -> Term -> Term -> OpenTy -> m ()
 checkBinOp Add e1 e2 TyInt = check e1 TyInt >> check e2 TyInt >> return ()
 checkBinOp b@Add e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
 checkBinOp Sub e1 e2 TyInt = check e1 TyInt >> check e2 TyInt >> return ()
@@ -275,7 +275,7 @@ checkBinOp b@Eq e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
 checkBinOp Mod e1 e2 TyInt = check e1 TyInt >> check e2 TyInt >> return ()
 checkBinOp b@Mod e1 e2 t = throwError (WrongType (TmBinOp b e1 e2) t)
 
-inferValue :: (MonadError (TckErr v) m, MonadReader (HistCtx v) m) => Value -> m (TyF v)
+inferValue :: (MonadError TckErr m, MonadReader HistCtx m) => Value -> m OpenTy
 inferValue VUnit = return TyEps
 inferValue (VInt _) = return TyInt
 inferValue (VBool _) = return TyInt
@@ -288,7 +288,7 @@ inferValue (VList (v:vs)) = do
     mapM_ (`checkValue` t) vs
     return t
 
-infer :: (Eq v, MonadError (TckErr v) m, MonadReader (HistCtx v) m) => Term -> m (TyF v)
+infer :: (MonadError TckErr m, MonadReader HistCtx m) => Term -> m OpenTy
 infer (TmValue v) = inferValue v
 infer TmEps = return TyEps
 infer (TmVar x) = lookupVar x
@@ -309,12 +309,12 @@ infer e0@(TmIte e e1 e2) = do
     when (s /= s') (throwError (UnequalBranches s s' e0))
     return s
 
-turnaround :: (Eq v, MonadError (TckErr v) m, MonadReader (HistCtx v) m) => Term -> TyF v -> m ()
+turnaround :: (MonadError TckErr m, MonadReader HistCtx m) => Term -> OpenTy -> m ()
 turnaround e t = do
     t' <- infer e
     when (t /= t') $ throwError (TurnAroundErr e t t')
 
-checkValue :: (MonadError (TckErr v) m, MonadReader (HistCtx v) m) => Value -> TyF v -> m ()
+checkValue :: (MonadError TckErr m, MonadReader HistCtx m) => Value -> OpenTy -> m ()
 checkValue VUnit TyEps = return ()
 checkValue v@VUnit t = throwError (WrongTypeValue v t)
 checkValue (VInt _) TyInt = return ()
@@ -335,7 +335,7 @@ checkValue v@(VInr _) t = throwError (WrongTypeValue v t)
 checkValue (VList vs) (TyStar s) = mapM_ (`checkValue` s) vs
 checkValue v@(VList _) t = throwError (WrongTypeValue v t)
 
-check :: (Eq v, MonadError (TckErr v) m, MonadReader (HistCtx v) m) => Term -> TyF v -> m ()
+check :: (MonadError TckErr m, MonadReader HistCtx m) => Term -> OpenTy -> m ()
 check (TmValue v) t = checkValue v t
 
 check TmEps TyEps = return ()

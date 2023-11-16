@@ -1,5 +1,5 @@
 {-# LANGUAGE DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, FlexibleContexts, TupleSections #-}
-module Types (TyF(..), Ty, CtxStruct(..), Ctx, CtxEntry(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc, ctxMap, ctxFoldM, closeTy) where
+module Types (TyF(..), Ty, OpenTy, CtxStruct(..), Ctx, CtxEntry(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc, ctxMap, ctxFoldM, closeTy, reparameterizeTy, reparameterizeCtx) where
 
 import qualified Data.Map as M
 import Control.Monad.Except (ExceptT, throwError, withExceptT, runExceptT)
@@ -287,3 +287,25 @@ emptyPrefix (TyPar s t) = ParP (emptyPrefix s) (emptyPrefix t)
 emptyPrefix (TyPlus _ _) = SumPEmp
 emptyPrefix (TyStar _) = StpEmp
 emptyPrefix (TyVar x) = absurd x
+
+reparameterizeTy :: (Ord v', Monad m) => M.Map v' (TyF v) -> TyF v' -> ExceptT v' m (TyF v)
+reparameterizeTy m = go
+  where
+    go TyInt = return TyInt
+    go TyBool = return TyBool
+    go TyEps = return TyEps
+    go (TyCat s t) = TyCat <$> go s <*> go t
+    go (TyPar s t) = TyPar <$> go s <*> go t
+    go (TyPlus s t) = TyPlus <$> go s <*> go t
+    go (TyStar s) = TyStar <$> go s
+    go (TyVar x) = maybe (throwError x) return (M.lookup x m)
+
+reparameterizeCtx :: (Ord v', Monad m) => M.Map v' (TyF v) -> Ctx k (TyF v') -> ExceptT v' m (Ctx k (TyF v))
+reparameterizeCtx m = go
+  where
+    go EmpCtx = return EmpCtx
+    go (SngCtx (CE x s)) = do
+      s' <- reparameterizeTy m s
+      return (SngCtx (CE x s'))
+    go (CommaCtx g g') = CommaCtx <$> go g <*> go g'
+    go (SemicCtx g g') = SemicCtx <$> go g <*> go g'

@@ -2,7 +2,7 @@
 module Semantics where
 
 import CoreSyntax
-    ( Term(..), Program, Cmd(..), substVar, sinkTm, cut, maximalPrefixSubst)
+    ( Term(..), Program, Cmd(..), substVar, sinkTm, maximalPrefixSubst)
 import qualified Data.Map as M
 import Control.Monad.Reader
     ( Monad(return), sequence, MonadReader(ask, local), ReaderT (runReaderT), guard, asks )
@@ -97,8 +97,7 @@ eval (TmCatL t x y z e) = do
             (p',e') <- withEnv (bindAllEnv [(x,p1),(y,p2)] . unbindEnv z) (eval e)
             let e'' = substVar e' z y
             sink <- reThrow SinkError (sinkTm p1)
-            e''' <- reThrow handleRuntimeCutError (cut x sink e'')
-            return (p', e''')
+            return (p', TmCut x sink e'')
         _ -> throwError (NotCatPrefix z p)
 
 eval (TmCatR e1 e2) = do
@@ -154,12 +153,12 @@ eval e@(TmIte m rho' r z e1 e2) = do
                 return (emptyPrefix r, TmIte m rho'' r z e1 e2)
             (LitPFull (LBool True)) -> do
              (p',e1') <- eval e1
-             e1'' <- reThrow handleRuntimeCutError (cut z TmEpsR e1')
-             return (p', e1'')
+            --  e1'' <- reThrow handleRuntimeCutError (cut z TmEpsR e1')
+             return (p', TmCut z TmEpsR e1')
             (LitPFull (LBool False)) -> do
                 (p',e2') <- eval e2
-                e2'' <- reThrow handleRuntimeCutError (cut z TmEpsR e2')
-                return (p', e2'')
+                -- e2'' <- reThrow handleRuntimeCutError (cut z TmEpsR e2')
+                return (p', TmCut z TmEpsR e2')
             _ -> throwError (NotPlusPrefix z p)
 
 eval TmNil = return (StpDone,TmEpsR)
@@ -174,8 +173,6 @@ eval (TmCons e1 e2) = do
 
 eval e@(TmStarCase m rho' r s z e1 x xs e2) = do
     rho <- ask
-    !() <- trace ("RHO IS: " ++ pp rho) (return ())
-    !() <- trace ("RHO' IS: " ++ pp rho') (return ())
     withEnvM (reThrow (handleConcatError e) . concatEnv rho') $ do
         p <- lookupVar z
         (case p of
@@ -189,17 +186,17 @@ eval e@(TmStarCase m rho' r s z e1 x xs e2) = do
             StpB p1 p2 -> do
                 (p'',e2') <- withEnv (bindAllEnv [(x,p1),(xs,p2)] . unbindEnv z) (eval e2)
                 sink <- reThrow SinkError (sinkTm p1)
-                e'' <- reThrow handleRuntimeCutError (cut x sink e2')
-                return (p'', substVar e'' z xs)
+                -- e'' <- reThrow handleRuntimeCutError (cut x sink e2')
+                return (p'', substVar (TmCut x sink e2') z xs)
             _ -> throwError (NotPlusPrefix z p))
 
 eval (TmCut x e1 e2) = do
     (p,e1') <- eval e1
     withEnv (bindEnv x p) $ do
         (p',e2') <- eval e2
-        e' <- reThrow handleRuntimeCutError (cut x e1' e2')
-        -- return (p',TmCut x e1' e2')
-        return (p',e')
+        -- e' <- reThrow handleRuntimeCutError (cut x e1' e2')
+        return (p',TmCut x e1' e2')
+        -- return (p',e')
 
 eval (TmFix args g s e) = do
     let e' = fixSubst g s e e
@@ -207,8 +204,7 @@ eval (TmFix args g s e) = do
     eval e''
     where
         cutAll EmpCtx EmpCtx e = return e
-        -- cutAll (SngCtx x e') e = reThrow handleRuntimeCutError (cut x e' e)
-        cutAll (SngCtx e') (SngCtx (CE x _)) e = reThrow handleRuntimeCutError (cut x e' e)
+        cutAll (SngCtx e') (SngCtx (CE x _)) e = return (TmCut x e' e)--reThrow handleRuntimeCutError (cut x e' e)
         cutAll (SemicCtx g1 g2) (SemicCtx g1' g2') e = do
             e' <- cutAll g1 g1' e
             cutAll g2 g2' e'
@@ -273,7 +269,7 @@ handlePrefixSubstError (x,p,e) = MaximalPrefixSubstErr x p e
 handleHistEvalErr :: Hist.Term -> Hist.SemErr -> SemError
 handleHistEvalErr e err = HistSemErr err e
 
-type TopLevel = M.Map Var.FunVar ([Var.TyVar], Mono Var.TyVar Term, Mono Var.TyVar (Ctx Var.Var Ty), Mono Var.TyVar Ty)
+type TopLevel = M.Map Var.FunVar ([Var.TyVar], Mono Term, Mono (Ctx Var.Var Ty), Mono Ty)
 
 doRunPgm :: Program -> IO ()
 doRunPgm p = do
@@ -290,7 +286,9 @@ doRunPgm p = do
             -- Monomorphize the term toe be run and the return type
             case runMono ((,) <$> me <*> ms) monomap of
                 Left err -> error (pp err)
-                Right (e,s) -> case doEval (eval e) rho of
+                Right (e,s) -> do
+                    lift $ putStrLn $ "Monomorphized core term: " ++ pp e ++ " for running functon " ++ pp f
+                    case doEval (eval e) rho of
                                  Right (p',e') -> do
                                    lift (putStrLn $ "Result of executing " ++ pp f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
                                    () <- hasTypeB p' s >>= (\b -> if b then return () else error ("Output: " ++ pp p' ++ " does not have type "++ pp s))
@@ -348,38 +346,4 @@ semTests = TestList [
                 Right (p',_) -> assertEqual "Prefixes should be equal" p p'
         env xs = bindAllEnv xs emptyEnv
 
-{-
-
-fun bar (x : Int; ys : Int*) : Int* =
-    case ys of
-      nil => x :: nil
-    | u::us => rec(x;ys)
-
-exec bar (x = 3; ys = [emp])
--}
-
 var = Var.Var
-
--- >>> evalSingle (TmFix _)
--- >>> evalSingle (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "x"))) [("z",CatPA LitPEmp)]
--- Found hole: _ :: Ctx Var
--- In the first argument of `TmFix', namely `_'
--- In the first argument of `evalSingle', namely `(TmFix _)'
--- In the expression: evalSingle (TmFix _)
--- Relevant bindings include
---   it_a71b6 :: [(String, Prefix)] -> Either SemError (Prefix, Term)
---     (bound at /Users/jwc/Documents/research/Creek/src/Semantics.hs:222:2)
--- Valid refinement hole fits include
---   head _
---   minimum _
---   last _
---   maximum _
---   id _
---   ask _
---   runIdentity _
--- Couldn't match expected type `Term'
---             with actual type `Ty -> Term -> Term'
--- Probable cause: `TmFix' is applied to too few arguments
--- In the first argument of `evalSingle', namely `(TmFix _)'
--- In the expression: evalSingle (TmFix _)
--- In an equation for `it_a71b6': it_a71b6 = evalSingle (TmFix _)
