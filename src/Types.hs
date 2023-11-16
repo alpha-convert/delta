@@ -10,6 +10,7 @@ import Control.Monad.IO.Class (MonadIO)
 import Control.Monad (foldM)
 import Data.Bifunctor (Bifunctor (..))
 import Data.Void
+import qualified Var
 
 data TyF v =
     TyVar v
@@ -33,6 +34,7 @@ closeTy (TyPlus s t) = TyPlus <$> closeTy s <*> closeTy t
 closeTy (TyStar s) = TyStar <$> closeTy s
 
 type Ty = TyF Void
+type OpenTy = TyF Var.TyVar
 
 instance (PrettyPrint v) => PrettyPrint (TyF v) where
   pp TyEps = "Eps"
@@ -42,7 +44,7 @@ instance (PrettyPrint v) => PrettyPrint (TyF v) where
   pp (TyPar s t) = concat ["(", pp s," || ", pp t, ")"]
   pp (TyPlus s t) = concat ["(", pp s," + ", pp t, ")"]
   pp (TyStar s) = concat ["(", pp s,")*"]
-  pp (TyVar x) = pp x
+  pp (TyVar x) = "TyVar(" ++ pp x ++ ")"
 
 data CtxStruct a =
     EmpCtx

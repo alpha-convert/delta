@@ -40,7 +40,6 @@ import qualified HistPgm as Hist
       exec            { TokenExec }
       step            { TokenStep }
       wait            { TokenWait }
-      rec             { TokenRec }
       do              { TokenDo }
       '='             { TokenEq }
       '('             { TokenOP }
@@ -72,12 +71,14 @@ import qualified HistPgm as Hist
 
 Var     : var     { Var.Var $1 }
 TyVar     : var     { Var.TyVar $1 }
+FunVar     : var     { Var.FunVar $1 }
 
 WildVar : '_'     { Nothing }
         | Var     { Just $1 }
 
 Exp   : let '(' WildVar ';' WildVar ')' '=' Exp in Exp             { TmCatL $3 $5 $8 $10 }
       | let '(' WildVar ',' WildVar ')' '=' Exp in Exp             { TmParL $3 $5 $8 $10 }
+      | let Var '=' Exp in Exp                                     { TmCut $2 $4 $6 }
       | inl Exp1                                                   { TmInl $2 }
       | inr Exp1                                                   { TmInr $2 }
       | case Exp of inl WildVar '=>' Exp '|' inr WildVar '=>' Exp  { TmPlusCase $2 $5 $7 $10 $12}
@@ -92,7 +93,8 @@ Exp1  : int                                                       { TmLitR (LInt
       | sink                                                      { TmEpsR }
       | nil                                                       { TmNil }
       | Var                                                       { TmVar $1 }
-      | rec '(' Args ')'                                          { TmRec $3 }
+      | FunVar '(' Args ')'                                       { TmFunCall $1 [] $3 }
+      | FunVar '[' TyList ']' '(' Args ')'                        { TmFunCall $1 $3 $6 }
       | '(' Exp ';' Exp ')'                                       { TmCatR $2 $4 }
       | '(' Exp ',' Exp ')'                                       { TmParR $2 $4 }
       | '(' Exp ')'                                               { $2 }
@@ -195,11 +197,11 @@ PfxArgs     : PfxArgs1 ',' PfxArgs                                 { CommaCtx $1
 PfxArgs1    : Var '=' Pfx                                          { SngCtx (CE $1 $3) }
             | '(' PfxArgs ')'                                      { $2 }
 
-Cmd   : fun var '[' TyVarList ']' '(' FunParams ')' ':' Ty '=' Exp      { FunDef $2 $4 $7 $10 $12 }
-      | fun var '(' FunParams ')' ':' Ty '=' Exp                        { FunDef $2 [] $4 $7 $9 }
-      | exec var '(' PfxArgs ')'                                        { RunCommand $2 [] $4 }
-      | exec var '[' TyList ']' '(' PfxArgs ')'                         { RunCommand $2 $4 $7 }
-      | exec step var '(' PfxArgs ')'                                   { RunStepCommand $3 $5 }
+Cmd   : fun FunVar '[' TyVarList ']' '(' FunParams ')' ':' Ty '=' Exp      { FunDef $2 $4 $7 $10 $12 }
+      | fun FunVar '(' FunParams ')' ':' Ty '=' Exp                        { FunDef $2 [] $4 $7 $9 }
+      | exec FunVar '(' PfxArgs ')'                                        { RunCommand $2 [] $4 }
+      | exec FunVar '[' TyList ']' '(' PfxArgs ')'                         { RunCommand $2 $4 $7 }
+      | exec step FunVar '(' PfxArgs ')'                                   { RunStepCommand $3 $5 }
 
 Pgm   : {-empty-}                                                  { [] }
       | Cmd Pgm                                                    { $1 : $2 }
@@ -223,7 +225,6 @@ data Token
       | TokenInr
       | TokenNil
       | TokenFun
-      | TokenRec
       | TokenInt Int
       | TokenBool Bool
       | TokenVar Var.Var
@@ -314,7 +315,6 @@ lexVar cs =
       ("fun",rest)  -> TokenFun : lexer rest
       ("emp",rest)  -> TokenEmp : lexer rest
       ("end",rest)  -> TokenEnd : lexer rest
-      ("rec",rest)  -> TokenRec : lexer rest
       ("wait",rest)  -> TokenWait : lexer rest
       ("do",rest)  -> TokenDo : lexer rest
       ("true",rest)  -> TokenBool True : lexer rest

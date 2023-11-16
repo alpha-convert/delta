@@ -3,10 +3,11 @@ module Frontend.Monomorphizer (
     MonomorphErr(..),
     monomorphizeTy,
     monomorphizeCtx,
+    precomposeMono,
     runMono
 )
 where
-import Control.Monad.Reader (ReaderT (runReaderT), asks, runReader)
+import Control.Monad.Reader (ReaderT (runReaderT), asks, runReader, MonadReader (ask))
 import qualified Data.Map as M
 import Types
 import Control.Monad.Except (Except, MonadError (throwError), runExcept, runExceptT)
@@ -21,6 +22,9 @@ instance PrettyPrint v => PrettyPrint (MonomorphErr v) where
     pp (TyVarNotFound v) = "Could not find binding for type variable " ++ pp v ++ " while monomorphizing."
 
 type Mono v = ReaderT (M.Map v Ty) (Except (MonomorphErr v))
+
+precomposeMono :: M.Map v (TyF v) -> Mono v a -> Mono v a
+precomposeMono = undefined
 
 monomorphizeTy :: Ord v => TyF v -> Mono v Ty
 monomorphizeTy TyEps = return TyEps

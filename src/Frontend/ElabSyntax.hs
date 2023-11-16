@@ -3,7 +3,7 @@
 module Frontend.ElabSyntax (doElab, Term(..), Program, Cmd(..), elabTests) where
 
 import Values ( Lit(..) )
-import Var (Var(..), TyVar)
+import Var (Var(..), TyVar, FunVar)
 import Control.Monad.State (MonadState (put), get, StateT (runStateT))
 import Control.Monad.Except (MonadError (throwError), ExceptT, runExceptT)
 import Types
@@ -14,7 +14,7 @@ import Util.PrettyPrint (PrettyPrint(..))
 import qualified Data.Map as M
 import qualified Data.Set as S
 import Control.Monad.RWS.Strict (MonadReader (local, ask))
-import Control.Monad.Reader (ReaderT (runReaderT))
+import Control.Monad.Reader (ReaderT (runReaderT), asks)
 import Test.HUnit
 import Data.List (intercalate)
 import qualified Data.Functor
@@ -38,9 +38,10 @@ data Term =
     | TmCons Term Term
     | TmStarCase Var Term Var Var Term
     | TmCut Var Term Term
-    | TmRec (CtxStruct Term)
     | TmWait Var Term
     | TmHistPgm Hist.Term
+    | TmRec (CtxStruct Term)
+    | TmFunCall Var.FunVar [TyF Var.TyVar] (CtxStruct Term)
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint Term where
@@ -64,6 +65,8 @@ instance PrettyPrint Term where
             go False (TmCons e1 e2) = concat [go True e1," :: ", go True e2]
             go False (TmStarCase (Var z) e1 (Var x) (Var xs) e2) = concat ["case ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
             go False (TmRec es) = concat ["rec (", pp (go False <$> es), ")"]
+            go False (TmFunCall f [] es) = concat [pp f,"(", pp (go False <$> es), ")"]
+            go False (TmFunCall f ts es) = concat [pp f,"[",intercalate "," (map pp ts),"]","(", pp (go False <$> es), ")"]
             go False (TmWait x e) = concat ["wait ", pp x," do ", go True e]
 
 data ElabState = ES { nextVar :: Int } deriving (Eq, Ord, Show)
@@ -71,15 +74,18 @@ data ElabState = ES { nextVar :: Int } deriving (Eq, Ord, Show)
 data ElabErr =
       UnboundVar Var
     | EqualBoundVars Var
+    | PolymorphicRec Var.FunVar
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint ElabErr where
     pp (UnboundVar (Var x)) = concat ["Variable ",x," not bound. This is a compiler bug."]
     pp (EqualBoundVars x) = concat ["Binding two copies of the same variable ",pp x]
+    pp (PolymorphicRec f) = concat ["Polmorphic recursive calls not supported (function ",pp f,")"]
 
-data ElabInput = EI {renaming :: M.Map Var Var}
+data ElabInput = EI {renaming :: M.Map Var Var, funName :: Var.FunVar}
 
 class (MonadState ElabState m, MonadReader ElabInput m, MonadError ElabErr m) => ElabM m where
+
 
 freshElabVar :: (ElabM m) => m Var
 freshElabVar = do
@@ -90,21 +96,21 @@ freshElabVar = do
 withUnshadow :: (ElabM m) => Maybe Var -> m a -> m (a,Var)
 withUnshadow Nothing u = do
     x <- freshElabVar
-    a <- local (\(EI sm) -> EI (M.insert x x sm)) u
+    a <- local (\(EI sm l) -> EI (M.insert x x sm) l) u
     return (a,x)
 withUnshadow (Just x) u = do
-    EI sm <- ask
+    EI sm _ <- ask
     if M.member x sm then do
         y <- freshElabVar
-        a <- local (\(EI sm') -> EI (M.insert x y sm')) u
+        a <- local (\(EI sm' fn) -> EI (M.insert x y sm') fn) u
         return (a,y)
     else do
-        a <- local (\(EI sm') -> EI (M.insert x x sm')) u
+        a <- local (\(EI sm' fn) -> EI (M.insert x x sm') fn) u
         return (a,x)
 
 unshadow :: (ElabM m) => Var -> m Var
 unshadow x = do
-    EI sm <- ask
+    EI sm _ <- ask
     case M.lookup x sm of
         Just y -> return y
         Nothing -> throwError (UnboundVar x)
@@ -165,13 +171,21 @@ elab (Surf.TmStarCase e e1 mx mxs e2) = do
     ((e2',xs),x) <- withUnshadow mx $ withUnshadow mxs $ elab e2
     z <- freshElabVar
     return $ TmCut z e' (TmStarCase z e1' x xs e2')
-elab (Surf.TmRec es) = TmRec <$> mapM elab es
+elab (Surf.TmFunCall f ts es) = do
+    curF <- asks funName
+    if f == curF then 
+        if not (null ts) then throwError (PolymorphicRec f) else TmRec <$> mapM elab es
+    else TmFunCall f ts <$> mapM elab es
 elab (Surf.TmWait xs e) = do
     ys <- mapM unshadow xs
     go ys <$> elab e
     where
         go [] e' = e'
         go (x:xs') e' = TmWait x (go xs' e')
+elab (Surf.TmCut x e1 e2) = do
+    e1' <- elab e1
+    (e2',x') <- withUnshadow (Just x) $ elab e2
+    return (TmCut x' e1' e2')
 
 elabHist :: (ElabM m) => Hist.Term -> m Hist.Term
 elabHist (Hist.TmVar x) = Hist.TmVar <$> unshadow x
@@ -191,9 +205,9 @@ elabHist (Hist.TmIte e e1 e2) = Hist.TmIte <$> elabHist e <*> elabHist e1 <*> el
 instance ElabM (StateT ElabState (ReaderT ElabInput (ExceptT ElabErr Identity))) where
 
 data Cmd =
-      FunDef String [Var.TyVar] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
-    | RunCommand String [Ty] (Ctx Var Surf.UntypedPrefix)
-    | RunStepCommand String (Ctx Var Surf.UntypedPrefix)
+      FunDef Var.FunVar [Var.TyVar] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
+    | RunCommand Var.FunVar [Ty] (Ctx Var Surf.UntypedPrefix)
+    | RunStepCommand Var.FunVar (Ctx Var Surf.UntypedPrefix)
     deriving (Eq,Ord,Show)
 
 type Program = [Cmd]
@@ -204,22 +218,22 @@ initShadowMap g =
     S.fold (\x -> M.insert x x) M.empty ks
 
 
-elabSingle :: Surf.Term -> S.Set Var -> Either ElabErr (Term, ElabState)
-elabSingle e s = runIdentity (runExceptT (runReaderT (runStateT (elab e) (ES 0)) $ initInput))
+elabSingle :: Var.FunVar -> Surf.Term -> S.Set Var -> Either ElabErr (Term, ElabState)
+elabSingle f e s = runIdentity (runExceptT (runReaderT (runStateT (elab e) (ES 0)) $ initInput))
     where
-        initInput = EI (S.fold (\x -> M.insert x x) M.empty s)
+        initInput = EI (S.fold (\x -> M.insert x x) M.empty s) f
 
 doElab :: Surf.Program -> IO Program
 doElab = mapM $ \case
                     (Surf.FunDef f tvs g s e) ->
-                        case elabSingle e (M.keysSet $ ctxBindings g) of
+                        case elabSingle f e (M.keysSet $ ctxBindings g) of
                             Right (e',_) -> do
-                                putStrLn $ "Function " ++ f ++ " elaborated OK. Elab term: " ++ pp e' ++ "\n"
+                                putStrLn $ "Function " ++ pp f ++ " elaborated OK. Elab term: " ++ pp e' ++ "\n"
                                 return (FunDef f tvs g s e')
                             Left err -> error (pp err)
                     (Surf.RunCommand s ts xs) ->
                         case mapM closeTy ts of
-                            Left x -> error $ "Tried to run term " ++ s ++ ", but provided type with type variable " ++ pp x
+                            Left x -> error $ "Tried to run term " ++ pp s ++ ", but provided type with type variable " ++ pp x
                             Right ts' -> return (RunCommand s ts' xs)
                     (Surf.RunStepCommand s xs) -> return (RunStepCommand s xs)
 
@@ -236,10 +250,10 @@ elabTests = TestList [
     ]
     where
         elabTest e e'' xs = TestCase $ do
-            case elabSingle e (S.fromList $ Var.Var <$> xs) of
+            case elabSingle undefined e (S.fromList $ Var.Var <$> xs) of
                 Right (e',_) -> assertEqual "" e' e''
                 Left err -> assertFailure (pp err)
         elabFails e xs = TestCase $ do
-            case elabSingle e (S.fromList $ Var.Var <$> xs) of
+            case elabSingle undefined e (S.fromList $ Var.Var <$> xs) of
                 Right _ -> assertFailure "Expected failure"
                 Left _ -> return ()

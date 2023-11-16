@@ -12,7 +12,7 @@ module CoreSyntax (
 
 import Types ( Ty , CtxStruct (EmpCtx, SngCtx, SemicCtx), Ctx, ctxFoldM, CtxEntry (..) )
 import Values ( Lit(..), Env, lookupEnv, bindEnv, unbindEnv, Prefix (..), rebindEnv, MaximalPrefix (..))
-import Var (Var (..), TyVar)
+import Var (Var (..), TyVar, FunVar)
 import qualified Data.Map as M
 import Util.PrettyPrint (PrettyPrint(..))
 import Control.Monad.Except (MonadError (throwError), ExceptT, withExceptT)
@@ -44,9 +44,9 @@ data Term =
     deriving (Eq,Ord,Show)
 
 data Cmd =
-    FunDef String [Var.TyVar] (Mono Var.TyVar (Ctx Var.Var Ty)) (Mono Var.TyVar Ty) (Mono Var.TyVar Term)
-  | RunCommand String [Ty] (Env Var Prefix)
-  | RunStepCommand String (Mono Var.TyVar (Env Var Prefix))
+    FunDef Var.FunVar [Var.TyVar] (Mono Var.TyVar (Ctx Var.Var Ty)) (Mono Var.TyVar Ty) (Mono Var.TyVar Term)
+  | RunCommand Var.FunVar [Ty] (Env Var Prefix)
+  | RunStepCommand Var.FunVar (Mono Var.TyVar (Env Var Prefix))
 
 type Program = [Cmd]
 

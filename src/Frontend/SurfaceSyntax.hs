@@ -25,9 +25,10 @@ data Term =
     | TmNil
     | TmCons Term Term
     | TmStarCase Term Term (Maybe Var.Var) (Maybe Var.Var) Term
-    | TmRec (CtxStruct Term)
     | TmWait [Var.Var] Term
     | TmHistPgm Hist.Term
+    | TmCut Var.Var Term Term
+    | TmFunCall Var.FunVar [TyF Var.TyVar] (CtxStruct Term)
     deriving (Eq,Ord,Show)
   
   
@@ -45,9 +46,9 @@ data UntypedPrefix =
     deriving (Eq, Ord, Show)
 
 data Cmd =
-    FunDef String [Var.TyVar] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
-  | RunCommand String [TyF Var.TyVar] (Ctx Var.Var UntypedPrefix)
-  | RunStepCommand String (Ctx Var.Var UntypedPrefix)
+    FunDef Var.FunVar [Var.TyVar] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
+  | RunCommand Var.FunVar [TyF Var.TyVar] (Ctx Var.Var UntypedPrefix)
+  | RunStepCommand Var.FunVar (Ctx Var.Var UntypedPrefix)
  deriving (Eq,Ord,Show)
 
 type Program = [Cmd]

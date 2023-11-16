@@ -16,7 +16,7 @@ import Control.Applicative (Applicative(liftA2))
 import Control.Monad.State (runStateT, StateT, modify', gets, get, lift, modify)
 import Util.PrettyPrint (PrettyPrint (pp))
 
-import qualified Var (Var(..), TyVar)
+import qualified Var (Var(..), TyVar, FunVar)
 -- import Frontend.Typecheck (doCheckCoreTm)
 import Test.HUnit
 import Debug.Trace (trace)
@@ -258,7 +258,7 @@ fixSubst g s e = go
         go TmNil = TmNil
         go (TmCons e1 e2) = TmCons (go e1) (go e2)
         go (TmStarCase m rho r t z e1 y ys e2) = TmStarCase m rho r t z (go e1) y ys (go e2)
-        go (TmFix {}) = error "Nested fix! Should be impossible."
+        go (TmFix args g' s' e') = TmFix (fmap go args) g' s' e'
         go (TmRec args) = TmFix args g s e
         go (TmWait rho r x e') = TmWait rho r x (go e')
         go (TmCut x e1 e2) = TmCut x (go e1) (go e2)
@@ -273,7 +273,7 @@ handlePrefixSubstError (x,p,e) = MaximalPrefixSubstErr x p e
 handleHistEvalErr :: Hist.Term -> Hist.SemErr -> SemError
 handleHistEvalErr e err = HistSemErr err e
 
-type TopLevel = M.Map String ([Var.TyVar], Mono Var.TyVar Term, Mono Var.TyVar (Ctx Var.Var Ty), Mono Var.TyVar Ty)
+type TopLevel = M.Map Var.FunVar ([Var.TyVar], Mono Var.TyVar Term, Mono Var.TyVar (Ctx Var.Var Ty), Mono Var.TyVar Ty)
 
 doRunPgm :: Program -> IO ()
 doRunPgm p = do
@@ -283,7 +283,7 @@ doRunPgm p = do
         go :: Cmd -> StateT TopLevel IO ()
         go (FunDef f tvs g s e) = modify' (M.insert f (tvs,e,g,s))
         go (RunCommand f ts rho) = do
-            (tvs,me,_,ms) <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to e)xecute unbound function " ++ f)) return
+            (tvs,me,_,ms) <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to execute unbound function " ++ pp f)) return
             when (length ts /= length tvs) $ error "Unsaturated type arguments"
             -- Build the map from type variables to closed types being applied
             let monomap = foldr (uncurry M.insert) M.empty (zip tvs ts)
@@ -292,7 +292,7 @@ doRunPgm p = do
                 Left err -> error (pp err)
                 Right (e,s) -> case doEval (eval e) rho of
                                  Right (p',e') -> do
-                                   lift (putStrLn $ "Result of executing " ++ f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
+                                   lift (putStrLn $ "Result of executing " ++ pp f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
                                    () <- hasTypeB p' s >>= (\b -> if b then return () else error ("Output: " ++ pp p' ++ " does not have type "++ pp s))
                                    return ()
                                  Left err -> error $ "Runtime Error: " ++ pp err
