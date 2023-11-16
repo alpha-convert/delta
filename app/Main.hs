@@ -9,7 +9,7 @@ import qualified Frontend.SurfaceSyntax as Surf
 import qualified Frontend.ElabSyntax as Elab
 import qualified Frontend.Typecheck as Tck
 import qualified CoreSyntax as Core
-import qualified Semantics as Sem
+import qualified Backend.Semantics as Sem
 
 fread :: String -> IO String
 fread s = do

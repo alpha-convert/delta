@@ -1,4 +1,4 @@
-module Frontend.Monomorphizer (
+module Backend.Monomorphizer (
     Mono,
     MonomorphErr(..),
     monomorphizeTy,

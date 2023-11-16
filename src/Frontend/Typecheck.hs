@@ -29,7 +29,7 @@ import Data.Bifunctor
 import qualified HistPgm as Hist
 import Debug.Trace (trace)
 import qualified Data.Set as S
-import Frontend.Monomorphizer
+import Backend.Monomorphizer
 
 data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
@@ -361,7 +361,7 @@ checkElab r e@(Elab.TmHistPgm he) = do
 
 checkElab r e@(Elab.TmFunCall f ts es) = do
     FR {funTyVars = tvs, funCtx = g, funTy = r', funMonoTerm = me} <- lookupFunRecord f
-    when (length ts /= length tvs) $ (error "Unsaturated type args for recurisve call") -- not saturated type arguments for recursive call.
+    when (length ts /= length tvs) $ (error "Unsaturated type args for function call") -- not saturated type arguments for recursive call.
     let repar_map = foldr (uncurry M.insert) M.empty (zip tvs ts)
     -- compute g'', r'': the  context and return types, after applying the type substitution (tvs |-> ts)
     g' <- reThrow handleReparErr (reparameterizeCtx repar_map g)

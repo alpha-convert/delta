@@ -19,7 +19,7 @@ import Control.Monad.Except (MonadError (throwError), ExceptT, withExceptT)
 import Data.Bifunctor
 import qualified HistPgm as Hist
 import Debug.Trace (trace)
-import Frontend.Monomorphizer (Mono)
+import Backend.Monomorphizer (Mono)
 
 data Term =
       TmLitR Lit
