@@ -10,11 +10,17 @@ fun addOne(x : Int) : Int = wait x do {x + 1} end
 fun addTwo(x : Int) : Int =
     addOne(addOne(x))
 
-exec addTwo(x = 3)
-
 fun addOneToAll(xs : Int*) : Int* =
     case xs of
       nil => nil
     | y::ys => addOne(y) :: addOneToAll(ys)
 
-exec addOneToAll(xs = [])
+fun filter[s,t](xs : (s + t)*) : s* =
+    case xs of
+      nil => nil
+    | y :: ys => case y of
+                   inl u => u::filter(ys)
+                 | inr _ => filter(ys)
+
+fun spec(xs : (Int + Bool)*) : Int* =
+    filter[Int,Bool](xs)
