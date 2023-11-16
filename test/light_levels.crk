@@ -1,0 +1,30 @@
+fun length(xs : Int*) : Int =
+    case xs of
+      nil => 0
+    | _ :: ys => let n = rec(ys) in
+                 wait n do
+                    {1 + n}
+                 end
+
+fun sum(acc : Int; xs : Int*) : Int =
+    case xs of
+      nil => acc
+    | x :: xs => wait x, acc do
+                    rec({x + acc}; xs)
+                 end
+
+fun parseLLAux(b : Bool; t : Int; xs : Int*) : Int* . (Int . Int*)* =
+    case xs of
+      nil => (nil;nil)
+    | y::ys => wait y,t,b do
+                if {y > t} then
+                  let (zs;zss) = rec({true};{t};ys) in
+                  if {b} then ({y}::zs;zss)
+                  else (nil;({y};zs)::zss)
+                else
+                  rec({false};{t};ys)
+               end
+
+exec parseLLAux(b=false;t=3;xs = [0))
+exec parseLLAux(b=false;t=3;xs = [0;4))
+exec parseLLAux(b=false;t=3;xs = [0;4;5))
