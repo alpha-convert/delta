@@ -1,10 +1,10 @@
-name:                Schuylkill
+name:                Delta
 version:             0.1.0.0
-github:              "jdublu10/Schuylkill"
+github:              "jdublu10/Delta"
 license:             BSD-3-Clause
 author:              "Joseph W. Cutler"
 maintainer:          "jwc@seas.upenn.edu"
-copyright:           "2023 Author name here"
+copyright:           "2023"
 
 extra-source-files:
 - README.md
@@ -17,7 +17,7 @@ extra-source-files:
 # To avoid duplicated efforts in documentation and dealing with the
 # complications of embedding Haddock markup inside cabal files, it is
 # common to point users to the README.md file.
-description:         Please see the README on GitHub at <https://github.com/jdublu10/Schuylkill#readme>
+description:         Please see the README on GitHub at <https://github.com/jdublu10/Delta#readme>
 
 dependencies:
 - base >= 4.7 && < 5
