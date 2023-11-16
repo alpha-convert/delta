@@ -1,0 +1,4 @@
+fun snoc(x : s; xs : s*) : s* =
+    case xs of
+      nil => x :: nil
+    | y::ys => y::rec(x;ys)

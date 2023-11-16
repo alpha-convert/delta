@@ -1,0 +1,2 @@
+fun nondet((x : Bool ; y : s), z : s) : s . s =
+    if x then (y;z) else (z;y)
