@@ -33,6 +33,7 @@ import Backend.Monomorphizer
 
 data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
+            | AntiSym Var Var t
             | SomeOrder Var Var t
             | ReUse Var t
             | ExpectedTyCat Var OpenTy t
@@ -61,7 +62,8 @@ data TckErr t = VarNotFound Var t
 
 instance (PrettyPrint t) => PrettyPrint (TckErr t) where
     pp (VarNotFound (Var x) e) = concat ["Variable ",x," not found in term ", pp e]
-    pp (OutOfOrder (Var x) (Var y) e) = concat ["Variable ",y," came before ",x," in term ",pp e," but expected the other order."]
+    pp (AntiSym x y e) = concat ["Variables ", pp x," and ",pp y," used in both orders in ",pp e,"."]
+    pp (OutOfOrder x y e) = concat ["Variable ", pp y," came before ",pp x," in term ",pp e," but expected the other order."]
     pp (SomeOrder (Var x) (Var y) e) = concat ["Variables ",x," and ",y," used in some order in term ",pp e," but expected them to be used in parallel."]
     pp (ReUse (Var x) e) = concat ["Variable ",x," was reused in disjoint branches of ", pp e]
     pp (ExpectedTyCat (Var x) t e) = concat ["Variable ",x," expected to be of concatenation type, but it has type ", pp t, " in term ", pp e]
@@ -184,12 +186,10 @@ guard b e = if b then return () else throwError e
 reThrow :: (TckM t m) => (e -> TckErr t) -> ExceptT e m a -> m a
 reThrow k x = runExceptT x >>= either (throwError . k) return
 
-handleOutOfOrder :: t -> (Var,Var) -> TckErr t
-handleOutOfOrder e (x,y) = OutOfOrder x y e
-
-handleConsistentWith :: t -> P.ConsistentWithErr Var -> TckErr t
-handleConsistentWith e (P.OutOfOrder x y) = OutOfOrder x y e
-handleConsistentWith e (P.SomeOrder x y) = SomeOrder x y e
+handleOrderErr :: t -> P.OrderErr Var -> TckErr t
+handleOrderErr e (P.OutOfOrder x y) = OutOfOrder x y e
+handleOrderErr e (P.SomeOrder x y) = SomeOrder x y e
+handleOrderErr e (P.AntiSym x y) = AntiSym x y e
 
 handleReUse :: t -> Var -> TckErr t
 handleReUse e x = ReUse x e
@@ -234,7 +234,7 @@ checkElab r e@(Elab.TmCatL x y z e') = do
     -- Ensure that x and y are used in order in e: y cannot be before x.
     guard (not $ P.lessThan p y x) (OutOfOrder x y e')
     -- Replace x and y with z in the output
-    p' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    p' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return $ CR p' $ do
         t' <- monomorphizeTy t
         Core.TmCatL t' x y z <$> e''
@@ -243,7 +243,7 @@ checkElab (TyCat s t) (Elab.TmCatR e1 e2) = do
     CR p1 e1' <- checkElab s e1
     CR p2 e2' <- checkElab t e2
     reThrow (handleReUse (Elab.TmCatR e1 e2)) (P.checkDisjoint p1 p2)
-    p' <- reThrow (handleOutOfOrder (Elab.TmCatR e1 e2)) $ P.concat p1 p2
+    p' <- reThrow (handleOrderErr (Elab.TmCatR e1 e2)) $ P.concat p1 p2
     return $ CR p' (Core.TmCatR <$> e1' <*> e2')
 checkElab t (Elab.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
 
@@ -251,13 +251,13 @@ checkElab r e@(Elab.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
     (CR p e'') <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkElab r e')
     when (P.comparable p y x) (throwError (SomeOrder x y e'))
-    p' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    p' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return $ CR p' (Core.TmParL x y z <$> e'')
 
 checkElab (TyPar s t) e@(Elab.TmParR e1 e2) = do
     CR p1 e1' <- checkElab s e1
     CR p2 e2' <- checkElab t e2
-    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     return $ CR p' (Core.TmParR <$> e1' <*> e2')
 checkElab t (Elab.TmParR e1 e2) = throwError (WrongTypeParR e1 e2 t)
 
@@ -275,8 +275,8 @@ checkElab r e@(Elab.TmPlusCase z x e1 y e2) = do
     (s,t) <- lookupTyPlus e z
     CR p1 e1' <- withBind x s $ withUnbind z $ checkElab r e1
     CR p2 e2' <- withBind y t $ withUnbind z $ checkElab r e2
-    p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
-    p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
+    p' <- reThrow (handleOrderErr e) (P.union p1 p2)
+    p'' <- reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
     m_rho <- asks emptyEnvOfType
     m_m <- asks (mapM monomorphizeTy . mp)
     return $ CR p'' $ do
@@ -291,7 +291,7 @@ checkElab r e@(Elab.TmIte z e1 e2) = do
     lookupTyBool e z
     CR p1 e1' <- checkElab r e1
     CR p2 e2' <- checkElab r e2
-    p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
+    p' <- reThrow (handleOrderErr e) (P.union p1 p2)
     m_rho <- asks emptyEnvOfType
     m_m <- asks (mapM monomorphizeTy . mp)
     return $ CR p' $ do
@@ -308,7 +308,7 @@ checkElab (TyStar s) (Elab.TmCons e1 e2) = do
     CR p1 e1' <- checkElab s e1
     CR p2 e2' <- checkElab (TyStar s) e2
     reThrow (handleReUse (Elab.TmCons e1 e2)) (P.checkDisjoint p1 p2)
-    p' <- reThrow (handleOutOfOrder (Elab.TmCatR e1 e2)) $ P.concat p1 p2
+    p' <- reThrow (handleOrderErr (Elab.TmCatR e1 e2)) $ P.concat p1 p2
     return $ CR p' (Core.TmCons <$> e1' <*> e2')
 
 checkElab t (Elab.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
@@ -318,8 +318,8 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
     CR p1 e1' <- withUnbind z (checkElab r e1)
     CR p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkElab r e2)
     guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
-    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
-    p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
+    p' <- reThrow (handleOrderErr e) $ P.union p1 p2
+    p'' <- reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
     m_rho <- asks emptyEnvOfType
     m_m <- asks (mapM monomorphizeTy . mp)
     return $ CR p'' $ do
@@ -335,7 +335,7 @@ checkElab r e@(Elab.TmCut x e1 e2) = do
     IR s p be1 <- inferElab e1
     CR p' be2 <- withBind x s . withUnbindAll (P.list p) $ checkElab r e2
     reThrow (handleReUse e) (P.checkDisjoint p p')
-    p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
+    p'' <- reThrow (handleOrderErr (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     return (CR p'' (Core.TmCut x <$> be1 <*> be2))
 
 checkElab r e@(Elab.TmRec es) = do
@@ -372,7 +372,7 @@ checkElab r e@(Elab.TmFunCall f ts es) = do
         g_mono <- monomorphizeCtx g'
         r_mono <- monomorphizeTy r''
         args <- margs
-        e <- precomposeMono repar_map me
+        e <- reparameterizeMono repar_map me
         case e of
             Core.TmFix _ _ _ e -> return (Core.TmFix args g_mono r_mono e)
             _ -> error "Top level definition isn't a fix"
@@ -391,13 +391,13 @@ elabRec (SemicCtx g1 g2) (SemicCtx args1 args2) = do
     (p,args1') <- elabRec g1 args1
     (p',args2') <- elabRec g2 args2
     reThrow (error "asdf") (P.checkDisjoint p p')
-    p'' <- reThrow (handleOutOfOrder (error "Arguments use variables inconsistently")) $ P.concat p p'
+    p'' <- reThrow (handleOrderErr (error "Arguments use variables inconsistently")) $ P.concat p p'
     return (p'',SemicCtx <$> args1' <*> args2')
 elabRec g@(SemicCtx {}) g' = throwError (UnsaturatedRecursiveCall g g')
 elabRec (CommaCtx g1 g2) (CommaCtx args1 args2) = do
     (p,args1') <- elabRec g1 args1
     (p',args2') <- elabRec g2 args2
-    p'' <- reThrow (handleOutOfOrder (error "Arguments use variables inconsistently")) $ P.union p p'
+    p'' <- reThrow (handleOrderErr (error "Arguments use variables inconsistently")) $ P.union p p'
     return (p'',CommaCtx <$> args1' <*> args2')
 elabRec g@(CommaCtx {}) g' = throwError (UnsaturatedRecursiveCall g g')
 
@@ -419,7 +419,7 @@ inferElab e@(Elab.TmCatL x y z e') = do
     -- Ensure that x and y are used in order in e: y cannot be before x.
     guard (not $ P.lessThan p y x) (OutOfOrder x y e')
     -- Replace x and y with z in the output
-    p' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    p' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return $ IR r p' $ do
         t' <- monomorphizeTy t
         Core.TmCatL t' x y z <$> e''
@@ -427,7 +427,7 @@ inferElab e@(Elab.TmCatL x y z e') = do
 inferElab e@(Elab.TmCatR e1 e2) = do
     IR s p1 e1' <- inferElab e1
     IR t p2 e2' <- inferElab e2
-    p' <- reThrow (handleOutOfOrder e) $ P.concat p1 p2
+    p' <- reThrow (handleOrderErr e) $ P.concat p1 p2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
     return $ IR (TyCat s t) p' (Core.TmCatR <$> e1' <*> e2')
 
@@ -435,13 +435,13 @@ inferElab e@(Elab.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
     (IR r p e'') <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferElab e')
     when (P.comparable p y x) (throwError (SomeOrder x y e'))
-    p' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    p' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return $ IR r p' (Core.TmParL x y z <$> e'')
 
 inferElab e@(Elab.TmParR e1 e2) = do
     IR s p1 e1' <- inferElab e1
     IR t p2 e2' <- inferElab e2
-    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     return $ IR (TyPar s t) p' (Core.TmParR <$> e1' <*> e2')
 
 inferElab e@(Elab.TmInl {}) = throwError (CheckTermInferPos e)
@@ -452,7 +452,7 @@ inferElab e@(Elab.TmPlusCase z x e1 y e2) = do
     IR r1 p1 e1' <- withBind x s $ withUnbind z $ inferElab e1
     IR r2 p2 e2' <- withBind y t $ withUnbind z $ inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
-    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     m_rho <- asks emptyEnvOfType
     m_m <- asks (mapM monomorphizeTy . mp)
     return $ IR r1 p' $ do
@@ -468,7 +468,7 @@ inferElab e@(Elab.TmIte z e1 e2) = do
     IR r1 p1 e1' <- inferElab e1
     IR r2 p2 e2' <- inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
-    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     m_rho <- asks emptyEnvOfType
     m_m <- asks (mapM monomorphizeTy . mp)
     return $ IR r1 p' $ do
@@ -483,7 +483,7 @@ inferElab e@(Elab.TmCons e1 e2) = do
     IR s p1 e1' <- inferElab e1
     CR p2 e2' <- checkElab (TyStar s) e2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
-    p' <- reThrow (handleOutOfOrder e) $ P.concat p1 p2
+    p' <- reThrow (handleOrderErr e) $ P.concat p1 p2
     return $ IR (TyStar s) p' (Core.TmCons <$> e1' <*> e2')
 
 inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
@@ -491,7 +491,7 @@ inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
     IR r1 p1 e1' <- withUnbind z $ inferElab e1
     IR r2 p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z $ inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
-    p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     m_rho <- asks emptyEnvOfType
     m_m <- asks (mapM monomorphizeTy . mp)
     return $ IR r1 p' $ do
@@ -507,7 +507,7 @@ inferElab e@(Elab.TmCut x e1 e2) = do
     IR s p e1' <- inferElab e1
     IR t p' e2' <- withBind x s . withUnbindAll (P.list p) $ inferElab e2
     reThrow (handleReUse e) (P.checkDisjoint p p') {- this should be guaranteed by the fact that we unbind all the vars in p -}
-    p'' <- reThrow (handleOutOfOrder (Elab.TmCut x e1 e2)) $ P.substSing p' p x
+    p'' <- reThrow (handleOrderErr (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     -- e' <- reThrow handleImpossibleCut (Core.cut x e1' e2')
     return (IR t p'' (Core.TmCut x <$> e1' <*> e2'))
 
@@ -543,9 +543,9 @@ inferElab e@(Elab.TmFunCall f ts es) = do
         g_mono <- monomorphizeCtx g'
         r_mono <- monomorphizeTy r'
         args <- margs
-        e <- precomposeMono repar_map me
+        e <- reparameterizeMono repar_map me
         case e of
-            Core.TmFix _ _ _ e -> return (Core.TmFix args g_mono r_mono e)
+            Core.TmFix _ _ _ e' -> return (Core.TmFix args g_mono r_mono e')
             _ -> error "Top level definition isn't a fix"
         -- return (Core.TmFix args g_mono r_mono e)
 
@@ -569,25 +569,25 @@ checkCore r e@(Core.TmCatL t' x y z e') = do
     p <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkCore r e')
     guard (not $ P.lessThan p y x) (OutOfOrder x y e')
     -- Replace x and y with z in the output
-    reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
 
 checkCore (TyCat s t) e@(Core.TmCatR e1 e2) = do
     p1 <- checkCore s e1
     p2 <- checkCore t e2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
-    reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
+    reThrow (handleOrderErr (Core.TmCatR e1 e2)) $ P.concat p1 p2
 checkCore t (Core.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
 
 checkCore r e@(Core.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
     p <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkCore r e')
     when (P.comparable p y x) (throwError (SomeOrder x y e'))
-    reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
 
 checkCore (TyPar s t) e@(Core.TmParR e1 e2) = do
     p1 <- checkCore s e1
     p2 <- checkCore t e2
-    reThrow (handleOutOfOrder e) $ P.union p1 p2
+    reThrow (handleOrderErr e) $ P.union p1 p2
 checkCore t (Core.TmParR e1 e2) = throwError (WrongTypeParR e1 e2 t)
 
 
@@ -605,8 +605,8 @@ checkCore r e@(Core.TmPlusCase m rho r' z x e1 y e2) = do
         guard (r == r') (ListedTypeError r' r e)
         p1 <- withBind x s $ withUnbind z $ checkCore r e1
         p2 <- withBind y t $ withUnbind z $ checkCore r e2
-        p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
-        reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
+        p' <- reThrow (handleOrderErr e) (P.union p1 p2)
+        reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
 
 checkCore r e@(Core.TmIte m rho r' z e1 e2) = do
     reThrow handleHasTypeErr (hasType rho m)
@@ -615,7 +615,7 @@ checkCore r e@(Core.TmIte m rho r' z e1 e2) = do
         guard (r == r') (ListedTypeError r' r e)
         p1 <- checkCore r e1
         p2 <- checkCore r e2
-        reThrow (handleOutOfOrder e) (P.union p1 p2)
+        reThrow (handleOrderErr e) (P.union p1 p2)
 
 checkCore (TyStar _) Core.TmNil = return P.empty
 checkCore t Core.TmNil = throwError (WrongTypeNil t)
@@ -624,7 +624,7 @@ checkCore (TyStar s) e@(Core.TmCons e1 e2) = do
     p1 <- checkCore s e1
     p2 <- checkCore (TyStar s) e2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
-    reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
+    reThrow (handleOrderErr (Core.TmCatR e1 e2)) $ P.concat p1 p2
 checkCore t e@(Core.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
 
 checkCore r e@(Core.TmStarCase m rho r' s' z e1 x xs e2) = do
@@ -636,8 +636,8 @@ checkCore r e@(Core.TmStarCase m rho r' s' z e1 x xs e2) = do
         p1 <- withUnbind z (checkCore r e1)
         p2 <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkCore r e2)
         guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
-        p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
-        reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
+        p' <- reThrow (handleOrderErr e) $ P.union p1 p2
+        reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
 
 checkCore r e@(Core.TmRec args) = do
     TckCtx g_bound (Rec g r') _ _ <- ask
@@ -654,7 +654,7 @@ checkCore r e@(Core.TmCut x e1 e2) = do
     (s,p) <- inferCore e1
     p' <- withBind x s $ checkCore r e2
     reThrow (handleReUse e) (P.checkDisjoint p p')
-    reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
+    reThrow (handleOrderErr (Core.TmCut x e1 e2)) $ P.substSing p' p x
 
 checkCore r e@(Core.TmWait _ r' x e') = do
     guard (r == r') (ListedTypeError r r' e)
@@ -681,27 +681,27 @@ inferCore e@(Core.TmCatL t' x y z e') = do
     guard (t == t') (ListedTypeError t' t e)
     (r,p) <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferCore e')
     guard (not $ P.lessThan p y x) (OutOfOrder x y e')
-    p'' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    p'' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return (r,p'')
 
 inferCore e@(Core.TmCatR e1 e2) = do
     (s,p1) <- inferCore e1
     (t,p2) <- inferCore e2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
-    p'' <- reThrow (handleOutOfOrder e) $ P.concat p1 p2
+    p'' <- reThrow (handleOrderErr e) $ P.concat p1 p2
     return (TyCat s t,p'')
 
 inferCore e@(Core.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
     (r,p) <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferCore e')
     when (P.comparable p y x) (throwError (SomeOrder x y e'))
-    p'' <- reThrow (handleOutOfOrder e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
+    p'' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return (r,p'')
 
 inferCore e@(Core.TmParR e1 e2) = do
     (s,p1) <- inferCore e1
     (t,p2) <- inferCore e2
-    p'' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
+    p'' <- reThrow (handleOrderErr e) $ P.union p1 p2
     return (TyCat s t,p'')
 
 inferCore (Core.TmInl e) = undefined
@@ -713,8 +713,8 @@ inferCore e@(Core.TmPlusCase m rho r z x e1 y e2) = do
         (s,t) <- lookupTyPlus e z
         p1 <- withBind x s $ withUnbind z $ checkCore r e1
         p2 <- withBind y t $ withUnbind z $ checkCore r e2
-        p' <- reThrow (handleOutOfOrder e) (P.union p1 p2)
-        p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
+        p' <- reThrow (handleOrderErr e) (P.union p1 p2)
+        p'' <- reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
         return (r,p'')
 
 inferCore e@(Core.TmIte m rho r z e1 e2) = do
@@ -723,7 +723,7 @@ inferCore e@(Core.TmIte m rho r z e1 e2) = do
         lookupTyBool e z
         p1 <- checkCore r e1
         p2 <- checkCore r e2
-        (r,) <$> reThrow (handleOutOfOrder e) (P.union p1 p2)
+        (r,) <$> reThrow (handleOrderErr e) (P.union p1 p2)
 
 inferCore Core.TmNil = undefined
 
@@ -731,7 +731,7 @@ inferCore e@(Core.TmCons e1 e2) = do
     (s,p1) <- inferCore e1
     p2 <- checkCore (TyStar s) e2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
-    p <- reThrow (handleOutOfOrder (Core.TmCatR e1 e2)) $ P.concat p1 p2
+    p <- reThrow (handleOrderErr (Core.TmCatR e1 e2)) $ P.concat p1 p2
     return (TyStar s, p)
 
 inferCore e@(Core.TmStarCase m rho r s' z e1 x xs e2) = do
@@ -742,8 +742,8 @@ inferCore e@(Core.TmStarCase m rho r s' z e1 x xs e2) = do
         p1 <- withUnbind z (checkCore r e1)
         p2 <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkCore r e2)
         guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
-        p' <- reThrow (handleOutOfOrder e) $ P.union p1 p2
-        p'' <- reThrow (handleOutOfOrder e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
+        p' <- reThrow (handleOrderErr e) $ P.union p1 p2
+        p'' <- reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
         return (r,p'')
 
 inferCore e@(Core.TmRec args) = do
@@ -760,7 +760,7 @@ inferCore e@(Core.TmCut x e1 e2) = do
     (s,p) <- inferCore e1
     (t,p') <- withBind x s $ inferCore e2
     reThrow (handleReUse e) (P.checkDisjoint p p')
-    p'' <- reThrow (handleOutOfOrder (Core.TmCut x e1 e2)) $ P.substSing p' p x
+    p'' <- reThrow (handleOrderErr (Core.TmCut x e1 e2)) $ P.substSing p' p x
     return (t,p'')
 
 inferCore e@(Core.TmWait _ r x e') = do
@@ -781,12 +781,12 @@ checkRec (SemicCtx g1 g2) (SemicCtx g1' g2') = do
     p1 <- checkRec g1 g1'
     p2 <- checkRec g2 g2'
     reThrow (handleReUse (error "ahhhh")) (P.checkDisjoint p1 p2)
-    reThrow (handleOutOfOrder (error "eek")) (P.concat p1 p2)
+    reThrow (handleOrderErr (error "eek")) (P.concat p1 p2)
 checkRec g@(SemicCtx {}) g' = throwError (NonMatchingRecursiveArgs g g')
 checkRec (CommaCtx g1 g2) (CommaCtx g1' g2') = do
     p1 <- checkRec g1 g1'
     p2 <- checkRec g2 g2'
-    reThrow (handleOutOfOrder (error "eek")) (P.union p1 p2)
+    reThrow (handleOrderErr (error "eek")) (P.union p1 p2)
 checkRec g@(CommaCtx {}) g' = throwError (NonMatchingRecursiveArgs g g')
 -}
 
@@ -881,7 +881,7 @@ doCheckElabTm fi vs g t e = do
     case ck of
         Left err -> error (pp err)
         Right (CR usages m_tm) -> do
-            (usageConsist :: Either (TckErr Elab.Term) ())<- runExceptT (withExceptT (handleConsistentWith e) $ P.consistentWith usages (_fst <$> g))
+            (usageConsist :: Either (TckErr Elab.Term) ())<- runExceptT (withExceptT (handleOrderErr e) $ P.consistentWith usages (_fst <$> g))
             case usageConsist of
                 Left err -> error (pp err)
                 Right _ -> return $ do

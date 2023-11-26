@@ -1,5 +1,6 @@
--- AUTHOR: Emeka Nkurumeh, 2023
+-- AUTHOR: Emeka Nkurumeh, Joe Cutler 2023
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralisedNewtypeDeriving #-}
 {-# LANGUAGE DeriveFoldable #-}
 
@@ -16,13 +17,13 @@ module Util.PartialOrder
     , set
     , list
     , singleton
-    , subOrder
+    -- , subOrder
     , subst
     , substSing
     , substSingAll
     , union
     , consistentWith
-    , ConsistentWithErr(..)
+    , OrderErr(..)
     ) where
 
 import Control.Monad
@@ -36,6 +37,12 @@ import Data.Set (Set)
 import Types (CtxStruct (..))
 import Control.Monad.Loops
 import Data.Foldable (toList)
+
+data OrderErr a =
+    OutOfOrder a a
+  | SomeOrder a a
+  | AntiSym a a
+  deriving (Eq,Ord,Show)
 
 
 newtype Partial a
@@ -68,7 +75,7 @@ map :: (Ord b) => (a -> b) -> Partial a -> Partial b
 map f (Partial p) = Partial (Set.map g p)
   where g (x, y) = (f x, f y)
 
-transClosure :: (Ord b) => Set (b, b) -> Set (b, b)
+transClosure :: (Ord a) => Set (a, a) -> Set (a, a)
 transClosure p =
   let p' = transClosure1 p in
     if length p' > length p then
@@ -89,35 +96,30 @@ lessThan (Partial p) a b = Set.member (a, b) p
 comparable :: (Ord a) => Partial a -> a -> a -> Bool
 comparable p x y = lessThan p x y || lessThan p y x
 
-checkAntiSymm :: (Ord a, Monad m) => Partial a -> ExceptT (a, a) m ()
-checkAntiSymm (Partial p) = maybe (return ()) throwError $ foldl f Nothing p
+checkAntiSymm :: (Ord a, Monad m) => Partial a -> ExceptT (OrderErr a) m ()
+checkAntiSymm (Partial p) = foldM f () p
   where
-    f x@(Just _) _ = x
-    f Nothing (a, b)
-      | a == b || Set.notMember (b, a) p = Nothing
-      | otherwise                        = Just (a, b)
+    f _ (a,b) = when (a /= b && Set.member (b,a) p) $ throwError (AntiSym a b)
 
 checkDisjoint :: (Ord a, HasCallStack, Monad m) => Partial a -> Partial a -> ExceptT a m ()
 checkDisjoint (Partial p1) (Partial p2) =
-  mapM_ (throwError . checkRefl) $ Set.lookupMin (Set.intersection p1 p2)
-  where
-    -- since we enforce reflexivity,
-    -- the minimum element must be of the form (a, a)
-    checkRefl (a, b)
-      | a == b    = a
-      | otherwise = error "reflexivity of partial order violated"
+  case Set.lookupMin (Set.intersection p1 p2) of
+    Nothing -> return ()
+    Just (a,b) -> when (a /= b) $ error "reflexivity of partial order violated"
 
-union :: (Ord a, Monad m) => Partial a -> Partial a -> ExceptT (a, a) m (Partial a)
-union (Partial p1) (Partial p2) =
-  let p3 = Partial (transClosure (p1 <> p2)) in
-    checkAntiSymm p3 $> p3
+union :: (Ord a, Monad m) => Partial a -> Partial a -> ExceptT (OrderErr a) m (Partial a)
+union (Partial p1) (Partial p2) = do
+  let p3 = Partial (transClosure (p1 <> p2))
+  checkAntiSymm p3
+  return p3
 
-concat :: (Ord a, Monad m) => Partial a -> Partial a -> ExceptT (a, a) m (Partial a)
+concat :: (Ord a, Monad m) => Partial a -> Partial a -> ExceptT (OrderErr a) m (Partial a)
 concat p1 p2 = do
   p12 <- p1 `union` p2
   p12 `union` Partial (Set.cartesianProduct (set p1) (set p2))
 
-subst :: (Eq a, Ord b, Monad m) => (a -> Partial b) -> Partial a -> ExceptT (b,b) m (Partial b)
+-- This would be great if it could report `OrderErr a`s. The error messages don't make much sense otherwise.
+subst :: (Eq a, Ord b, Monad m) => (a -> Partial b) -> Partial a -> ExceptT (OrderErr b) m (Partial b)
 subst f (Partial p) = foldM g (Partial (Set.fromList [])) p
   where
     g acc (x, y)
@@ -125,26 +127,21 @@ subst f (Partial p) = foldM g (Partial (Set.fromList [])) p
       | otherwise = concat (f x) (f y) >>= union acc
 
 -- p[p'/x] = substSing p p' x
-substSing :: (Show a, Ord a, Monad m) => Partial a -> Partial a -> a -> ExceptT (a,a) m (Partial a)
+substSing :: (Ord a, Monad m) => Partial a -> Partial a -> a -> ExceptT (OrderErr a) m (Partial a)
 substSing p p' x = subst (\u -> if u == x then p' else singleton u) p
 
-substSingAll :: (Show a, Ord a, Monad m) => Partial a -> [(Partial a, a)] -> ExceptT (a,a) m (Partial a)
+substSingAll :: (Ord a, Monad m) => Partial a -> [(Partial a, a)] -> ExceptT (OrderErr a) m (Partial a)
 substSingAll = foldM (\p (p',x) -> substSing p p' x)
 
 subOrder :: (Ord a) => Partial a -> Partial a -> Maybe (Partial a)
 subOrder (Partial sub) (Partial super) =
   let d = Set.difference sub super in
     if null d then Nothing else Just (Partial d)
-  
-data ConsistentWithErr a =
-    OutOfOrder a a
-  | SomeOrder  a a
-  deriving (Eq,Ord,Show)
 
-
+pm :: (Monad m, Foldable t1, Foldable t2) => t1 t3 -> t2 a -> (t3 -> a -> m b) -> m ()
 pm g g' f = mapM_ (\x -> mapM_ (f x) g') g
 
-consistentWith :: (Ord a, Monad m) => Partial a -> CtxStruct a -> ExceptT (ConsistentWithErr a) m ()
+consistentWith :: (Ord a, Monad m) => Partial a -> CtxStruct a -> ExceptT (OrderErr a) m ()
 consistentWith _ EmpCtx = return ()
 consistentWith _ (SngCtx _) = return ()
 consistentWith p (SemicCtx g g') = do

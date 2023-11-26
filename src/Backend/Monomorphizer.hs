@@ -3,11 +3,11 @@ module Backend.Monomorphizer (
     MonomorphErr(..),
     monomorphizeTy,
     monomorphizeCtx,
-    precomposeMono,
+    reparameterizeMono,
     runMono
 )
 where
-import Control.Monad.Reader (ReaderT (runReaderT), asks, runReader, MonadReader (ask), withReaderT)
+import Control.Monad.Reader (ReaderT (runReaderT), asks, runReader, MonadReader (ask, local), withReaderT)
 import qualified Data.Map as M
 import Types
 import Control.Monad.Except (Except, MonadError (throwError), runExcept, runExceptT, ExceptT)
@@ -17,17 +17,28 @@ import Util.PrettyPrint (PrettyPrint,pp)
 
 data MonomorphErr =
     TyVarNotFound Var.TyVar
+  | ReparErr Var.TyVar
 
 instance PrettyPrint MonomorphErr where
     pp (TyVarNotFound v) = "Could not find binding for type variable " ++ pp v ++ " while monomorphizing."
+    pp (ReparErr v) = "Reparamaterize error: " ++ pp v ++ "."
 
 type Mono = ReaderT (M.Map Var.TyVar Ty) (Except MonomorphErr)
 
-precomposeMono :: M.Map Var.TyVar OpenTy -> Mono a -> Mono a
-precomposeMono m = withReaderT (\m' -> M.map (\ot -> either (error . (++" missing var") . pp) id $ runIdentity $ runExceptT $ (reparameterizeTy m' ot :: ExceptT Var.TyVar Identity Ty)) m)
+getTy :: Var.TyVar -> Mono Ty
+getTy alpha = ask >>= maybe (throwError (TyVarNotFound alpha)) return . M.lookup alpha
 
--- (m :: v -> TyF v)
--- (m' :: v -> Ty )
+reThrowReparErr :: ExceptT Var.TyVar Mono a -> Mono a
+reThrowReparErr x = runExceptT x >>= either (throwError . ReparErr) return
+
+
+-- Given a monomorphizer m :: ((TyVar -> Ty) -> a) and a map f :: (TyVar -> OpenTy),
+-- construct the monomorphizer (\f' -> m (f' . f))
+reparameterizeMono :: M.Map Var.TyVar OpenTy -> Mono a -> Mono a
+reparameterizeMono f m = do
+    f' <- ask
+    f'' <- mapM (reThrowReparErr . reparameterizeTy f') f
+    local (const f'') m
 
 monomorphizeTy :: OpenTy -> Mono Ty
 monomorphizeTy TyEps = return TyEps
