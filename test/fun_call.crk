@@ -3,8 +3,6 @@ fun f(x : Int) : Int = x
 fun g(x : Int) : Int =
     f(x)
 
-exec g(x = 3)
-
 fun addOne(x : Int) : Int = wait x do {x + 1} end
 
 fun addTwo(x : Int) : Int =

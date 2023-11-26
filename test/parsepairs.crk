@@ -1,9 +1,10 @@
-fun parsepairs(xs : Int*) : (Int . Int)* =
+fun parsepairs[s](xs : s*) : (s . s)* =
     case xs of
       nil => nil
     | y :: ys => case ys of
                    nil => nil
-                 | z :: zs => (y;z) :: rec(zs)
+                 | z :: zs => (y;z) :: parsepairs(zs)
 
+specialize parsepairs[Int]
 exec step parsepairs(xs = [2))
-exec parsepairs(xs = (emp;[3)))
+exec parsepairs(xs = (emp;emp))

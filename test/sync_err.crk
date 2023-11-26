@@ -5,8 +5,11 @@ fun foo(xs : Int*,ys : Int*) : Int* =
                    nil => nil
                  | y' :: ys' =>
                     wait x' do
-                        {x'} :: rec(xs',ys')
+                        {x'} :: foo(xs',ys')
                     end
+
+
+specialize foo[]
 
 exec step foo(xs = [1],ys = emp)
 exec foo(xs=emp,ys=[emp))

@@ -27,7 +27,6 @@ fun averageRuns(xs : (Int . Int*)*) : Int* =
     nil => nil
   | y::ys => averageRun(y)::averageRuns(ys)
 
-exec averageRuns(xs = [(3;[4;5]);emp))
 
 fun takeWhileGeq(t : Int;xs : Int*) : Int* . Int* =
   case xs of
@@ -56,5 +55,12 @@ fun parseLL(t : Int; xs : Int*) : (Int . Int*)* =
 fun threshAverage(t : Int; xs : Int*) : Int* =
   averageRuns(parseLL(t;xs))
 
+specialize parseLL[]
+specialize averageRuns[]
+specialize threshAverage[]
+
 exec parseLL(t = 3; xs = [1;2;3;4;5;0))
+
+exec averageRuns(xs = [(3;[4;5]);emp))
+
 exec threshAverage(t = 3; xs = [1;2;3;4;5;0))

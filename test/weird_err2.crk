@@ -1,9 +1,7 @@
 fun foo(xs : Int*, y : Int) : Int* =
     case xs of
       nil => nil
-    | x'::xs' => wait y do
-                   {y} :: foo(xs',{y})
-                 end
+    | x'::xs' => xs' 
 
 exec step foo(xs =[1],y = emp)
 exec foo(xs=emp,y=5)

@@ -1,0 +1,29 @@
+fun addOneToAll(xs : Int*) : Int* =
+  case xs of
+    nil => nil
+  | y::y2::ys => e
+
+fun reverse(xs : Int) : Int* =
+
+
+(Int . Bool)*
+
+(Int*)*
+!=
+Int*
+
+monadic stream functions
+
+"dunai"
+"yampa"
+"Bearriver"
+
+
+[[e]] :: MSF _ [Event] [Event]
+
+x => e |-> e' => xs
+
+https://dl.acm.org/doi/pdf/10.1145/3609026.3609727 --> Copilot --> FPGAS
+
+
+

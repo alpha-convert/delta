@@ -7,7 +7,9 @@ fun sync[s,t](xs : s*, ys : t*) : (s || t)* =
                                 {(x',y')} :: sync(xs',ys')
                               end
 
-exec sync[Int,Int](xs = emp,ys = emp)
-exec sync[Int,Int](xs = [4;5;6;7),ys = emp)
-exec sync[Int,Int](xs = [4;5;6;7),ys = [1;emp))
-exec sync[Int,Int](xs = [4;5;6;7),ys = [1;2;emp))
+specialize sync[Int,Int]                              
+
+exec sync(xs = emp,ys = emp)
+exec sync(xs = [4;5;6;7),ys = emp)
+exec sync(xs = [4;5;6;7),ys = [1;emp))
+exec sync(xs = [4;5;6;7),ys = [1;2;emp))

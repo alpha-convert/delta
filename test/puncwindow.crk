@@ -10,8 +10,10 @@ fun puncWindow[s](xs : (Eps + s)*) : s** =
   let (run;rest) = tilFirstPunc[s](xs) in
   run :: puncWindow(rest)
 
-exec puncWindow[Int](xs = emp)
-exec puncWindow[Int](xs = [inr(3)))
-exec puncWindow[Int](xs = [inr(3);emp))
-exec puncWindow[Int](xs = [inr(3);inr(4);inl(emp)))
-exec puncWindow[Int](xs = [inl(emp);inr(5)))
+specialize puncWindow[Int]
+
+exec puncWindow(xs = emp)
+exec puncWindow(xs = [inr(3)))
+exec puncWindow(xs = [inr(3);emp))
+exec puncWindow(xs = [inr(3);inr(4);inl(emp)))
+exec puncWindow(xs = [inl(emp);inr(5)))

@@ -3,5 +3,7 @@ fun filter(xs : (Int + Bool)*) : Int* =
     nil => nil
   | y::ys => (case y of inl u => u :: filter(ys) | inr _ => filter(ys))
 
+specialize filter[]
+
 exec filter(xs = [])
 exec filter(xs = [inl(3)])

@@ -1,8 +1,14 @@
-fun roundRobin[s](b : Eps + Eps;xs : s*) : s* || s* =
+fun not(b : Bool) : Bool =
+  if b then false else true
+
+fun roundRobin[s](b : Bool;xs : s*) : s* || s* =
     case xs of
       nil => (nil,nil)
-    | y::ys => case b of
-                  inl _ => let (zs,ws) = rec(inr sink;ys) in (y::zs,ws)
-                | inr _ => let (zs,ws) = rec(inl sink;ys) in (zs,y::ws)
+    | y::ys =>
+      wait b do
+        let (zs,ws) = roundRobin(not({b});ys) in
+        if {b} then (y::zs,ws) else (zs,y::ws)
+      end
 
-exec roundRobin[Int](b=inl(emp);xs=[3;4;5;6;7])
+specialize roundRobin[Int]
+exec roundRobin(b=true;xs=[3;4;5;6;7])

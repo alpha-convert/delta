@@ -1,20 +1,16 @@
-fun tumble(k : Int ; n : Int ; xs : Int*) : Int* . Int** =
-    case xs of
-      nil => (nil;nil)
-    | y::ys => wait k,n do
-                 if {n + 1 >= k} then
-                    let (cur;rest) = rec({k};0;ys) in (y :: nil;cur :: rest)
-                 else 
-                    let (cur;rest) = rec({k};{n + 1};ys) in (y::cur;rest)
-               end
+fun firstN[s](n : Int; xs : s*) : s* . s* =
+   wait n do
+     case xs of
+       nil => (nil;nil)
+      | y::ys => if {n > 0} then
+                   let (predN;rest) = firstN({n - 1};ys) in
+                   (y::predN;rest)
+                 else (nil;y::ys)
+   end
 
-exec tumble(k=2;n=0;xs=emp)
-exec tumble(k=2;n=0;xs=[emp))
-exec tumble(k=2;n=0;xs=[3))
-exec tumble(k=2;n=0;xs=[3;emp))
-exec tumble(k=2;n=0;xs=[3;4))
-exec tumble(k=2;n=0;xs=[3;4;emp))
-exec tumble(k=2;n=0;xs=[3;4;5))
-exec tumble(k=2;n=0;xs=[3;4;5;6))
-exec tumble(k=2;n=0;xs=[3;4;5;6;7))
-exec tumble(k=2;n=0;xs=[3;4;5;6;7])
+fun tumble[s](k : Int; xs : s*) : s** =
+   wait k do
+     let (first;rest) = firstN[s]({k};xs) in
+     first :: tumble({k};rest)
+   end
+

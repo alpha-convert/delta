@@ -1,0 +1,4 @@
+fun head[s](xs : s*) : Eps + s =
+    case xs of
+      nil => inl(sink)
+    | y :: _ => inr(y)
