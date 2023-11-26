@@ -5,5 +5,7 @@ fun foo(xs : Int*, y : Int) : Int* =
                    {y} :: foo(xs',{y})
                  end
 
+specialize foo[]
+
 exec step foo(xs =[1],y = emp)
 exec foo(xs=emp,y=5)

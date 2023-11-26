@@ -3,5 +3,7 @@ fun foo(xs : Int*, y : Int) : Int* =
       nil => nil
     | x'::xs' => xs' 
 
+specialize foo[]
+
 exec step foo(xs =[1],y = emp)
 exec foo(xs=emp,y=5)
