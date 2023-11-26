@@ -21,7 +21,7 @@ data TyF v =
   | TyPar (TyF v) (TyF v)
   | TyPlus (TyF v) (TyF v)
   | TyStar (TyF v)
-  deriving (Eq,Ord,Show)
+  deriving (Eq,Ord,Show,Foldable)
 
 closeTy :: TyF v -> Either v Ty
 closeTy (TyVar x) = Left x

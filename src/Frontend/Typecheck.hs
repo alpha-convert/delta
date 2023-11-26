@@ -30,6 +30,8 @@ import qualified HistPgm as Hist
 import Debug.Trace (trace)
 import qualified Data.Set as S
 import Backend.Monomorphizer
+import Control.Monad (unless)
+import Data.List (intercalate)
 
 data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
@@ -350,8 +352,8 @@ checkElab r e@(Elab.TmWait x e') = do
     CR p e'' <- withBindHist x s $ withUnbind x $ checkElab r e'
     return $ CR p $ do
         rho <- m_rho
-        s' <- monomorphizeTy s
-        Core.TmWait rho s' x <$> e''
+        r' <- monomorphizeTy r
+        Core.TmWait rho r' x <$> e''
 
 checkElab r e@(Elab.TmHistPgm he) = do
     () <- liftHistCheck e (Hist.check he r)
@@ -521,9 +523,9 @@ inferElab e@(Elab.TmWait x e') = do
     s <- lookupTy e x
     IR t p e'' <- withBindHist x s $ withUnbind x $ inferElab e'
     return $ IR t p $ do
-        s' <- monomorphizeTy s
+        t' <- monomorphizeTy t
         rho <- m_rho
-        Core.TmWait rho s' x <$>e''
+        Core.TmWait rho t' x <$>e''
 
 inferElab e@(Elab.TmHistPgm he) = do
     r <- liftHistCheck e (Hist.infer he)
@@ -891,20 +893,21 @@ doCheckElabTm fi vs g t e = do
                     return (Core.TmFix (fmap (\(CE x _) -> Core.TmVar x) g') g' t' tm)
 
 
--- doCheckCoreTm :: (MonadIO m) => Ctx Var Ty -> Ty -> Core.Term -> m ()
--- doCheckCoreTm g t e = do
---     let ck = runIdentity $ runExceptT $ runReaderT (checkCore t e :: (ReaderT (TckCtxar.TyVar) (ExceptT (TckErr Core.Term Var.TyVar) Identity) (P.Partial Var))) (TckCtx (ctxBindings g) (Rec g t) M.empty S.empty)
---     case ck of
---         Left err -> error ("ERROR: " ++ pp err ++ " while checking " ++ pp e ++ " against type " ++ pp t ++ " in context " ++ pp g)
---         Right usages -> do
---             usageConsist <- runExceptT (withExceptT (handleConsistentWith e) $ P.consistentWith usages (_fst <$> g))
---             either (error . pp) return usageConsist
+wfCtx :: (Eq v) => [v] -> Ctx k (TyF v) -> Bool
+wfCtx tvs = all (\(CE _ t) -> wfTy tvs t)
+
+wfTy :: (Eq v) => [v] -> TyF v -> Bool
+wfTy tvs = all (`elem` tvs)
+
 
 doCheckElabPgm :: (MonadIO m) => Elab.Program -> m Core.Program
 doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
     where
         go :: (MonadIO m) => Elab.Cmd -> StateT FileInfo m Core.Cmd
         go (Elab.FunDef f tvs g t e) = do
+            -- Check that type type and context are well-formed with the type variables
+            unless (wfCtx tvs g) $ error $ "Context " ++ pp g ++ " ill-formed with type variables " ++ (intercalate "," $ pp <$> tvs)
+            unless (wfTy tvs t) $ error $ "Type " ++ pp t ++ " ill-formed with type variables " ++ (intercalate "," $ pp <$> tvs)
             -- Typecheck the function
             fi <- get
             e' <- lift $ doCheckElabTm fi tvs g t e
@@ -914,7 +917,7 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
         go (Elab.RunCommand f ts p) = do
             -- Look up the type parameters
             FR {funTyVars = tvs,funCtx = g} <- gets (M.lookup f) >>= maybe (error $ "Function " ++ pp f ++ " not defined.") return
-            when (length ts /= length tvs) $ error $ "Unsaturated type parameters."
+            when (length ts /= length tvs) $ error "Unsaturated type parameters."
             -- Build the map from type variables to closed types being applied
             let monomap = foldr (uncurry M.insert) M.empty (zip tvs ts)
             -- Monomorphize the context that "f" was typed in.
@@ -927,14 +930,17 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
                         Left err -> error (show err)
                         Right ps -> return (Core.RunCommand f ts ps)
 
-        go (Elab.RunStepCommand f p) = undefined
-            -- (g,s) <- gets (M.lookup f) >>= maybe (error $ "Function " ++ f ++ " not defined.") return
-            -- mps <- lift (runExceptT (checkUntypedPrefixCtx g p))
-            -- case mps of
-                -- Left err -> error (show err)
-                -- Right rho -> do
-                    -- g' <- runExceptT (deriv rho g) >>= either (error . pp) return
-                    -- modify (M.insert f (g',s))
-                    -- return (Core.RunStepCommand f rho)
+        go (Elab.RunStepCommand f p) = do
+            -- Look up the type parameters
+            FR {funTyVars = tvs,funCtx = g} <- gets (M.lookup f) >>= maybe (error $ "Function " ++ pp f ++ " not defined.") return
+            if (not (null tvs)) then error "Cannot step polymorphic term" else return ()
+            case runMono (monomorphizeCtx g) M.empty of
+                Left err -> error (pp err)
+                Right g' -> do
+                    -- Build concrete (core) input prefixes for the monomorphized context g'
+                    mps <- lift (runExceptT (checkUntypedPrefixCtx g' p))
+                    case mps of
+                        Left err -> error (show err)
+                        Right ps -> return (Core.RunStepCommand f ps)
 
 tckTests = TestList []

@@ -46,7 +46,7 @@ data Term =
 data Cmd =
     FunDef Var.FunVar [Var.TyVar] (Mono (Ctx Var.Var Ty)) (Mono Ty) (Mono Term)
   | RunCommand Var.FunVar [Ty] (Env Var Prefix)
-  | RunStepCommand Var.FunVar (Mono (Env Var Prefix))
+  | RunStepCommand Var.FunVar (Env Var Prefix)
 
 type Program = [Cmd]
 
@@ -71,7 +71,7 @@ instance PrettyPrint Term where
             go _ (TmIte _ rho _ z e1 e2) = concat ["if_", pp rho," ", pp z," then ", go True e1," else ", go True e2]
             go _ (TmCons e1 e2) = concat [go True e1," :: ",go True e2]
             go _ (TmStarCase m rho _ _ z e1 x xs e2) = concat ["case_",pp rho,"|",pp m," ",pp z," of nil => ",go True e1," | ",pp x,"::",pp xs," => ",go True e2]
-            go False (TmWait rho _ x e) = concat ["wait_",pp rho," ", pp x," do ", go True e]
+            go False (TmWait rho t x e) = concat ["wait_",pp rho,",",pp t," ", pp x," do ", go True e]
             go _ (TmCut x e e') = concat ["let ",pp x," = ", go True e, " in ", go True e']
 
 rebind :: Ord k => M.Map k a -> k -> k -> M.Map k a
