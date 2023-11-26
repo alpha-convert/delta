@@ -18,7 +18,7 @@ import qualified Data.Map as M
 import qualified Util.PartialOrder as P
 import Control.Monad.Identity (Identity (runIdentity))
 import Util.PrettyPrint (PrettyPrint,pp)
-import Control.Monad.State.Strict (StateT(runStateT), MonadState (put, get), MonadTrans (lift), gets, modify)
+import Control.Monad.State.Strict (StateT(runStateT), MonadState (put, get), MonadTrans (lift), gets, modify, modify')
 import qualified Frontend.SurfaceSyntax as Surf
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import Util.PartialOrder (substSingAll)
@@ -38,6 +38,7 @@ data TckErr t = VarNotFound Var t
             | AntiSym Var Var t
             | SomeOrder Var Var t
             | ReUse Var t
+            | ContUse Var t
             | ExpectedTyCat Var OpenTy t
             | ExpectedTyPar Var OpenTy t
             | ExpectedTyPlus Var OpenTy t
@@ -63,11 +64,12 @@ data TckErr t = VarNotFound Var t
             | FunRecordNotFound Var.FunVar
 
 instance (PrettyPrint t) => PrettyPrint (TckErr t) where
-    pp (VarNotFound (Var x) e) = concat ["Variable ",x," not found in term ", pp e]
+    pp (VarNotFound x e) = concat ["Variable ",pp x," not found while checking term ", pp e]
     pp (AntiSym x y e) = concat ["Variables ", pp x," and ",pp y," used in both orders in ",pp e,"."]
     pp (OutOfOrder x y e) = concat ["Variable ", pp y," came before ",pp x," in term ",pp e," but expected the other order."]
     pp (SomeOrder (Var x) (Var y) e) = concat ["Variables ",x," and ",y," used in some order in term ",pp e," but expected them to be used in parallel."]
     pp (ReUse (Var x) e) = concat ["Variable ",x," was reused in disjoint branches of ", pp e]
+    pp (ContUse x e) = concat ["Variable ",pp x," was destructed and then re-used in the continuation of ", pp e]
     pp (ExpectedTyCat (Var x) t e) = concat ["Variable ",x," expected to be of concatenation type, but it has type ", pp t, " in term ", pp e]
     pp (ExpectedTyPar (Var x) t e) = concat ["Variable ",x," expected to be of parallel type, but it has type ", pp t, " in term ", pp e]
     pp (ExpectedTyPlus (Var x) t e) = concat ["Variable ",x," expected to be of sum type, but it has type ", pp t, " in term ", pp e]
@@ -96,7 +98,10 @@ instance (PrettyPrint t) => PrettyPrint (TckErr t) where
 
 data RecSig = Rec (Ctx Var OpenTy) OpenTy
 
-data FunRecord = FR {funTyVars :: [Var.TyVar], funCtx :: Ctx Var OpenTy, funTy :: OpenTy, funMonoTerm :: Mono Core.Term}
+data FunRecord =
+      PolyFun { funTyVars :: [Var.TyVar], funCtx :: Ctx Var OpenTy, funTy :: OpenTy, funMonoTerm :: Mono Core.Term }
+    | SpecFun { specCtx :: Ctx Var Ty }
+
 type FileInfo = M.Map Var.FunVar FunRecord
 
 data TckCtx = TckCtx { fileInfo :: FileInfo , mp :: M.Map Var.Var OpenTy, rs :: RecSig , histCtx :: M.Map Var OpenTy, tyVars :: S.Set Var.TyVar }
@@ -158,6 +163,7 @@ lookupFunRecord :: (TckM t m) => Var.FunVar -> m FunRecord
 lookupFunRecord f = do
     asks (M.lookup f . fileInfo) >>= maybe (throwError (FunRecordNotFound f)) return
 
+
 withUnbind :: (TckM t m) => Var -> m a -> m a
 withUnbind x = local (\t -> TckCtx (fileInfo t) (M.delete  x (mp t)) (rs t) (histCtx t) (tyVars t))
 
@@ -196,6 +202,9 @@ handleOrderErr e (P.AntiSym x y) = AntiSym x y e
 handleReUse :: t -> Var -> TckErr t
 handleReUse e x = ReUse x e
 
+handleContUse :: t -> Var -> TckErr t
+handleContUse e x = ContUse x e
+
 handleImpossibleCut :: (Var, Core.Term, Core.Term) -> TckErr t
 handleImpossibleCut (x,e,e') = ImpossibleCut x e e'
 
@@ -232,7 +241,7 @@ checkElab t e@(Elab.TmVar x) = do
 
 checkElab r e@(Elab.TmCatL x y z e') = do
     (s,t) <- lookupTyCat e z
-    (CR p e'') <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkElab r e')
+    (CR p e'') <- withBindAll [(x,s),(y,t)] (checkElab r e')
     -- Ensure that x and y are used in order in e: y cannot be before x.
     guard (not $ P.lessThan p y x) (OutOfOrder x y e')
     -- Replace x and y with z in the output
@@ -251,7 +260,8 @@ checkElab t (Elab.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
 
 checkElab r e@(Elab.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
-    (CR p e'') <- withBindAll [(x,s),(y,t)] $ withUnbind z (checkElab r e')
+    (CR p e'') <- withBindAll [(x,s),(y,t)] (checkElab r e')
+    reThrow (handleContUse e) (P.checkNotIn z p)
     when (P.comparable p y x) (throwError (SomeOrder x y e'))
     p' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return $ CR p' (Core.TmParL x y z <$> e'')
@@ -275,8 +285,10 @@ checkElab t (Elab.TmInr e) = throwError (WrongTypeInr e t)
 
 checkElab r e@(Elab.TmPlusCase z x e1 y e2) = do
     (s,t) <- lookupTyPlus e z
-    CR p1 e1' <- withBind x s $ withUnbind z $ checkElab r e1
-    CR p2 e2' <- withBind y t $ withUnbind z $ checkElab r e2
+    CR p1 e1' <- withBind x s (checkElab r e1)
+    CR p2 e2' <- withBind y t (checkElab r e2)
+    reThrow (handleContUse e1) (P.checkNotIn z p1)
+    reThrow (handleContUse e2) (P.checkNotIn z p2)
     p' <- reThrow (handleOrderErr e) (P.union p1 p2)
     p'' <- reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
     m_rho <- asks emptyEnvOfType
@@ -317,9 +329,11 @@ checkElab t (Elab.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
 
 checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
     s <- lookupTyStar e z
-    CR p1 e1' <- withUnbind z (checkElab r e1)
-    CR p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z (checkElab r e2)
+    CR p1 e1' <- checkElab r e1
+    CR p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ checkElab r e2
     guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
+    reThrow (handleContUse e) (P.checkNotIn z p1)
+    reThrow (handleContUse e) (P.checkNotIn z p2)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     p'' <- reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
     m_rho <- asks emptyEnvOfType
@@ -335,7 +349,7 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
 
 checkElab r e@(Elab.TmCut x e1 e2) = do
     IR s p be1 <- inferElab e1
-    CR p' be2 <- withBind x s . withUnbindAll (P.list p) $ checkElab r e2
+    CR p' be2 <- withBind x s (checkElab r e2)
     reThrow (handleReUse e) (P.checkDisjoint p p')
     p'' <- reThrow (handleOrderErr (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     return (CR p'' (Core.TmCut x <$> be1 <*> be2))
@@ -349,7 +363,8 @@ checkElab r e@(Elab.TmRec es) = do
 checkElab r e@(Elab.TmWait x e') = do
     m_rho <- asks emptyEnvOfType
     s <- lookupTy e x
-    CR p e'' <- withBindHist x s $ withUnbind x $ checkElab r e'
+    CR p e'' <- withBindHist x s (checkElab r e')
+    reThrow (handleContUse e) (P.checkNotIn x p)
     return $ CR p $ do
         rho <- m_rho
         r' <- monomorphizeTy r
@@ -362,23 +377,25 @@ checkElab r e@(Elab.TmHistPgm he) = do
         return (Core.TmHistPgm r' he)
 
 checkElab r e@(Elab.TmFunCall f ts es) = do
-    FR {funTyVars = tvs, funCtx = g, funTy = r', funMonoTerm = me} <- lookupFunRecord f
-    when (length ts /= length tvs) $ (error "Unsaturated type args for function call") -- not saturated type arguments for recursive call.
-    let repar_map = foldr (uncurry M.insert) M.empty (zip tvs ts)
-    -- compute g'', r'': the  context and return types, after applying the type substitution (tvs |-> ts)
-    g' <- reThrow handleReparErr (reparameterizeCtx repar_map g)
-    r'' <- reThrow handleReparErr (reparameterizeTy repar_map r')
-    when (r /= r'') $ throwError (UnequalReturnTypes r r'' e) -- ensure the return type is the proper one
-    (p,margs) <- elabRec g' es
-    return $ CR p $ do
-        g_mono <- monomorphizeCtx g'
-        r_mono <- monomorphizeTy r''
-        args <- margs
-        e <- reparameterizeMono repar_map me
-        case e of
-            Core.TmFix _ _ _ e -> return (Core.TmFix args g_mono r_mono e)
-            _ -> error "Top level definition isn't a fix"
-        -- return (Core.TmFix args g_mono r_mono e)
+    fr <- lookupFunRecord f
+    case fr of
+        PolyFun {funTyVars = tvs, funCtx = g, funTy = r', funMonoTerm = me} -> do
+            when (length ts /= length tvs) $ (error "Unsaturated type args for function call") -- not saturated type arguments for recursive call.
+            let repar_map = foldr (uncurry M.insert) M.empty (zip tvs ts)
+            -- compute g'', r'': the  context and return types, after applying the type substitution (tvs |-> ts)
+            g' <- reThrow handleReparErr (reparameterizeCtx repar_map g)
+            r'' <- reThrow handleReparErr (reparameterizeTy repar_map r')
+            when (r /= r'') $ throwError (UnequalReturnTypes r r'' e) -- ensure the return type is the proper one
+            (p,margs) <- elabRec g' es
+            return $ CR p $ do
+                g_mono <- monomorphizeCtx g'
+                r_mono <- monomorphizeTy r''
+                args <- margs
+                e <- reparameterizeMono repar_map me
+                case e of
+                    Core.TmFix _ _ _ e' -> return (Core.TmFix args g_mono r_mono e')
+                    _ -> error "Top level definition isn't a fix"
+        SpecFun {} -> error "..."
 
 
 
@@ -417,9 +434,11 @@ inferElab e@(Elab.TmCatL x y z e') = do
     -- Find the type for x and y
     (s,t) <- lookupTyCat e z
     -- Bind x:s,y:t, unbind z, and recursively check 
-    (IR r p e'') <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferElab e')
+    (IR r p e'') <- withBindAll [(x,s),(y,t)] (inferElab e')
     -- Ensure that x and y are used in order in e: y cannot be before x.
     guard (not $ P.lessThan p y x) (OutOfOrder x y e')
+    -- Ensure that the destructed variable z is not used in e'
+    reThrow (handleContUse e) (P.checkNotIn z p)
     -- Replace x and y with z in the output
     p' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return $ IR r p' $ do
@@ -435,8 +454,9 @@ inferElab e@(Elab.TmCatR e1 e2) = do
 
 inferElab e@(Elab.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
-    (IR r p e'') <- withBindAll [(x,s),(y,t)] $ withUnbind z (inferElab e')
+    (IR r p e'') <- withBindAll [(x,s),(y,t)] (inferElab e')
     when (P.comparable p y x) (throwError (SomeOrder x y e'))
+    reThrow (handleContUse e) (P.checkNotIn z p)
     p' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
     return $ IR r p' (Core.TmParL x y z <$> e'')
 
@@ -451,9 +471,11 @@ inferElab e@(Elab.TmInr {}) = throwError (CheckTermInferPos e)
 
 inferElab e@(Elab.TmPlusCase z x e1 y e2) = do
     (s,t) <- lookupTyPlus e z
-    IR r1 p1 e1' <- withBind x s $ withUnbind z $ inferElab e1
-    IR r2 p2 e2' <- withBind y t $ withUnbind z $ inferElab e2
+    IR r1 p1 e1' <- withBind x s $ inferElab e1
+    IR r2 p2 e2' <- withBind y t $ inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
+    reThrow (handleContUse e1) (P.checkNotIn z p1)
+    reThrow (handleContUse e2) (P.checkNotIn z p2)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     m_rho <- asks emptyEnvOfType
     m_m <- asks (mapM monomorphizeTy . mp)
@@ -490,8 +512,10 @@ inferElab e@(Elab.TmCons e1 e2) = do
 
 inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
     s <- lookupTyStar e z
-    IR r1 p1 e1' <- withUnbind z $ inferElab e1
-    IR r2 p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ withUnbind z $ inferElab e2
+    IR r1 p1 e1' <- inferElab e1
+    IR r2 p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ inferElab e2
+    reThrow (handleContUse e) (P.checkNotIn z p1)
+    reThrow (handleContUse e) (P.checkNotIn z p2)
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     m_rho <- asks emptyEnvOfType
@@ -507,7 +531,7 @@ inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
 
 inferElab e@(Elab.TmCut x e1 e2) = do
     IR s p e1' <- inferElab e1
-    IR t p' e2' <- withBind x s . withUnbindAll (P.list p) $ inferElab e2
+    IR t p' e2' <- withBind x s $ inferElab e2
     reThrow (handleReUse e) (P.checkDisjoint p p') {- this should be guaranteed by the fact that we unbind all the vars in p -}
     p'' <- reThrow (handleOrderErr (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     -- e' <- reThrow handleImpossibleCut (Core.cut x e1' e2')
@@ -521,7 +545,8 @@ inferElab e@(Elab.TmRec es) = do
 inferElab e@(Elab.TmWait x e') = do
     m_rho <- asks emptyEnvOfType
     s <- lookupTy e x
-    IR t p e'' <- withBindHist x s $ withUnbind x $ inferElab e'
+    IR t p e'' <- withBindHist x s $ inferElab e'
+    reThrow (handleContUse e) (P.checkNotIn x p)
     return $ IR t p $ do
         t' <- monomorphizeTy t
         rho <- m_rho
@@ -534,21 +559,24 @@ inferElab e@(Elab.TmHistPgm he) = do
         return (Core.TmHistPgm r' he)
 
 inferElab e@(Elab.TmFunCall f ts es) = do
-    FR {funTyVars = tvs, funCtx = g, funTy = r, funMonoTerm = me} <- lookupFunRecord f
-    when (length ts /= length tvs) $ error "unsatured function call type arguments" -- not saturated type arguments for recursive call.
-    let repar_map = foldr (uncurry M.insert) M.empty (zip tvs ts)
-    -- compute g'', r'': the  context and return types, after applying the type substitution (tvs |-> ts)
-    g' <- reThrow handleReparErr (reparameterizeCtx repar_map g)
-    r' <- reThrow handleReparErr (reparameterizeTy repar_map r)
-    (p,margs) <- elabRec g' es
-    return $ IR r' p $ do
-        g_mono <- monomorphizeCtx g'
-        r_mono <- monomorphizeTy r'
-        args <- margs
-        e <- reparameterizeMono repar_map me
-        case e of
-            Core.TmFix _ _ _ e' -> return (Core.TmFix args g_mono r_mono e')
-            _ -> error "Top level definition isn't a fix"
+    fr <- lookupFunRecord f
+    case fr of
+        PolyFun {funTyVars = tvs, funCtx = g, funTy = r, funMonoTerm = me} -> do
+            when (length ts /= length tvs) $ error "unsatured function call type arguments" -- not saturated type arguments for recursive call.
+            let repar_map = foldr (uncurry M.insert) M.empty (zip tvs ts)
+            -- compute g'', r'': the  context and return types, after applying the type substitution (tvs |-> ts)
+            g' <- reThrow handleReparErr (reparameterizeCtx repar_map g)
+            r' <- reThrow handleReparErr (reparameterizeTy repar_map r)
+            (p,margs) <- elabRec g' es
+            return $ IR r' p $ do
+                g_mono <- monomorphizeCtx g'
+                r_mono <- monomorphizeTy r'
+                args <- margs
+                e' <- reparameterizeMono repar_map me
+                case e' of
+                    Core.TmFix _ _ _ e'' -> return (Core.TmFix args g_mono r_mono e'')
+                    _ -> error "Top level definition isn't a fix"
+        SpecFun {} -> error "...2"
         -- return (Core.TmFix args g_mono r_mono e)
 
 
@@ -912,35 +940,42 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
             fi <- get
             e' <- lift $ doCheckElabTm fi tvs g t e
             liftIO $ putStrLn $ "Function " ++ pp f ++ " typechecked OK."
-            put (M.insert f (FR {funTyVars = tvs, funCtx = g, funTy = t, funMonoTerm = e'}) fi)
+            put (M.insert f (PolyFun {funTyVars = tvs, funCtx = g, funTy = t, funMonoTerm = e'}) fi)
             return (Core.FunDef f tvs (monomorphizeCtx g) (monomorphizeTy t) e')
-        go (Elab.RunCommand f ts p) = do
-            -- Look up the type parameters
-            FR {funTyVars = tvs,funCtx = g} <- gets (M.lookup f) >>= maybe (error $ "Function " ++ pp f ++ " not defined.") return
-            when (length ts /= length tvs) $ error "Unsaturated type parameters."
-            -- Build the map from type variables to closed types being applied
-            let monomap = foldr (uncurry M.insert) M.empty (zip tvs ts)
-            -- Monomorphize the context that "f" was typed in.
-            case runMono (monomorphizeCtx g) monomap of
-                Left err -> error (pp err)
-                Right g' -> do
-                    -- Build concrete (core) input prefixes for the monomorphized context g'
-                    mps <- lift (runExceptT (checkUntypedPrefixCtx g' p))
-                    case mps of
+        go (Elab.SpecializeCommand f ts) = do
+            fr <- gets (M.lookup f) >>= maybe (error $ "Can not specialize unbound function " ++ pp f) return
+            case fr of
+                PolyFun tvs og _ _ -> do
+                    when (length ts /= length tvs) $ error ("Unsaturated type parameters when specializing " ++ pp f)
+                    let monomap = foldr (uncurry M.insert) M.empty (zip tvs ts)
+                    case runMono (monomorphizeCtx og) monomap of
+                        Left err -> error (pp err)
+                        Right g -> do
+                            modify' (M.insert f (SpecFun g))
+                            return (Core.SpecializeCommand f ts)
+                SpecFun {} -> error ("Cannot re-specialize function " ++ pp f)
+        go (Elab.RunCommand f p) = do
+            fr <- gets (M.lookup f) >>= maybe (error $ "Can not run unbound function " ++ pp f) return
+            case fr of
+                SpecFun g -> do
+                    mrho <- lift (runExceptT (checkUntypedPrefixCtx g p))
+                    case mrho of
                         Left err -> error (show err)
-                        Right ps -> return (Core.RunCommand f ts ps)
+                        Right rho -> return (Core.RunCommand f rho)
+                PolyFun {} -> error ("Cannot run un-specialized function " ++ pp f)
 
         go (Elab.RunStepCommand f p) = do
-            -- Look up the type parameters
-            FR {funTyVars = tvs,funCtx = g} <- gets (M.lookup f) >>= maybe (error $ "Function " ++ pp f ++ " not defined.") return
-            if (not (null tvs)) then error "Cannot step polymorphic term" else return ()
-            case runMono (monomorphizeCtx g) M.empty of
-                Left err -> error (pp err)
-                Right g' -> do
-                    -- Build concrete (core) input prefixes for the monomorphized context g'
-                    mps <- lift (runExceptT (checkUntypedPrefixCtx g' p))
-                    case mps of
+            fr <- gets (M.lookup f) >>= maybe (error $ "Can not step-run unbound function " ++ pp f) return
+            case fr of
+                SpecFun g -> do
+                    mrho <- lift (runExceptT (checkUntypedPrefixCtx g p))
+                    case mrho of 
                         Left err -> error (show err)
-                        Right ps -> return (Core.RunStepCommand f ps)
+                        Right rho -> do
+                            -- Update the input type of f to the derivative
+                            g' <- runExceptT (deriv rho g) >>= either (error . pp) return
+                            modify' (M.insert f (SpecFun g'))
+                            return (Core.RunStepCommand f rho)
+                PolyFun {} -> error ("Cannot run un-specialized function " ++ pp f)
 
 tckTests = TestList []

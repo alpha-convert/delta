@@ -271,9 +271,11 @@ handlePrefixSubstError (x,p,e) = MaximalPrefixSubstErr x p e
 handleHistEvalErr :: Hist.Term -> Hist.SemErr -> SemError
 handleHistEvalErr e err = HistSemErr err e
 
+-- A function can be in one of two states. It can have been defined (and not yet specialized), or specialized.
+-- An unspecialized function is a monomorphizer, accepting type varibles matching its required type arguments.
 data FunState =
       PolymorphicDefn [Var.TyVar] (Mono Term) (Mono (Ctx Var.Var Ty)) (Mono Ty)
-    | SteppedTerm Term (Ctx Var.Var Ty) Ty
+    | SpecTerm Term (Ctx Var.Var Ty) Ty
     
 type TopLevel = M.Map Var.FunVar FunState
 
@@ -284,63 +286,51 @@ doRunPgm p = do
     where
         go :: Cmd -> StateT TopLevel IO ()
         go (FunDef f tvs g s e) = modify' (M.insert f (PolymorphicDefn tvs e g s))
-        go (RunCommand f ts rho) = do
+        go (SpecializeCommand f ts) = do
+            lift (putStrLn "\n")
             fs <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to execute unbound function " ++ pp f)) return
             case fs of
-                PolymorphicDefn tvs me _ ms -> do
-                    when (length ts /= length tvs) $ error "Unsaturated type arguments"
+                SpecTerm {} -> error ("Cannot re-specialize function " ++ pp f)
+                PolymorphicDefn tvs me mg ms -> do
+                    when (length ts /= length tvs) $ error ("Unsaturated type arguments when specializing " ++ pp f)
                     -- Build the map from type variables to closed types being applied
                     let monomap = foldr (uncurry M.insert) M.empty (zip tvs ts)
-                    -- Monomorphize the term toe be run and the return type
-                    case runMono ((,) <$> me <*> ms) monomap of
+                    let monoAll = do {e <- me; g <- mg; s <- ms; return (e,g,s)}
+                    -- Monomorphize everything, then insert it as a specialized term into the file info.
+                    case runMono monoAll monomap of
                         Left err -> error (pp err)
-                        Right (e,s) -> do
-                            lift $ putStrLn $ "Monomorphized core term: " ++ pp e ++ " for running functon " ++ pp f
-                            case doEval (eval e) rho of
-                                        Right (p',e') -> do
-                                            lift (putStrLn $ "Result of executing " ++ pp f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
-                                            () <- hasTypeB p' s >>= (\b -> if b then return () else error ("Output: " ++ pp p' ++ " does not have type "++ pp s))
-                                            return ()
-                                        Left err -> error $ "Runtime Error: " ++ pp err
-                SteppedTerm e _ t -> do
-                    lift $ putStrLn $ "Core term: " ++ pp e ++ " for running (stepped) functon " ++ pp f
-                    case doEval (eval e) rho of
-                        Right (p',e') -> do
-                            lift (putStrLn $ "Result of executing " ++ pp f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
-                            () <- hasTypeB p' t >>= (\b -> if b then return () else error ("Output: " ++ pp p' ++ " does not have type "++ pp t))
-                            return ()
-                        Left err -> error $ "Runtime Error: " ++ pp err
-
-        go (RunStepCommand f rho) = do
+                        Right (e,g,s) -> modify' (M.insert f (SpecTerm e g s))
+        go (RunCommand f rho) = do
+            lift (putStrLn "\n")
             fs <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to execute unbound function " ++ pp f)) return
             case fs of
-                SteppedTerm e g s -> do
-                    lift $ putStrLn $ "Core term: " ++ pp e ++ " for step-running functon " ++ pp f
+                PolymorphicDefn {} -> error ("Cannot run un-specialized function " ++ pp f)
+                SpecTerm e _ t -> do
+                    lift $ putStrLn $ "Core term: " ++ pp e ++ " for running function " ++ pp f ++ " on " ++ pp rho
+                    case doEval (eval e) rho of
+                        Right (p',_) -> do
+                            lift (putStrLn $ "Result of executing " ++ pp f ++ " on " ++ pp rho ++ ": " ++ pp p')
+                            () <- hasTypeB p' t >>= (\b -> if b then return () else error ("Output: " ++ pp p' ++ " does not have type "++ pp t))
+                            return ()
+                        Left err -> error $ ("\nRuntime Error: " ++ pp err)
+
+        go (RunStepCommand f rho) = do
+            lift (putStrLn "\n")
+            fs <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to execute unbound function " ++ pp f)) return
+            case fs of
+                PolymorphicDefn {} -> error ("Cannot run un-specialized function " ++ pp f)
+                SpecTerm e g s -> do
+                    lift $ putStrLn $ "Core term: " ++ pp e ++ " for step-running functon " ++ pp f ++ " on " ++ pp rho
                     case doEval (eval e) rho of
                         Right (p',e') -> do
-                            lift (putStrLn $ "Result of executing " ++ pp f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
-                            lift (putStrLn $ "Final core term (stepping): " ++  pp e' ++ "\n")
+                            lift (putStrLn $ "Result of executing " ++ pp f ++ " on " ++ pp rho ++ ": " ++ pp p')
+                            lift (putStrLn $ "Final core term (stepping): " ++  pp e')
                             () <- runExceptT (hasType p' s) >>= either (error . pp) return
                             g' <- doDeriv rho g
                             s' <- doDeriv p' s
-                            modify (M.insert f (SteppedTerm e' g' s'))
+                            modify (M.insert f (SpecTerm e' g' s'))
                         Left err -> error $ "Runtime Error: " ++ pp err
-                PolymorphicDefn tvs me mg ms -> do
-                    unless (null tvs) $ error "Cannot step polymorphic term."
-                    let monoAll = do {e <- me; g <- mg; s <- ms; return (e,g,s)}
-                    case runMono monoAll M.empty of
-                        Left err -> error (pp err)
-                        Right (e,g,s) -> do
-                            lift $ putStrLn $ "Core term: " ++ pp e ++ " for step-running functon " ++ pp f
-                            case doEval (eval e) rho of
-                                Right (p',e') -> do
-                                    lift (putStrLn $ "Result of executing " ++ pp f ++ " on " ++ pp rho ++ ": " ++ pp p' ++ "\n")
-                                    lift (putStrLn $ "Final core term (stepping): " ++  pp e' ++ "\n")
-                                    () <- runExceptT (hasType p' s) >>= either (error . pp) return
-                                    g' <- doDeriv rho g
-                                    s' <- doDeriv p' s
-                                    modify (M.insert f (SteppedTerm e' g' s'))
-                                Left err -> error $ "Runtime Error: " ++ pp err
+
 
 evalSingle e xs = runIdentity (runExceptT (runReaderT (eval e) (bindAllEnv (map (Data.Bifunctor.first var) xs) emptyEnv)))
 

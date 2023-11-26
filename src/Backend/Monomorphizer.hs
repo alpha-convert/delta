@@ -14,6 +14,7 @@ import Control.Monad.Except (Except, MonadError (throwError), runExcept, runExce
 import qualified Var
 import Control.Monad.Identity (Identity(runIdentity))
 import Util.PrettyPrint (PrettyPrint,pp)
+import Data.Void (Void)
 
 data MonomorphErr =
     TyVarNotFound Var.TyVar

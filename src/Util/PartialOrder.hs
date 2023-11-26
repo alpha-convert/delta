@@ -7,6 +7,7 @@
 module Util.PartialOrder
     ( Partial
     , checkDisjoint
+    , checkNotIn
     , concat
     , delete
     , empty
@@ -101,11 +102,14 @@ checkAntiSymm (Partial p) = foldM f () p
   where
     f _ (a,b) = when (a /= b && Set.member (b,a) p) $ throwError (AntiSym a b)
 
-checkDisjoint :: (Ord a, HasCallStack, Monad m) => Partial a -> Partial a -> ExceptT a m ()
+checkDisjoint :: (Ord a, Monad m) => Partial a -> Partial a -> ExceptT a m ()
 checkDisjoint (Partial p1) (Partial p2) =
   case Set.lookupMin (Set.intersection p1 p2) of
     Nothing -> return ()
     Just (a,b) -> when (a /= b) $ error "reflexivity of partial order violated"
+
+checkNotIn :: (Ord a, Monad m) => a -> Partial a -> ExceptT a m ()
+checkNotIn x (Partial p) = when (Set.member (x,x) p) $ throwError x
 
 union :: (Ord a, Monad m) => Partial a -> Partial a -> ExceptT (OrderErr a) m (Partial a)
 union (Partial p1) (Partial p2) = do

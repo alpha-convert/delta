@@ -39,6 +39,7 @@ import qualified HistPgm as Hist
       emp             { TokenEmp }
       exec            { TokenExec }
       step            { TokenStep }
+      specialize      { TokenSpec}
       wait            { TokenWait }
       do              { TokenDo }
       '='             { TokenEq }
@@ -199,8 +200,8 @@ PfxArgs1    : Var '=' Pfx                                          { SngCtx (CE 
 
 Cmd   : fun FunVar '[' TyVarList ']' '(' FunParams ')' ':' Ty '=' Exp      { FunDef $2 $4 $7 $10 $12 }
       | fun FunVar '(' FunParams ')' ':' Ty '=' Exp                        { FunDef $2 [] $4 $7 $9 }
-      | exec FunVar '(' PfxArgs ')'                                        { RunCommand $2 [] $4 }
-      | exec FunVar '[' TyList ']' '(' PfxArgs ')'                         { RunCommand $2 $4 $7 }
+      | specialize FunVar '[' TyList ']'                                   { SpecializeCommand $2 $4 }
+      | exec FunVar '(' PfxArgs ')'                                        { RunCommand $2 $4 }
       | exec step FunVar '(' PfxArgs ')'                                   { RunStepCommand $3 $5 }
 
 Pgm   : {-empty-}                                                  { [] }
@@ -259,6 +260,7 @@ data Token
       | TokenWait
       | TokenPlus
       | TokenEnd
+      | TokenSpec
       | TokenTyInt
       | TokenTyBool
       | TokenTyEps
@@ -321,6 +323,7 @@ lexVar cs =
       ("false",rest)  -> TokenBool False : lexer rest
       ("exec",rest)  -> TokenExec : lexer rest
       ("step",rest)  -> TokenStep : lexer rest
+      ("specialize",rest)  -> TokenSpec : lexer rest
       ("Eps",rest)  -> TokenTyEps : lexer rest
       ("Int",rest)  -> TokenTyInt : lexer rest
       ("Bool",rest)  -> TokenTyBool : lexer rest

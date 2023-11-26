@@ -206,7 +206,8 @@ instance ElabM (StateT ElabState (ReaderT ElabInput (ExceptT ElabErr Identity)))
 
 data Cmd =
       FunDef Var.FunVar [Var.TyVar] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
-    | RunCommand Var.FunVar [Ty] (Ctx Var Surf.UntypedPrefix)
+    | SpecializeCommand Var.FunVar [Ty]
+    | RunCommand Var.FunVar (Ctx Var Surf.UntypedPrefix)
     | RunStepCommand Var.FunVar (Ctx Var Surf.UntypedPrefix)
     deriving (Eq,Ord,Show)
 
@@ -231,10 +232,10 @@ doElab = mapM $ \case
                                 putStrLn $ "Function " ++ pp f ++ " elaborated OK. Elab term: " ++ pp e' ++ "\n"
                                 return (FunDef f tvs g s e')
                             Left err -> error (pp err)
-                    (Surf.RunCommand s ts xs) ->
-                        case mapM closeTy ts of
-                            Left x -> error $ "Tried to run term " ++ pp s ++ ", but provided type with type variable " ++ pp x
-                            Right ts' -> return (RunCommand s ts' xs)
+                    (Surf.SpecializeCommand f ts) -> case mapM closeTy ts of
+                                                       Left x -> error $ "Tried to specialize function " ++ pp f ++ ", but provided type with type variable " ++ pp x
+                                                       Right ts' -> return (SpecializeCommand f ts')
+                    (Surf.RunCommand s xs) -> return (RunCommand s xs)
                     (Surf.RunStepCommand s xs) -> return (RunStepCommand s xs)
 
 -- >>> elabSingle (Surf.TmCatL Nothing Nothing (Surf.TmCatR (Surf.TmLitR (LInt 4)) (Surf.TmLitR (LInt 4))) Surf.TmEpsR) (S.fromList [])

@@ -45,7 +45,8 @@ data Term =
 
 data Cmd =
     FunDef Var.FunVar [Var.TyVar] (Mono (Ctx Var.Var Ty)) (Mono Ty) (Mono Term)
-  | RunCommand Var.FunVar [Ty] (Env Var Prefix)
+  | SpecializeCommand Var.FunVar [Ty]
+  | RunCommand Var.FunVar  (Env Var Prefix)
   | RunStepCommand Var.FunVar (Env Var Prefix)
 
 type Program = [Cmd]
