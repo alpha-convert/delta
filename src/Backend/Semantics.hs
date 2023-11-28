@@ -24,14 +24,23 @@ import qualified HistPgm as Hist
 import GHC.IO.Handle.Types (Handle__(Handle__))
 import qualified Data.Bifunctor
 import Backend.Monomorphizer
-import Control.Monad.Error (ErrorT(runErrorT), when)
 import Control.Monad (unless)
+import Data.MonadicStreamFunction (MSF, arrM, iPost, constM)
+import Data.MonadicStreamFunction.Util (next)
+import Control.Arrow
+import Data.MonadicStreamFunction.Parallel ((&|&))
+import Data.MonadicStreamFunction.Core (feedback, embed)
+import Control.Monad.Trans.MSF (switch, dSwitch)
+import Control.Monad (when)
+import Data.MonadicStreamFunction.InternalCore (MSF(..))
+import Test.QuickCheck
 
 data SemError =
       VarLookupFailed Var.Var
     | NotCatPrefix Var.Var Prefix
     | NotParPrefix Var.Var Prefix
     | NotPlusPrefix Var.Var Prefix
+    | NotBoolPrefix Var.Var Prefix
     | ConcatError Term Var.Var Prefix Prefix
     | RuntimeCutError Var.Var Term Term
     | SinkError Prefix
@@ -45,6 +54,7 @@ instance PrettyPrint SemError where
     pp (NotCatPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a cat-prefix. Instead got: ",pp p]
     pp (NotParPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a par-prefix. Instead got: ",pp p]
     pp (NotPlusPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a plus-prefix. Instead got: ",pp p]
+    pp (NotBoolPrefix (Var.Var z) p) = concat ["Expected variable ",z," to be a bool-prefix. Instead got: ",pp p]
     pp (ConcatError e x p p') = concat ["Tried to concatenate prefixes ", pp p," and ",pp p', " for variable ", pp x, " in term ", pp e]
     pp (RuntimeCutError x e e') = concat ["Error occurred when trying to cut ",pp x," = ",pp e, " in ", pp e',". This is a bug."]
     pp (SinkError p) = concat ["Tried to build sink term for prefix ", pp p, ". This is a bug."]
@@ -59,7 +69,14 @@ instance EvalM (ReaderT (Env Var.Var Prefix) (ExceptT SemError Identity)) where
 doEval :: ReaderT (Env Var.Var Prefix) (ExceptT SemError Identity) a -> Env Var.Var Prefix -> Either SemError a
 doEval x rho = runIdentity (runExceptT (runReaderT x rho))
 
-reThrow :: (EvalM m) => (e -> SemError) -> ExceptT e m a -> m a
+doEvalN :: Term -> [Env Var.Var Prefix] -> Either SemError [Prefix]
+doEvalN _ [] = return []
+doEmbedEval e (rho:rhos) = do
+    (p,e') <- doEval (eval e) rho
+    ps <- doEvalN e' rhos
+    return (p:ps)
+
+reThrow :: (MonadError SemError m) => (e -> SemError) -> ExceptT e m a -> m a
 reThrow k x = runExceptT x >>= either (throwError . k) return
 
 withEnv :: (EvalM m) => (Env Var.Var Prefix -> Env Var.Var Prefix) -> m a -> m a
@@ -72,12 +89,14 @@ withEnvM f m = do
     local (const e') m
 
 
-lookupVar :: (EvalM m) => Var.Var -> m Prefix
+lookupVar :: (MonadError SemError m, MonadReader (Env Var.Var Prefix) m) => Var.Var -> m Prefix
 lookupVar x = do
     rho <- ask
     case Values.lookupEnv x rho of
         Nothing -> throwError (VarLookupFailed x)
         Just p -> return p
+
+concatEnvM e rho' rho = reThrow (handleConcatError e) (concatEnv rho' rho)
 
 eval :: (EvalM m) => Term -> m (Prefix,Term)
 eval (TmLitR v) = return (LitPFull v,TmEpsR)
@@ -131,7 +150,7 @@ eval (TmInr e) = do
     return (SumPB p, e')
 
 eval e@(TmPlusCase m rho' r z x e1 y e2) = do
-    withEnvM (reThrow (handleConcatError e) . concatEnv rho') $ do
+    withEnvM (concatEnvM e rho') $ do
         p <- lookupVar z
         (case p of
             SumPEmp -> do
@@ -146,7 +165,7 @@ eval e@(TmPlusCase m rho' r z x e1 y e2) = do
             _ -> throwError (NotPlusPrefix z p))
 
 eval e@(TmIte m rho' r z e1 e2) = do
-    withEnvM (reThrow (handleConcatError e) . concatEnv rho') $ do
+    withEnvM (concatEnvM e rho') $ do
         p <- lookupVar z
         case p of
             LitPEmp -> do
@@ -160,7 +179,7 @@ eval e@(TmIte m rho' r z e1 e2) = do
                 (p',e2') <- eval e2
                 -- e2'' <- reThrow handleRuntimeCutError (cut z TmEpsR e2')
                 return (p', TmCut z TmEpsR e2')
-            _ -> throwError (NotPlusPrefix z p)
+            _ -> throwError (NotBoolPrefix z p)
 
 eval TmNil = return (StpDone,TmEpsR)
 
@@ -173,8 +192,7 @@ eval (TmCons e1 e2) = do
         return (StpB p p',e2')
 
 eval e@(TmStarCase m rho' r s z e1 x xs e2) = do
-    rho <- ask
-    withEnvM (reThrow (handleConcatError e) . concatEnv rho') $ do
+    withEnvM (concatEnvM e rho') $ do
         p <- lookupVar z
         (case p of
             StpEmp -> do
@@ -219,7 +237,7 @@ eval (TmFix args g s e) = do
 eval (TmRec _) = error "Impossible."
 
 eval e@(TmWait rho' r x e') = do
-    withEnvM (reThrow (handleConcatError e) . concatEnv rho') $ do
+    withEnvM (concatEnvM e rho') $ do
         p <- lookupVar x
         case maximalLift p of
             Just p' -> do
@@ -276,7 +294,7 @@ handleHistEvalErr e err = HistSemErr err e
 data FunState =
       PolymorphicDefn [Var.TyVar] (Mono Term) (Mono (Ctx Var.Var Ty)) (Mono Ty)
     | SpecTerm Term (Ctx Var.Var Ty) Ty
-    
+
 type TopLevel = M.Map Var.FunVar FunState
 
 doRunPgm :: Program -> IO ()
@@ -372,3 +390,92 @@ semTests = TestList [
         env xs = bindAllEnv xs emptyEnv
 
 var = Var.Var
+
+applyOnce :: (Monad m) => (a -> a) -> MSF m a a
+applyOnce f = dSwitch (arr ((,Just ()) . f)) (const (arr id))
+
+applyOnceM :: (Monad m) => (a -> m a) -> MSF m a a
+applyOnceM f = dSwitch (arrM ((fmap (,Just())) . f)) (const (arr id))
+
+applyToFirst :: (Monad m) => (a -> a) -> (b -> b) -> MSF m a b -> MSF m a b
+applyToFirst f g m = applyOnce f >>> m >>> applyOnce g
+
+applyToFirstM :: (Monad m) => (a -> m a) -> (b -> m b) -> MSF m a b -> MSF m a b
+applyToFirstM f g m = applyOnceM f >>> m >>> applyOnceM g
+
+--- Run with the second input, and then the first for the rest of the time
+switchInputs :: (Monad m) => MSF m a b -> MSF m (a,a) b
+switchInputs m = dSwitch (arr $ \(x,_) -> (x,Just())) (const (arr snd)) >>> m
+
+-- Accumulates inputs until the total combined input (with comb) passes the predicate. Then, we run the continuation,
+-- first with the combined input, then with whatever comes in from then on.
+bufferUntil :: (Monad m) => (a -> a -> m a) -> (a -> m (Maybe c)) -> a -> b -> (c -> MSF m a b) -> MSF m a b
+bufferUntil comb pred init out m = switch (feedback init (arrM accum)) (\(old,c) -> applyToFirstM (comb old) return (m c))
+    where
+        accum (new,old) = do
+            new' <- comb old new
+            mc <- pred new'
+            return ((out,(old,) <$> mc),new')
+
+-- >>> (embed (bufferUntil (\x y -> return (x + y)) (\n -> return (if n > 5 then Just () else Nothing)) 0 99 (const (arr id))) [1,2,9,150,150] :: Identity [Int])
+-- Identity [99,99,12,150,150]
+
+msfVarLookup :: (MonadError SemError m) => Var.Var -> MSF m (Env Var.Var Prefix) Prefix
+msfVarLookup x = arrM (maybe (throwError (VarLookupFailed x)) return . lookupEnv x)
+
+denote :: (MonadError SemError m) => Term -> MSF m (Env Var.Var Prefix) Prefix
+denote (TmLitR v) = dSwitch (arr (const (LitPFull v, Just ()))) (const (denote TmEpsR))
+denote TmEpsR = dSwitch (arr (const (EpsP, Just ()))) (const (denote TmEpsR))
+denote (TmVar x) = msfVarLookup x
+denote (TmCatR e1 e2) = switch (denote e1 >>^ maximalPass) (\p -> applyToFirst id (CatPB p) (denote e2))
+    where
+        maximalPass p = (CatPA p,if isMaximal p then Just p else Nothing)
+denote (TmCatL t x y z e) = _
+
+denote (TmParR e1 e2) = denote e1 &|& denote e2 >>^ uncurry ParP
+denote (TmParL x y z e) = msfVarLookup z &&& arr id >>> arrM rebind >>> denote e
+    where
+        rebind (ParP p1 p2,rho) = return (bindAllEnv [(x,p1),(y,p2)] rho)
+        rebind (p,_) = throwError (NotParPrefix z p)
+
+denote TmNil = dSwitch (arr (const (StpDone, Just ()))) (const (denote TmEpsR))
+denote (TmCut x e1 e2) = (denote e1 &&& arr id >>^ uncurry (bindEnv x)) >>> denote e2
+denote (TmInl e) = applyToFirst id SumPA (denote e)
+denote (TmInr e) = applyToFirst id SumPB (denote e)
+denote e@(TmIte _ rho' t z e1 e2) = bufferUntil (concatEnvM e) boolLit rho' (emptyPrefix t) go
+    where
+        boolLit rho =
+            case lookupEnv z rho of
+                Just LitPEmp -> return Nothing
+                Just (LitPFull (LBool True)) -> return (Just True)
+                Just (LitPFull (LBool False)) -> return (Just False)
+                Just p -> throwError (NotBoolPrefix z p)
+                _ -> throwError (VarLookupFailed z)
+        go True = denote e1
+        go False = denote e2
+
+denote e@(TmPlusCase _ rho' t z x e1 y e2) = bufferUntil (concatEnvM e) nonEmptyPlus rho' (emptyPrefix t) go
+    where
+        nonEmptyPlus rho =
+            case lookupEnv z rho of
+                Just SumPEmp -> return Nothing
+                Just (SumPA p) -> return (Just (Left p))
+                Just (SumPB p) -> return (Just (Right p))
+                Just p -> throwError (NotPlusPrefix z p)
+                Nothing -> throwError (VarLookupFailed z)
+
+        go (Left p) = _
+        go (Right p) = _
+
+denote _ = _
+
+
+-- eval (TmCut x e1 e2) = do
+--     (p,e1') <- eval e1
+--     withEnv (bindEnv x p) $ do
+--         (p',e2') <- eval e2
+--         -- e' <- reThrow handleRuntimeCutError (cut x e1' e2')
+--         return (p',TmCut x e1' e2')
+
+prop_denote_correct :: Ctx Var.Var Ty -> Term -> Property
+prop_denote_correct g e = forAll (arbitrary :: Int) $ \n -> forAll (genSequenceOf n g) $ \rhos -> embed (denote e) rhos == doEvalN e rhos
