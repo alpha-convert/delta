@@ -27,6 +27,8 @@ dependencies:
 - array
 - HUnit
 - monad-loops
+- dunai
+- QuickCheck
 
 ghc-options:
 - -Wall

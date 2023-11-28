@@ -1,9 +1,31 @@
 {-# LANGUAGE DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, FlexibleContexts, TupleSections #-}
-module Types (TyF(..), Ty, OpenTy, CtxStruct(..), Ctx, CtxEntry(..), ValueLike(..), TypeLike(..), ValueLikeErr(..), emptyPrefix, ctxBindings, ctxVars, ctxAssoc, ctxMap, ctxFoldM, closeTy, reparameterizeTy, reparameterizeCtx) where
+module Types (
+  TyF(..),
+  Ty,
+  OpenTy,
+  CtxStruct(..),
+  Ctx,
+  CtxEntry(..),
+  ValueLike(..),
+  GenValueLike(..),
+  TypeLike(..),
+  ValueLikeErr(..),
+  emptyPrefix,
+  ctxBindings,
+  ctxVars,
+  ctxAssoc,
+  ctxMap,
+  ctxFoldM,
+  closeTy,
+  reparameterizeTy,
+  reparameterizeCtx,
+  genOf,
+  genSequenceOf
+) where
 
 import qualified Data.Map as M
-import Control.Monad.Except (ExceptT, throwError, withExceptT, runExceptT)
-import Values (Prefix(..), Env, Lit(..), isMaximal, isEmpty, bindEnv, emptyEnv, lookupEnv, singletonEnv)
+import Control.Monad.Except (ExceptT, throwError, withExceptT, runExceptT, replicateM)
+import Values (Prefix(..), Env, Lit(..), isMaximal, isEmpty, bindEnv, emptyEnv, lookupEnv, singletonEnv, MaximalPrefix (..), maximalDemote, unionDisjointEnv)
 import Util.ErrUtil(guard)
 import Util.PrettyPrint
 import Control.Monad.IO.Class (MonadIO)
@@ -11,6 +33,9 @@ import Control.Monad (foldM)
 import Data.Bifunctor (Bifunctor (..))
 import Data.Void
 import qualified Var
+import Test.QuickCheck.Gen (Gen, frequency, choose)
+import Test.QuickCheck (Arbitrary(arbitrary))
+import Data.Foldable (foldrM)
 
 data TyF v =
     TyVar v
@@ -309,3 +334,72 @@ reparameterizeCtx m = go
       return (SngCtx (CE x s'))
     go (CommaCtx g g') = CommaCtx <$> go g <*> go g'
     go (SemicCtx g g') = SemicCtx <$> go g <*> go g'
+
+
+-----
+
+genMaximalPrefixOfTy :: Ty -> Gen MaximalPrefix
+genMaximalPrefixOfTy TyEps = return EpsMP
+genMaximalPrefixOfTy TyInt = LitMP . LInt <$> arbitrary
+genMaximalPrefixOfTy TyBool = LitMP . LBool <$> arbitrary
+genMaximalPrefixOfTy (TyVar a) = absurd a
+genMaximalPrefixOfTy (TyCat s t) = CatMP <$> genMaximalPrefixOfTy s <*> genMaximalPrefixOfTy t
+genMaximalPrefixOfTy (TyPar s t) = ParMP <$> genMaximalPrefixOfTy s <*> genMaximalPrefixOfTy t
+genMaximalPrefixOfTy (TyPlus s t) = frequency [(1,SumMPA <$> genMaximalPrefixOfTy s), (1,SumMPB <$> genMaximalPrefixOfTy t)]
+genMaximalPrefixOfTy (TyStar s) = do
+  n <- choose (0,5)
+  StMP <$> replicateM n (genMaximalPrefixOfTy s)
+
+genPrefixOfTy :: Ty -> Gen Prefix
+genPrefixOfTy TyEps = return EpsP
+genPrefixOfTy TyInt = frequency [(1,return LitPEmp),(2, LitPFull . LInt <$> arbitrary)]
+genPrefixOfTy TyBool = frequency [(1,return LitPEmp),(2, LitPFull . LBool <$> arbitrary)]
+genPrefixOfTy (TyVar a) = absurd a
+genPrefixOfTy (TyCat s t) = frequency [(3, CatPA <$> genPrefixOfTy s),(1, CatPB <$> (maximalDemote <$> genMaximalPrefixOfTy s) <*> genPrefixOfTy t)]
+genPrefixOfTy (TyPar s t) = ParP <$> genPrefixOfTy s <*> genPrefixOfTy t
+genPrefixOfTy (TyPlus s t) = frequency [(1,return SumPEmp), (2, SumPA <$> genPrefixOfTy s), (2,SumPB <$> genPrefixOfTy t)]
+genPrefixOfTy (TyStar s) = frequency [(1,return StpEmp), (1,return StpDone), (2, StpA <$> genPrefixOfTy s), (2, StpB <$> (maximalDemote <$> genMaximalPrefixOfTy s) <*> genPrefixOfTy (TyStar s))]
+
+genMaximalEnvOfCtx :: Ctx Var.Var Ty -> Gen (Env Var.Var Prefix)
+genMaximalEnvOfCtx = foldrM (\(CE x s) -> go x s) emptyEnv
+  where
+    go x s rho = do
+      p <- genMaximalPrefixOfTy s
+      return (bindEnv x (maximalDemote p) rho)
+
+genEmptyEnvOfCtx :: Ctx Var.Var Ty -> Gen (Env Var.Var Prefix)
+genEmptyEnvOfCtx = return . foldr (\(CE x s) -> go x s) emptyEnv
+  where
+    go x s = bindEnv x (emptyPrefix s)
+
+genUnion :: Env Var.Var Prefix -> Env Var.Var Prefix -> Gen (Env Var.Var Prefix)
+genUnion rho rho' = runExceptT (unionDisjointEnv rho rho') >>= either (\(x,p,p') -> error "") return
+
+genEnvOfCtx :: Ctx Var.Var Ty -> Gen (Env Var.Var Prefix)
+genEnvOfCtx EmpCtx = return emptyEnv
+genEnvOfCtx (SngCtx (CE x s)) = do
+  p <- genPrefixOfTy s
+  return (singletonEnv x p)
+genEnvOfCtx (CommaCtx g g') = do
+  rho <- genEnvOfCtx g
+  rho' <- genEnvOfCtx g'
+  genUnion rho rho'
+genEnvOfCtx (CommaCtx g g') = frequency [(2,do {rho <- genEnvOfCtx g; rho' <- genEmptyEnvOfCtx g'; genUnion rho rho'}),(1,do {rho <- genMaximalEnvOfCtx g; rho' <- genEnvOfCtx g'; genUnion rho rho'})]
+
+class ValueLike v t => GenValueLike v t where
+  genOf :: t -> Gen v
+
+instance GenValueLike Prefix Ty where
+  genOf = genPrefixOfTy
+
+instance GenValueLike (Env Var.Var Prefix) (Ctx Var.Var Ty) where
+  genOf = genEnvOfCtx
+
+genSequenceOf :: (PrettyPrint v, PrettyPrint t, GenValueLike v t) => Int -> t -> Gen [v]
+genSequenceOf 0 _ = return []
+genSequenceOf n t = do
+  v <- genOf t
+  mt' <- runExceptT (deriv v t)
+  case mt' of
+    Right t' -> (v:) <$> genSequenceOf (n - 1) t'
+    Left err -> error (pp err)
