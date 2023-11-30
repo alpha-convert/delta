@@ -384,7 +384,7 @@ genEnvOfCtx (CommaCtx g g') = do
   rho <- genEnvOfCtx g
   rho' <- genEnvOfCtx g'
   genUnion rho rho'
-genEnvOfCtx (CommaCtx g g') = frequency [(2,do {rho <- genEnvOfCtx g; rho' <- genEmptyEnvOfCtx g'; genUnion rho rho'}),(1,do {rho <- genMaximalEnvOfCtx g; rho' <- genEnvOfCtx g'; genUnion rho rho'})]
+genEnvOfCtx (SemicCtx g g') = frequency [(2,do {rho <- genEnvOfCtx g; rho' <- genEmptyEnvOfCtx g'; genUnion rho rho'}),(1,do {rho <- genMaximalEnvOfCtx g; rho' <- genEnvOfCtx g'; genUnion rho rho'})]
 
 class ValueLike v t => GenValueLike v t where
   genOf :: t -> Gen v

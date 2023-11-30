@@ -18,7 +18,8 @@ module Values(
   unionDisjointEnv,
   rebindEnv,
   maximalLift,
-  maximalDemote
+  maximalDemote,
+  sinkPrefix
 ) where
 
 import qualified Data.Map as M
@@ -251,3 +252,12 @@ maximalLift (StpB p1 p2) = do
   case p2' of
     StMP ps -> return (StMP (p1' : ps))
     _ -> Nothing
+
+sinkPrefix :: MaximalPrefix -> Prefix
+sinkPrefix (LitMP _) = EpsP
+sinkPrefix EpsMP = EpsP
+sinkPrefix (CatMP _ p) = sinkPrefix p
+sinkPrefix (ParMP p p') = ParP (sinkPrefix p) (sinkPrefix p')
+sinkPrefix (SumMPA p) = sinkPrefix p
+sinkPrefix (SumMPB p) = sinkPrefix p
+sinkPrefix (StMP _) = EpsP

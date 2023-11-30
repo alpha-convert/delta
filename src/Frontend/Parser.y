@@ -157,24 +157,33 @@ VarList : {-empty-}                                               { [] }
         | Var                                                     { [$1] }
         | Var ',' VarList                                         { $1 : $3 }
 
-TyVarList : {-empty-}                                               { [] }
-        | TyVar                                                     { [$1] }
-        | TyVar ',' TyVarList                                         { $1 : $3 }
+TyVarListBracketed : {-empty-}                                    { [] }
+                   | '[' TyVarList ']'                            { $2 }
+
+TyVarList : {-empty-}                                             { [] }
+          | TyVar                                                 { [$1] }
+          | TyVar ',' TyVarList                                   { $1 : $3 }
 
 TyList : {-empty-}                                               { [] }
         | Ty                                                     { [$1] }
         | Ty ',' TyList                                         { $1 : $3 }
 
+VarCtx      : VarCtx1 ',' VarCtx                                  { CommaCtx $1 $3 } 
+            | VarCtx1 ';' VarCtx                                  { SemicCtx $1 $3 }
+            | VarCtx1                                             { $1 } 
 
-
-
-FunParams  : FunParams1 ',' FunParams                            { CommaCtx $1 $3 } 
-           | FunParams1 ';' FunParams                            { SemicCtx $1 $3 }
-           | FunParams1                                          { $1 } 
-
-FunParams1 : Var ':' Ty                                           { SngCtx (CE $1 $3) }
-           | '(' FunParams ')'                                    { $2 }
+VarCtx1     : Var ':' Ty                                          { SngCtx (CE $1 $3) }
+            | '(' VarCtx ')'                                      { $2 }
           
+FunArgListParend  : {[]}
+-- FunArgListParend  : {-empty-}                                     { [] }
+--                   | '(' FunArgList ')'                            { $2 }
+
+FunArg : FunVar ':' '(' VarCtx ')' '-' '>' Ty                     { ($1,$4,$8) }
+
+FunArgList  : {-empty-}                                           { [] }
+            | FunArg                                              { [$1] }
+            | FunArg ',' FunArgList                               { $1 : $3 }
 
 Pfx   : '(' Pfx ';' ')'                                           { CatPA $2 }
       | '(' Pfx ';' Pfx ')'                                       { CatPB $2 $4 }
@@ -198,11 +207,11 @@ PfxArgs     : PfxArgs1 ',' PfxArgs                                 { CommaCtx $1
 PfxArgs1    : Var '=' Pfx                                          { SngCtx (CE $1 $3) }
             | '(' PfxArgs ')'                                      { $2 }
 
-Cmd   : fun FunVar '[' TyVarList ']' '(' FunParams ')' ':' Ty '=' Exp      { FunDef $2 $4 $7 $10 $12 }
-      | fun FunVar '(' FunParams ')' ':' Ty '=' Exp                        { FunDef $2 [] $4 $7 $9 }
-      | specialize FunVar '[' TyList ']'                                   { SpecializeCommand $2 $4 }
-      | exec FunVar '(' PfxArgs ')'                                        { RunCommand $2 $4 }
-      | exec step FunVar '(' PfxArgs ')'                                   { RunStepCommand $3 $5 }
+
+Cmd   : fun FunVar TyVarListBracketed FunArgListParend '(' VarCtx ')' ':' Ty '=' Exp      { FunDef $2 $3 $4 $6 $9 $11 }
+      | specialize FunVar '[' TyList ']'                                                  { SpecializeCommand $2 $4 [] }
+      | exec FunVar '(' PfxArgs ')'                                                       { RunCommand $2 $4 }
+      | exec step FunVar '(' PfxArgs ')'                                                  { RunStepCommand $3 $5 }
 
 Pgm   : {-empty-}                                                  { [] }
       | Cmd Pgm                                                    { $1 : $2 }

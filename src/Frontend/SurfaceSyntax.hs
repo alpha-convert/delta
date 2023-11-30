@@ -46,8 +46,8 @@ data UntypedPrefix =
     deriving (Eq, Ord, Show)
 
 data Cmd =
-    FunDef Var.FunVar [Var.TyVar] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
-  | SpecializeCommand Var.FunVar [TyF Var.TyVar]
+    FunDef Var.FunVar [Var.TyVar] [(Var.FunVar, Ctx Var.Var (TyF Var.TyVar), TyF Var.TyVar)] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
+  | SpecializeCommand Var.FunVar [TyF Var.TyVar] [Var.FunVar]
   | RunCommand Var.FunVar (Ctx Var.Var UntypedPrefix)
   | RunStepCommand Var.FunVar (Ctx Var.Var UntypedPrefix)
  deriving (Eq,Ord,Show)

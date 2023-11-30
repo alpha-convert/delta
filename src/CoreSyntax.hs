@@ -7,7 +7,8 @@ module CoreSyntax (
   substVar,
   sinkTm,
   cut,
-  maximalPrefixSubst
+  maximalPrefixSubst,
+  fixSubst
 ) where
 
 import Types ( Ty , CtxStruct (EmpCtx, SngCtx, SemicCtx), Ctx, ctxFoldM, CtxEntry (..) )
@@ -318,3 +319,26 @@ maximalPrefixSubst p x (TmCut y e1 e2) = do
 maximalPrefixSubst p x (TmHistPgm t he) = TmHistPgm t <$> withExceptT liftErr (Hist.maximalPrefixSubst p x he)
   where
     liftErr (x,p,e) = (x,p,TmHistPgm t e)
+
+fixSubst :: CtxStruct (CtxEntry Var Ty) -> Ty -> Term -> Term -> Term
+fixSubst g s e = go
+    where
+        go TmEpsR = TmEpsR
+        go (TmLitR l) = TmLitR l
+        go (TmVar x) = TmVar x
+        go (TmCatL t x y z e') = TmCatL t x y z (go e')
+        go (TmCatR e1 e2) = TmCatR (go e1) (go e2)
+        go (TmParL x y z e') = TmParL x y z (go e')
+        go (TmParR e1 e2) = TmParR (go e1) (go e2)
+        go (TmInl e') = TmInl (go e')
+        go (TmInr e') = TmInr (go e')
+        go (TmPlusCase m rho r z x e1 y e2) = TmPlusCase m rho r z x (go e1) y (go e2)
+        go (TmIte m rho r z e1 e2) = TmIte m rho r z (go e1) (go e2)
+        go TmNil = TmNil
+        go (TmCons e1 e2) = TmCons (go e1) (go e2)
+        go (TmStarCase m rho r t z e1 y ys e2) = TmStarCase m rho r t z (go e1) y ys (go e2)
+        go (TmFix args g' s' e') = TmFix (fmap go args) g' s' e'
+        go (TmRec args) = TmFix args g s e
+        go (TmWait rho r x e') = TmWait rho r x (go e')
+        go (TmCut x e1 e2) = TmCut x (go e1) (go e2)
+        go (TmHistPgm t he) = TmHistPgm t he

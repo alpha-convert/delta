@@ -932,7 +932,7 @@ doCheckElabPgm :: (MonadIO m) => Elab.Program -> m Core.Program
 doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
     where
         go :: (MonadIO m) => Elab.Cmd -> StateT FileInfo m Core.Cmd
-        go (Elab.FunDef f tvs g t e) = do
+        go (Elab.FunDef f tvs _ g t e) = do
             -- Check that type type and context are well-formed with the type variables
             unless (wfCtx tvs g) $ error $ "Context " ++ pp g ++ " ill-formed with type variables " ++ (intercalate "," $ pp <$> tvs)
             unless (wfTy tvs t) $ error $ "Type " ++ pp t ++ " ill-formed with type variables " ++ (intercalate "," $ pp <$> tvs)
@@ -942,7 +942,7 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
             liftIO $ putStrLn $ "Function " ++ pp f ++ " typechecked OK."
             put (M.insert f (PolyFun {funTyVars = tvs, funCtx = g, funTy = t, funMonoTerm = e'}) fi)
             return (Core.FunDef f tvs (monomorphizeCtx g) (monomorphizeTy t) e')
-        go (Elab.SpecializeCommand f ts) = do
+        go (Elab.SpecializeCommand f ts _) = do
             fr <- gets (M.lookup f) >>= maybe (error $ "Can not specialize unbound function " ++ pp f) return
             case fr of
                 PolyFun tvs og _ _ -> do

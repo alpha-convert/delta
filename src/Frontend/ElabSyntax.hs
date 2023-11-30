@@ -87,8 +87,8 @@ instance PrettyPrint Term where
             go False (TmWait x e) = concat ["wait ", pp x," do ", go True e]
 
 data Cmd =
-      FunDef Var.FunVar [Var.TyVar] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
-    | SpecializeCommand Var.FunVar [Ty]
+      FunDef Var.FunVar [Var.TyVar] [(Var.FunVar,(Ctx Var.Var (TyF Var.TyVar)),TyF Var.TyVar)] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
+    | SpecializeCommand Var.FunVar [Ty] [Var.FunVar]
     | RunCommand Var.FunVar (Ctx Var Surf.UntypedPrefix)
     | RunStepCommand Var.FunVar (Ctx Var Surf.UntypedPrefix)
     deriving (Eq,Ord,Show)
@@ -327,15 +327,15 @@ elabSingle f e s = do
 
 doElab :: Surf.Program -> IO Program
 doElab = mapM $ \case
-                    (Surf.FunDef f tvs g s e) ->
+                    (Surf.FunDef f tvs fs g s e) ->
                         case elabSingle f e (M.keysSet $ ctxBindings g) of
                             Right e' -> do
                                 putStrLn $ "Function " ++ pp f ++ " elaborated OK. Elab term: " ++ pp e' ++ "\n"
-                                return (FunDef f tvs g s e')
+                                return (FunDef f tvs fs g s e')
                             Left err -> error (pp err)
-                    (Surf.SpecializeCommand f ts) -> case mapM closeTy ts of
+                    (Surf.SpecializeCommand f ts fs) -> case mapM closeTy ts of
                                                        Left x -> error $ "Tried to specialize function " ++ pp f ++ ", but provided type with type variable " ++ pp x
-                                                       Right ts' -> return (SpecializeCommand f ts')
+                                                       Right ts' -> return (SpecializeCommand f ts' fs)
                     (Surf.RunCommand s xs) -> return (RunCommand s xs)
                     (Surf.RunStepCommand s xs) -> return (RunStepCommand s xs)
 
