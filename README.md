@@ -74,45 +74,13 @@ Values in Delta are data streams, and so the types in Delta are *stream types*. 
 
 The most important type in Delta is the *star* type of repeated values. This type is written like `s*`, where `s` is another stream type. For example, type `Int*` is the type of streams of ints, one int after another. A value of type `Int*` is a finite, but potentially unbounded, stream of values of type `Int`. Programming with star streams is a lot like programming with lists. Terms of type `s*` come in two forms: they are either `nil`, the empty stream of `s`s, or `e :: e'`, where `e` has type `s`, and `e'` has type `s*`.
 
-### Ordering
-
 ### Syntax
 
-```
-
-pat := x | _
-
-e ::=  x
-     | sink
-     | int
-     | bool
-     | (e1 ; e2)
-     | let (pat;pat) = e in e'
-     | inl e
-     | inr e
-     | case e of inl pat => e1 | inr pat => e2
-     | nil
-     | e1 :: e2
-     | case e of nil => e1 | pat :: pat => e2
-     | nat
-     | bool
-     | x
-     | wait x1,...,xn do e' end
-     | { hp }
-
-hp ::= hp1 + hp2
-     | hp1 - hp2
-     | hp1 * hp2
-     | hp1 / hp2
-     | inl hp
-     | inr hp
-     | nil
-     | hp1 :: hp2
-     | (hp1,hp2)
-     | ()
-```
+Todo
 
 ## Compiler Structure
+
+Todo
 
 ## Acknowledgements
 
