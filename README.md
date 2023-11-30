@@ -1,6 +1,7 @@
 # Delta
 
 The Delta language is a functional programming language that compiles to stream-processing automata. 
+For a full introduction to the core calculus that Delta is based on, see [Stream Types](https://www.seas.upenn.edu/~jwc/assets/stream-types.pdf).
 
 Delta has a number of features that set it apart from existing stream-processing languages:
 
@@ -81,6 +82,8 @@ Todo
 ## Compiler Structure
 
 Todo
+
+## Papers
 
 ## Acknowledgements
 
