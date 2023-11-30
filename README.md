@@ -4,7 +4,7 @@ The Delta language is a functional programming language that compiles to stream-
 
 Delta has a number of features that set it apart from existing stream-processing languages:
 
-1. Delta is not combinator-based. Unlike every other stream processing language, which provides a limited set of combinators like `map`, `filter`, and `fold`, Delta programs are written as standard functional list programs. All of the afformentioned standard streaming combinators can be written in Delta, but programmers are not required to fit their programs into a composition of ad-hoc stateful recursion schemes. This is enabled by a novel ordered type system, which statically rejects list programs that cannot be run a stream programs.
+1. Delta is not combinator-based. Unlike many stream processing languages, which provides a limited set of combinators like `map`, `filter`, and `fold`, Delta programs are written as standard functional list programs. All of the afformentioned standard streaming combinators can be written in Delta, but programmers are not required to fit their programs into a composition of ad-hoc recursion schemes. This is enabled by a novel ordered type system, which statically rejects list programs that cannot be run a stream programs.
 
 2. Delta has rich ``stream types'', which allow programmers to express and rely on complex temporal patterns in their streams.
 
@@ -13,16 +13,16 @@ Delta has a number of features that set it apart from existing stream-processing
 A simple Delta program is the running sum function, which takes a stream of integers (written `Int*`), and produces the stream that is a running sum of the input.
 
 ```
-fun runningSum(xs : Int*) : Int* =
-     go(0;xs)
-
 fun go(n : Int; xs : Int*) : Int* = 
     case xs of
       nil => n :: nil
     | y::ys => wait y do
                  let k = {n + y} in
-                 {n + y} :: rec({n + y} ys)
+                 {n + y} :: go({n + y};ys)
                end
+
+fun runningSum(xs : Int*) : Int* =
+     go(0;xs)
 ```
 
 
@@ -46,10 +46,10 @@ Of course, there are a lot of match/nil/cons list programs which are *not* (natu
 attempting to write the `reverse` program as follows:
 
 ```
-fun snoc(x : Int ; xs : Int*) =
+fun snoc(x : Int; xs : Int*) : Int* =
      case xs of
        nil => [x]
-     | y::ys => y :: rec(x;ys)
+     | y::ys => y :: snoc(x;ys)
 
 fun rev(xs : Int*) : Int* =
      case xs of
@@ -57,14 +57,16 @@ fun rev(xs : Int*) : Int* =
      | y::ys => snoc(y;ys)
 ```
 
-The function `snoc` is rejected by Delta with the error message "Variable `xs` can before `x` in term `...`". This is because 
+The function `snoc` is rejected by Delta with the error message "Variable `y` used before `x`, but expected the other order".
+(Actually, the error message doesn't say this, it says something much less readable and even less understandable. This is still a prototype, the error messages are terrible.)
+This is because the order of arguments to a Delta function matters. The order of arguments describes the order of *arrival*: `snoc`
+is a function that expects first a single `Int`, bound to `x`, and then some more `Int`s, which get bound to `xs`. When we pattern match
+on `xs` and get a head `y` and tails `ys`, these also have an order. The second branch of the case expects to first get `x`, and then `y`,
+and then `ys`. The error arises when we *use* `y` first, out of order.
 
-
-
-
-
-### Homomorphism
-
+This requirement, that we use variables in the order they're listed, ensures that we can implement the program as a streaming program.
+If the first-to-arrive variable is used first, we can take the first piece of input, use it to produce an initial prefix of output,
+and then continue once the next piece of input arrives.
 
 ### Types
 
@@ -109,6 +111,8 @@ hp ::= hp1 + hp2
      | (hp1,hp2)
      | ()
 ```
+
+## Compiler Structure
 
 ## Acknowledgements
 
