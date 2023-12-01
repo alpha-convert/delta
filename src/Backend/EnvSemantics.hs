@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleContexts, BangPatterns, FlexibleInstances, TupleSections #-}
-module Backend.Semantics where
+module Backend.EnvSemantics where
 
 import CoreSyntax
     ( Term(..), Program, Cmd(..), substVar, sinkTm, maximalPrefixSubst, fixSubst)
