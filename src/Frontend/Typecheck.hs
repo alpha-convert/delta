@@ -245,7 +245,7 @@ checkElab (TyCat s t) (Elab.TmCatR e1 e2) = do
     CR p2 e2' <- checkElab t e2
     reThrow (handleReUse (Elab.TmCatR e1 e2)) (P.checkDisjoint p1 p2)
     p' <- reThrow (handleOrderErr (Elab.TmCatR e1 e2)) $ P.concat p1 p2
-    return $ CR p' (Core.TmCatR <$> e1' <*> e2')
+    return $ CR p' (Core.TmCatR <$> monomorphizeTy s <*> e1' <*> e2')
 checkElab t (Elab.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
 
 checkElab r e@(Elab.TmParL x y z e') = do
@@ -309,7 +309,7 @@ checkElab (TyStar s) (Elab.TmCons e1 e2) = do
     CR p2 e2' <- checkElab (TyStar s) e2
     reThrow (handleReUse (Elab.TmCons e1 e2)) (P.checkDisjoint p1 p2)
     p' <- reThrow (handleOrderErr (Elab.TmCatR e1 e2)) $ P.concat p1 p2
-    return $ CR p' (Core.TmCons <$> e1' <*> e2')
+    return $ CR p' (Core.TmCons <$> monomorphizeTy s <*> e1' <*> e2')
 
 checkElab t (Elab.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
 
@@ -435,7 +435,7 @@ inferElab e@(Elab.TmCatR e1 e2) = do
     IR t p2 e2' <- inferElab e2
     p' <- reThrow (handleOrderErr e) $ P.concat p1 p2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
-    return $ IR (TyCat s t) p' (Core.TmCatR <$> e1' <*> e2')
+    return $ IR (TyCat s t) p' (Core.TmCatR <$> monomorphizeTy s <*> e1' <*> e2')
 
 inferElab e@(Elab.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
@@ -489,7 +489,7 @@ inferElab e@(Elab.TmCons e1 e2) = do
     CR p2 e2' <- checkElab (TyStar s) e2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
     p' <- reThrow (handleOrderErr e) $ P.concat p1 p2
-    return $ IR (TyStar s) p' (Core.TmCons <$> e1' <*> e2')
+    return $ IR (TyStar s) p' (Core.TmCons <$> monomorphizeTy s <*> e1' <*> e2')
 
 inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
     s <- lookupTyStar e z

@@ -142,10 +142,17 @@ eval (TmCatL t x y z e) = do
             return (p', TmCut x sink e'')
         _ -> throwError (NotCatPrefix z p)
 
-eval (TmCatR e1 e2) = do
+{-
+the "s" in TmCatR is supposed to be the type of the first component.  as of
+right now (12/2/23), the environment semantics doesn't require this invariant to
+hold (only the event semantics), and so we break the invariant here: s is not
+the type of e1', `deriv p s` is.
+-}
+eval (TmCatR s e1 e2) = do
     (p,e1') <- eval e1
     if not (isMaximal p) then
-        return (CatPA p, TmCatR e1' e2)
+        
+        return (CatPA p, TmCatR s e1' e2)
     else do
         (p',e2') <- eval e2
         return (CatPB p p',e2')
@@ -205,10 +212,11 @@ eval e@(TmIte rho' r z e1 e2) = do
 
 eval TmNil = return (StpDone,TmEpsR)
 
-eval (TmCons e1 e2) = do
+{-Same disclaimer as TmCatR here: s is wrong in the result. -}
+eval (TmCons s e1 e2) = do
     (p,e1') <- eval e1
     if not (isMaximal p) then
-        return (StpA p, TmCatR e1' e2)
+        return (StpA p, TmCatR s e1' e2)
     else do
         (p',e2') <- eval e2
         return (StpB p p',e2')
@@ -340,8 +348,8 @@ semTests = TestList [
         semTest (TmCatL (TyCat TyInt TyInt) (var "x") (var "y") (var "z") (TmVar (var "y"))) [("z",CatPA (LitPFull (LInt 3)))] (CatPA LitPEmp) (TmCatL (TyCat TyInt TyInt) (var "x") (var "y") (var "z") (TmVar (var "y"))),
         semTest (TmCatL TyInt (var "x") (var "y") (var "z") (TmVar (var "y"))) [("z",CatPB (LitPFull (LInt 3)) (LitPFull (LInt 4)))] (LitPFull (LInt 4)) (TmVar (var "z")),
 
-        semTest (TmCatR (TmVar $ var "x") (TmVar $ var "y")) [("x",LitPEmp),("y",LitPEmp)] (CatPA LitPEmp) (TmCatR (TmVar $ var "x") (TmVar $ var "y")),
-        semTest (TmCatR (TmLitR (LBool False)) (TmVar $ var "y")) [("y",LitPEmp)] (CatPB (LitPFull $ LBool False) LitPEmp) (TmVar (var "y")),
+        semTest (TmCatR undefined (TmVar $ var "x") (TmVar $ var "y")) [("x",LitPEmp),("y",LitPEmp)] (CatPA LitPEmp) (TmCatR undefined (TmVar $ var "x") (TmVar $ var "y")),
+        semTest (TmCatR undefined (TmLitR (LBool False)) (TmVar $ var "y")) [("y",LitPEmp)] (CatPB (LitPFull $ LBool False) LitPEmp) (TmVar (var "y")),
 
         semTest (TmPlusCase emptyEnv TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", LitPEmp), ("z",SumPEmp)] LitPEmp (TmPlusCase (env [(var "u",LitPEmp),(var "z",SumPEmp)]) TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))),
         semTest (TmPlusCase emptyEnv TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", LitPFull (LInt 3)), ("z",SumPEmp)] LitPEmp (TmPlusCase (env [(var "u",LitPFull (LInt 3)),(var "z",SumPEmp)]) TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))),
@@ -414,7 +422,7 @@ denote :: (MonadError SemError m) => Term EnvBuffer -> MSF m (Env Var.Var Prefix
 denote (TmLitR v) = dSwitch (arr (const (LitPFull v, Just ()))) (const (denote TmEpsR))
 denote TmEpsR = dSwitch (arr (const (EpsP, Just ()))) (const (denote TmEpsR))
 denote (TmVar x) = msfLookupEnv x
-denote (TmCatR e1 e2) = switch (denote e1 >>^ maximalPass) (\p -> applyToFirst id (CatPB p) (denote e2))
+denote (TmCatR _ e1 e2) = switch (denote e1 >>^ maximalPass) (\p -> applyToFirst id (CatPB p) (denote e2))
     where
         maximalPass p = (CatPA p,if isMaximal p then Just p else Nothing)
 
@@ -480,7 +488,7 @@ denote e@(TmPlusCase rho' t z x e1 y e2) = bufferUntil (concatEnvM e) nonEmptyPl
                 Nothing -> throwError (VarLookupFailed z)
 
 denote TmNil = arr (const StpDone) `dThen` denote TmEpsR
-denote (TmCons e1 e2) = switch (denote e1 >>^ maximalPass) (\p -> applyToFirst id (StpB p) (denote e2))
+denote (TmCons _ e1 e2) = switch (denote e1 >>^ maximalPass) (\p -> applyToFirst id (StpB p) (denote e2))
     where
         maximalPass p = (StpA p,if isMaximal p then Just p else Nothing)
 

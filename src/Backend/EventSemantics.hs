@@ -46,7 +46,7 @@ eval (TmCatL t x y z e) tev =
         
 
 -- Maximality depends on the type!
-eval (TmCatR e1 e2) ev = undefined
+eval (TmCatR s e1 e2) ev = undefined
 
 eval (TmParL x y z e) tev = do
     tev' <- case tev `isTaggedFor` z of
@@ -89,7 +89,7 @@ eval (TmPlusCase buf r z x e1 y e2) tev =
 
 
 eval TmNil _ = return ([PlusPuncA],TmEpsR)
-eval (TmCons e1 e2) ev = undefined
+eval (TmCons s e1 e2) ev = undefined
 
 eval (TmStarCase buf r s z e1 x xs e2) tev =
     case tev `isTaggedFor` z of
