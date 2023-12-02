@@ -7,7 +7,7 @@ import Buffer
 tagWith :: Var -> Event -> TaggedEvent
 tagWith = TE
 
-data EventBuf = EB [TaggedEvent]
+type EventBuf = [TaggedEvent]
 
 instance Buffer EventBuf where
 
@@ -31,20 +31,33 @@ eval (TmCatL t x y z e) ev = do
     (evs,e') <- eval e ev
     return (evs,TmCatL t x y z e')
 
+-- Maximality depends on the type!
 eval (TmCatR e1 e2) ev = undefined
 
 eval (TmParL x y z e) ev = undefined
-eval (TmParR e1 e2) ev = undefined
+eval (TmParR e1 e2) ev = do
+    (evs1,e1') <- eval e1 ev
+    (evs2,e2') <- eval e2 ev
+    return (fmap ParEvA evs1 ++ fmap ParEvB evs2, TmParR e1' e2')
 
-eval (TmInl e) ev = undefined
-eval (TmInr e) ev = undefined
+eval (TmInl e) ev = do
+    (evs,e') <- eval e ev
+    return (PlusPuncA : evs,e')
 
-eval (TmPlusCase _ _ _ _ _ _ _ _) _ = undefined
+eval (TmInr e) ev = do
+    (evs,e') <- eval e ev
+    return (PlusPuncB : evs,e')
+
+eval (TmPlusCase _ _ _ _ _ _ _) _ = undefined
 
 eval (TmCut x e1 e2) ev = do
     (evs,e1') <- eval e1 ev
     (evs_out,e2') <- evalMany e2 (tagWith x <$> evs)
     return (evs_out, TmCut x e1' e2')
+
+eval TmNil _ = return ([PlusPuncA],TmEpsR)
+
+eval (TmCons e1 e2) ev = undefined
 
 eval _ _ = undefined
 

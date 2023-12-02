@@ -33,11 +33,11 @@ data Term buf =
     | TmParR (Term buf) (Term buf)
     | TmInl (Term buf)
     | TmInr (Term buf)
-    | TmPlusCase (M.Map Var Ty) buf Ty Var Var (Term buf) Var (Term buf)
-    | TmIte (M.Map Var Ty) buf Ty Var (Term buf) (Term buf)
+    | TmPlusCase buf Ty Var Var (Term buf) Var (Term buf)
+    | TmIte  buf Ty Var (Term buf) (Term buf)
     | TmNil
     | TmCons (Term buf) (Term buf)
-    | TmStarCase (M.Map Var Ty) buf Ty Ty Var (Term buf) Var Var (Term buf) {- first return type, then star type -}
+    | TmStarCase buf Ty Ty Var (Term buf) Var Var (Term buf) {- first return type, then star type -}
     | TmFix (CtxStruct (Term buf)) (Ctx Var Ty) Ty (Term buf)
     | TmRec (CtxStruct (Term buf))
     | TmWait buf Ty Var (Term buf)
@@ -70,10 +70,10 @@ instance PrettyPrint buf => PrettyPrint (Term buf) where
             go _ (TmParL x y z e) = concat ["let (",pp x,",",pp y,") = ",pp z," in ",go False e]
             go _ (TmInl e) = "inl " ++ go True e
             go _ (TmInr e) = "inr " ++ go True e
-            go _ (TmPlusCase m rho _ z x e1 y e2) = concat ["case_",pp rho,"|",pp m," ",pp z," of inl ",pp x," => ",go True e1," | inr",pp y," => ",go True e2]
-            go _ (TmIte _ rho _ z e1 e2) = concat ["if_", pp rho," ", pp z," then ", go True e1," else ", go True e2]
+            go _ (TmPlusCase rho _ z x e1 y e2) = concat ["case_",pp rho," ",pp z," of inl ",pp x," => ",go True e1," | inr",pp y," => ",go True e2]
+            go _ (TmIte rho _ z e1 e2) = concat ["if_", pp rho," ", pp z," then ", go True e1," else ", go True e2]
             go _ (TmCons e1 e2) = concat [go True e1," :: ",go True e2]
-            go _ (TmStarCase m rho _ _ z e1 x xs e2) = concat ["case_",pp rho,"|",pp m," ",pp z," of nil => ",go True e1," | ",pp x,"::",pp xs," => ",go True e2]
+            go _ (TmStarCase rho _ _ z e1 x xs e2) = concat ["case_",pp rho," ",pp z," of nil => ",go True e1," | ",pp x,"::",pp xs," => ",go True e2]
             go False (TmWait rho t x e) = concat ["wait_",pp rho,",",pp t," ", pp x," do ", go True e]
             go _ (TmCut x e e') = concat ["let ",pp x," = ", go True e, " in ", go True e']
 
@@ -96,40 +96,27 @@ substVar (TmParL x' y' z e) x y = TmParL x' y' z (substVar e x y) {- FIXME: ensu
 substVar (TmParR e1 e2) x y = TmParR (substVar e1 x y) (substVar e2 x y)
 substVar (TmInl e) x y = TmInl (substVar e x y)
 substVar (TmInr e) x y = TmInr (substVar e x y)
-substVar (TmPlusCase m rho r z x' e1 y' e2) x y | y == z = TmPlusCase m' rho' r x x' (substVar e1 x y) y' (substVar e2 x y)
+substVar (TmPlusCase rho r z x' e1 y' e2) x y | y == z = TmPlusCase rho' r x x' (substVar e1 x y) y' (substVar e2 x y)
   where
     rho' = rebindBuf rho x y
-    m' = rebind m x z
-substVar (TmPlusCase m rho r z x' e1 y' e2) x y = TmPlusCase m' rho' r z x' (substVar e1 x y) y' (substVar e2 x y)
-  where
-    m' = case M.lookup y m of
-           Nothing -> m
-           Just p -> M.insert x p (M.delete y m)
-    rho' = rebindBuf rho x y
-substVar (TmIte m rho r z e1 e2) x y | y == z = TmIte m' rho' r x (substVar e1 x y) (substVar e2 x y)
+substVar (TmPlusCase rho r z x' e1 y' e2) x y = TmPlusCase rho' r z x' (substVar e1 x y) y' (substVar e2 x y)
   where
     rho' = rebindBuf rho x y
-    m' = rebind m x z
-substVar (TmIte m rho r z e1 e2) x y = TmIte m' rho' r z (substVar e1 x y) (substVar e2 x y)
+substVar (TmIte rho r z e1 e2) x y | y == z = TmIte rho' r x (substVar e1 x y) (substVar e2 x y)
   where
-    m' = case M.lookup y m of
-           Nothing -> m
-           Just p -> M.insert x p (M.delete y m)
+    rho' = rebindBuf rho x y
+substVar (TmIte rho r z e1 e2) x y = TmIte rho' r z (substVar e1 x y) (substVar e2 x y)
+  where
     rho' = rebindBuf rho x y
 
 substVar TmNil _ _ = TmNil
 substVar (TmCons e1 e2) x y = TmCons (substVar e1 x y) (substVar e2 x y)
-substVar (TmStarCase m rho r s z e1 x' xs' e2) x y | y == z = TmStarCase m' rho' r s z (substVar e1 x y) x' xs' (substVar e2 x y)
+substVar (TmStarCase rho r s z e1 x' xs' e2) x y | y == z = TmStarCase rho' r s z (substVar e1 x y) x' xs' (substVar e2 x y)
   where
     rho' = rebindBuf rho x y
-    m' = rebind m x z
-substVar (TmStarCase m rho r s z e1 x' xs' e2) x y = TmStarCase m' rho' r s z (substVar e1 x y) x' xs' (substVar e2 x y)
+substVar (TmStarCase rho r s z e1 x' xs' e2) x y = TmStarCase rho' r s z (substVar e1 x y) x' xs' (substVar e2 x y)
   where
     rho' = rebindBuf rho x y
-    m' = case M.lookup y m of
-           Nothing -> m
-           Just p -> M.insert x p (M.delete y m)
-
 -- TODO: are these correct?
 substVar (TmRec args) x y = TmRec $ (\e -> substVar e x y) <$> args
 substVar (TmFix args g s e) x y = TmFix ((\e' -> substVar e' x y) <$> args) g s e
@@ -271,28 +258,28 @@ maximalPrefixSubst p x (TmParR e1 e2) = do
 maximalPrefixSubst p x (TmInl e') = TmInl <$> maximalPrefixSubst p x e'
 maximalPrefixSubst p x (TmInr e') = TmInr <$> maximalPrefixSubst p x e'
 
-maximalPrefixSubst p x (TmPlusCase m rho t z x' e1 y' e2) | x /= z = do
+maximalPrefixSubst p x (TmPlusCase rho t z x' e1 y' e2) | x /= z = do
   e1' <- maximalPrefixSubst p x e1
   e2' <- maximalPrefixSubst p x e2
-  return (TmPlusCase (M.delete x m) (unbindBuf x rho) t z x' e1' y' e2')
-maximalPrefixSubst (SumMPA p) _ (TmPlusCase _ _ _ _ x' e1 _ _) = maximalPrefixSubst p x' e1
-maximalPrefixSubst (SumMPB p) _ (TmPlusCase _ _ _ _ _ _ y' e2) = maximalPrefixSubst p y' e2
+  return (TmPlusCase (unbindBuf x rho) t z x' e1' y' e2')
+maximalPrefixSubst (SumMPA p) _ (TmPlusCase _ _ _ x' e1 _ _) = maximalPrefixSubst p x' e1
+maximalPrefixSubst (SumMPB p) _ (TmPlusCase _ _ _ _ _ y' e2) = maximalPrefixSubst p y' e2
 maximalPrefixSubst p x e@(TmPlusCase {}) = throwError (x,p,e)
 
-maximalPrefixSubst p x (TmIte m rho t z e1 e2) | x /= z = do
+maximalPrefixSubst p x (TmIte rho t z e1 e2) | x /= z = do
   e1' <- maximalPrefixSubst p x e1
   e2' <- maximalPrefixSubst p x e2
-  return (TmIte (M.delete x m) (unbindBuf x rho) t z e1' e2')
-maximalPrefixSubst (LitMP (LBool True)) _ (TmIte _ _ _ _ e1 _) = return e1
-maximalPrefixSubst (LitMP (LBool False)) _ (TmIte _ _ _ _ _ e2) = return e2
+  return (TmIte (unbindBuf x rho) t z e1' e2')
+maximalPrefixSubst (LitMP (LBool True)) _ (TmIte _ _ _ e1 _) = return e1
+maximalPrefixSubst (LitMP (LBool False)) _ (TmIte _ _ _ _ e2) = return e2
 maximalPrefixSubst p x e@(TmIte {}) = throwError (x,p,e)
 
-maximalPrefixSubst p x (TmStarCase m rho t r z e1 y' ys' e2) | x /= z = do
+maximalPrefixSubst p x (TmStarCase rho t r z e1 y' ys' e2) | x /= z = do
   e1' <- maximalPrefixSubst p x e1
   e2' <- maximalPrefixSubst p x e2
-  return (TmStarCase (M.delete x m) (unbindBuf x rho) t r z e1' y' ys' e2')
-maximalPrefixSubst (StMP []) _ (TmStarCase _ _ _ _ _ e1 _ _ _) = return e1
-maximalPrefixSubst (StMP (p:ps)) _ (TmStarCase _ _ _ _ _ _ y' ys' e2) = do
+  return (TmStarCase (unbindBuf x rho) t r z e1' y' ys' e2')
+maximalPrefixSubst (StMP []) _ (TmStarCase _ _ _ _ e1 _ _ _) = return e1
+maximalPrefixSubst (StMP (p:ps)) _ (TmStarCase _ _ _ _ _ y' ys' e2) = do
   e2' <- maximalPrefixSubst p y' e2
   maximalPrefixSubst (StMP ps) ys' e2'
 maximalPrefixSubst p x e@(TmStarCase {}) = throwError (x,p,e)
@@ -333,11 +320,11 @@ fixSubst g s e = go
         go (TmParR e1 e2) = TmParR (go e1) (go e2)
         go (TmInl e') = TmInl (go e')
         go (TmInr e') = TmInr (go e')
-        go (TmPlusCase m rho r z x e1 y e2) = TmPlusCase m rho r z x (go e1) y (go e2)
-        go (TmIte m rho r z e1 e2) = TmIte m rho r z (go e1) (go e2)
+        go (TmPlusCase rho r z x e1 y e2) = TmPlusCase rho r z x (go e1) y (go e2)
+        go (TmIte rho r z e1 e2) = TmIte rho r z (go e1) (go e2)
         go TmNil = TmNil
         go (TmCons e1 e2) = TmCons (go e1) (go e2)
-        go (TmStarCase m rho r t z e1 y ys e2) = TmStarCase m rho r t z (go e1) y ys (go e2)
+        go (TmStarCase rho r t z e1 y ys e2) = TmStarCase rho r t z (go e1) y ys (go e2)
         go (TmFix args g' s' e') = TmFix (fmap go args) g' s' e'
         go (TmRec args) = TmFix args g s e
         go (TmWait rho r x e') = TmWait rho r x (go e')

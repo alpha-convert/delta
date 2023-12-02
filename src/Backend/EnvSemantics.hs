@@ -182,13 +182,13 @@ eval (TmInr e) = do
     (p,e') <- eval e
     return (SumPB p, e')
 
-eval e@(TmPlusCase m rho' r z x e1 y e2) = do
+eval e@(TmPlusCase rho' r z x e1 y e2) = do
     withEnvM (concatEnvM e rho') $ do
         p <- lookupVar z
         (case p of
             SumPEmp -> do
                 rho'' <- ask
-                return (emptyPrefix r, TmPlusCase m rho'' r z x e1 y e2)
+                return (emptyPrefix r, TmPlusCase rho'' r z x e1 y e2)
             SumPA p' -> do
                 (p'',e1') <- withEnv (bindEnv x p' . unbindEnv z) (eval e1)
                 return (p'', substVar e1' z x)
@@ -197,13 +197,13 @@ eval e@(TmPlusCase m rho' r z x e1 y e2) = do
                 return (p'', substVar e2' z y)
             _ -> throwError (NotPlusPrefix z p))
 
-eval e@(TmIte m rho' r z e1 e2) = do
+eval e@(TmIte rho' r z e1 e2) = do
     withEnvM (concatEnvM e rho') $ do
         p <- lookupVar z
         case p of
             LitPEmp -> do
                 rho'' <- ask
-                return (emptyPrefix r, TmIte m rho'' r z e1 e2)
+                return (emptyPrefix r, TmIte rho'' r z e1 e2)
             (LitPFull (LBool True)) -> do
              (p',e1') <- eval e1
             --  e1'' <- reThrow handleRuntimeCutError (cut z TmEpsR e1')
@@ -224,13 +224,13 @@ eval (TmCons e1 e2) = do
         (p',e2') <- eval e2
         return (StpB p p',e2')
 
-eval e@(TmStarCase m rho' r s z e1 x xs e2) = do
+eval e@(TmStarCase rho' r s z e1 x xs e2) = do
     withEnvM (concatEnvM e rho') $ do
         p <- lookupVar z
         (case p of
             StpEmp -> do
                 rho'' <- ask
-                return (emptyPrefix r, TmStarCase m rho'' r s z e1 x xs e2)
+                return (emptyPrefix r, TmStarCase rho'' r s z e1 x xs e2)
             StpDone -> eval e1
             StpA p' -> do
                 (p'',e2') <- withEnv (bindAllEnv [(x,p'),(xs,StpEmp)] . unbindEnv z) (eval e2)
@@ -354,12 +354,12 @@ semTests = TestList [
         semTest (TmCatR (TmVar $ var "x") (TmVar $ var "y")) [("x",LitPEmp),("y",LitPEmp)] (CatPA LitPEmp) (TmCatR (TmVar $ var "x") (TmVar $ var "y")),
         semTest (TmCatR (TmLitR (LBool False)) (TmVar $ var "y")) [("y",LitPEmp)] (CatPB (LitPFull $ LBool False) LitPEmp) (TmVar (var "y")),
 
-        semTest (TmPlusCase undefined emptyEnv TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", LitPEmp), ("z",SumPEmp)] LitPEmp (TmPlusCase undefined (env [(var "u",LitPEmp),(var "z",SumPEmp)]) TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))),
-        semTest (TmPlusCase undefined emptyEnv TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", LitPFull (LInt 3)), ("z",SumPEmp)] LitPEmp (TmPlusCase undefined (env [(var "u",LitPFull (LInt 3)),(var "z",SumPEmp)]) TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))),
-        semTest (TmPlusCase undefined (env [(var "u",LitPFull (LInt 3)),(var "z",SumPEmp)]) TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", EpsP), ("z",SumPA EpsP)] (LitPFull (LInt 3)) (TmVar (var "u")),
-        semTest (TmPlusCase undefined emptyEnv TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", LitPFull (LInt 3)), ("z",SumPA EpsP)] (LitPFull (LInt 3)) (TmVar (var "u")),
-        semTest (TmPlusCase undefined emptyEnv TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", LitPFull (LInt 3)), ("z",SumPB LitPEmp)] LitPEmp (TmVar (var "z")),
-        semTest (TmPlusCase undefined emptyEnv TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", LitPFull (LInt 3)), ("z",SumPB (LitPFull (LInt 4)))] (LitPFull (LInt 4)) (TmVar (var "z"))
+        semTest (TmPlusCase emptyEnv TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", LitPEmp), ("z",SumPEmp)] LitPEmp (TmPlusCase (env [(var "u",LitPEmp),(var "z",SumPEmp)]) TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))),
+        semTest (TmPlusCase emptyEnv TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", LitPFull (LInt 3)), ("z",SumPEmp)] LitPEmp (TmPlusCase (env [(var "u",LitPFull (LInt 3)),(var "z",SumPEmp)]) TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))),
+        semTest (TmPlusCase (env [(var "u",LitPFull (LInt 3)),(var "z",SumPEmp)]) TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", EpsP), ("z",SumPA EpsP)] (LitPFull (LInt 3)) (TmVar (var "u")),
+        semTest (TmPlusCase emptyEnv TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", LitPFull (LInt 3)), ("z",SumPA EpsP)] (LitPFull (LInt 3)) (TmVar (var "u")),
+        semTest (TmPlusCase emptyEnv TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", LitPFull (LInt 3)), ("z",SumPB LitPEmp)] LitPEmp (TmVar (var "z")),
+        semTest (TmPlusCase emptyEnv TyInt (var "z") (var "z0") (TmVar (var "u")) (var "z1") (TmVar (var "z1"))) [("u", LitPFull (LInt 3)), ("z",SumPB (LitPFull (LInt 4)))] (LitPFull (LInt 4)) (TmVar (var "z"))
     ]
     where
         semTest e xs p e' = TestCase $ do
@@ -459,7 +459,7 @@ denote (TmParL x y z e) = msfLookupEnv z &&& arr id >>> arrM rebind >>> denote e
 denote (TmCut x e1 e2) = (denote e1 &&& arr id >>^ uncurry (bindEnv x)) >>> denote e2
 denote (TmInl e) = applyToFirst id SumPA (denote e)
 denote (TmInr e) = applyToFirst id SumPB (denote e)
-denote e@(TmIte _ rho' t z e1 e2) = bufferUntil (concatEnvM e) boolLit rho' (emptyPrefix t) go
+denote e@(TmIte rho' t z e1 e2) = bufferUntil (concatEnvM e) boolLit rho' (emptyPrefix t) go
     where
         boolLit rho =
             case lookupEnv z rho of
@@ -471,7 +471,7 @@ denote e@(TmIte _ rho' t z e1 e2) = bufferUntil (concatEnvM e) boolLit rho' (emp
         go True = denote e1
         go False = denote e2
 
-denote e@(TmPlusCase _ rho' t z x e1 y e2) = bufferUntil (concatEnvM e) nonEmptyPlus rho' (emptyPrefix t) go
+denote e@(TmPlusCase rho' t z x e1 y e2) = bufferUntil (concatEnvM e) nonEmptyPlus rho' (emptyPrefix t) go
     where
         nonEmptyPlus rho =
             case lookupEnv z rho of

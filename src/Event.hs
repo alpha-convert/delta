@@ -13,6 +13,8 @@ data Event =
     | PlusPuncB
     | CatPunc
     | CatEvA Event
+    | ParEvA Event
+    | ParEvB Event
 
 data TaggedEvent = TE Var Event
 
@@ -34,6 +36,12 @@ instance ValueLike Event Ty where
     hasType (CatEvA x) (TyCat s _) = hasType x s
     hasType p@(CatEvA _) t = throwError (IllTyped p t)
 
+    hasType (ParEvA x) (TyPar s _) = hasType x s
+    hasType p@(ParEvA _) t = throwError (IllTyped p t)
+
+    hasType (ParEvB x) (TyPar _ t) = hasType x t
+    hasType p@(ParEvB _) t = throwError (IllTyped p t)
+
     deriv (LitEv (LInt _)) TyInt = return TyEps
     deriv p@(LitEv (LInt _)) t = throwError (IllTyped p t)
     
@@ -52,8 +60,17 @@ instance ValueLike Event Ty where
     deriv (CatEvA x) (TyCat s t) = do
         s' <- deriv x s
         return (TyCat s' t)
-
     deriv p@(CatEvA _) t = throwError (IllTyped p t)
+
+    deriv (ParEvA x) (TyPar s t) = do
+        s' <- deriv x s
+        return (TyPar s' t)
+    deriv p@(ParEvA _) t = throwError (IllTyped p t)
+
+    deriv (ParEvB x) (TyPar s t) = do
+        t' <- deriv x t
+        return (TyPar s t')
+    deriv p@(ParEvB _) t = throwError (IllTyped p t)
 
 promote xs = withExceptT (errCons xs)
 errCons xs (IllTyped x t) = IllTyped (x:xs) t

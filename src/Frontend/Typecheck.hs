@@ -282,14 +282,12 @@ checkElab r e@(Elab.TmPlusCase z x e1 y e2) = do
     p' <- reThrow (handleOrderErr e) (P.union p1 p2)
     p'' <- reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
     m_rho <- asks (emptyBufOfType . mp)
-    m_m <- asks (mapM monomorphizeTy . mp)
     return $ CR p'' $ do
         r' <- monomorphizeTy r
         me1' <- e1'
         me2' <- e2'
         rho <- m_rho
-        m <- m_m
-        return (Core.TmPlusCase m rho r' z x me1' y me2')
+        return (Core.TmPlusCase rho r' z x me1' y me2')
 
 checkElab r e@(Elab.TmIte z e1 e2) = do
     lookupTyBool e z
@@ -297,12 +295,10 @@ checkElab r e@(Elab.TmIte z e1 e2) = do
     CR p2 e2' <- checkElab r e2
     p' <- reThrow (handleOrderErr e) (P.union p1 p2)
     m_rho <- asks (emptyBufOfType . mp)
-    m_m <- asks (mapM monomorphizeTy . mp)
     return $ CR p' $ do
-        m <- m_m
         rho <- m_rho
         r' <- monomorphizeTy r
-        Core.TmIte m rho r' z <$> e1' <*> e2'
+        Core.TmIte rho r' z <$> e1' <*> e2'
 
 
 checkElab (TyStar _) Elab.TmNil = return (CR P.empty (return Core.TmNil))
@@ -327,15 +323,13 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     p'' <- reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
     m_rho <- asks (emptyBufOfType . mp)
-    m_m <- asks (mapM monomorphizeTy . mp)
     return $ CR p'' $ do
         s' <- monomorphizeTy s
         r' <- monomorphizeTy r
         me1' <- e1'
         me2' <- e2'
         rho <- m_rho
-        m <- m_m
-        return (Core.TmStarCase m rho r' s' z me1' x xs me2')
+        return (Core.TmStarCase rho r' s' z me1' x xs me2')
 
 checkElab r e@(Elab.TmCut x e1 e2) = do
     IR s p be1 <- inferElab e1
@@ -468,14 +462,12 @@ inferElab e@(Elab.TmPlusCase z x e1 y e2) = do
     reThrow (handleContUse e2) (P.checkNotIn z p2)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     m_rho <- asks (emptyBufOfType . mp)
-    m_m <- asks (mapM monomorphizeTy . mp)
     return $ IR r1 p' $ do
         r1' <- monomorphizeTy r1
         me1' <- e1'
         me2' <- e2'
         rho <- m_rho
-        m <- m_m
-        return (Core.TmPlusCase m rho r1' z x me1' y me2')
+        return (Core.TmPlusCase rho r1' z x me1' y me2')
 
 inferElab e@(Elab.TmIte z e1 e2) = do
     lookupTyBool e z
@@ -484,12 +476,10 @@ inferElab e@(Elab.TmIte z e1 e2) = do
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     m_rho <- asks (emptyBufOfType . mp)
-    m_m <- asks (mapM monomorphizeTy . mp)
     return $ IR r1 p' $ do
         rho <- m_rho
-        m <- m_m
         r <- monomorphizeTy r1
-        Core.TmIte m rho r z <$> e1' <*> e2'
+        Core.TmIte rho r z <$> e1' <*> e2'
 
 inferElab e@Elab.TmNil = throwError (CheckTermInferPos e)
 
@@ -509,15 +499,13 @@ inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     m_rho <- asks (emptyBufOfType . mp)
-    m_m <- asks (mapM monomorphizeTy . mp)
     return $ IR r1 p' $ do
         mr <- monomorphizeTy r1
         ms <- monomorphizeTy s
         me1' <- e1'
         me2' <- e2'
         rho <- m_rho
-        m <- m_m
-        return (Core.TmStarCase m rho mr ms z me1' x xs me2')
+        return (Core.TmStarCase rho mr ms z me1' x xs me2')
 
 inferElab e@(Elab.TmCut x e1 e2) = do
     IR s p e1' <- inferElab e1
