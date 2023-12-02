@@ -50,7 +50,7 @@ data SemError =
     | ConcatError (Term EnvBuffer) Var.Var Prefix Prefix
     | RuntimeCutError Var.Var (Term EnvBuffer) (Term EnvBuffer)
     | SinkError Prefix
-    | MaximalPrefixSubstErr Var.Var Values.MaximalPrefix (Term EnvBuffer)
+    | MaximalPrefixSubstErr Var.Var Ty Values.MaximalPrefix (Term EnvBuffer)
     | MaximalPrefixError Prefix
     | HistSemErr Hist.SemErr Hist.Term
     | NonMatchingArgs (Ctx Var.Var Ty) (CtxStruct (Term EnvBuffer))
@@ -66,7 +66,7 @@ instance PrettyPrint SemError where
     pp (ConcatError e x p p') = concat ["Tried to concatenate prefixes ", pp p," and ",pp p', " for variable ", pp x, " in term ", pp e]
     pp (RuntimeCutError x e e') = concat ["Error occurred when trying to cut ",pp x," = ",pp e, " in ", pp e',". This is a bug."]
     pp (SinkError p) = concat ["Tried to build sink term for prefix ", pp p, ". This is a bug."]
-    pp (MaximalPrefixSubstErr x p e) = concat ["Failed to substitute prefix ", pp p," for ", pp x, " in term ", pp e]
+    pp (MaximalPrefixSubstErr x s p e) = concat ["Failed to substitute prefix ", pp p, " at type ", pp s, " for ", pp x, " in term ", pp e]
     pp (MaximalPrefixError p) = concat ["Expected prefix ", pp p," to be maximal."]
     pp (HistSemErr err he) = concat ["Encountered error while evaluating historical term ", pp he, ": ", pp err]
     pp (NonMatchingArgs g g') = concat ["Arguments ", pp g', " do not match ", pp g]
@@ -78,8 +78,8 @@ handleConcatError e (x,p,p') = ConcatError e x p p'
 handleRuntimeCutError :: (Var.Var, Term EnvBuffer, Term EnvBuffer) -> SemError
 handleRuntimeCutError (x,e,e') = RuntimeCutError x e e'
 
-handlePrefixSubstError :: (Var.Var,Values.MaximalPrefix, Term EnvBuffer) -> SemError
-handlePrefixSubstError (x,p,e) = MaximalPrefixSubstErr x p e
+handlePrefixSubstError :: (Var.Var,Ty,Values.MaximalPrefix, Term EnvBuffer) -> SemError
+handlePrefixSubstError (x,s,p,e) = MaximalPrefixSubstErr x s p e
 
 handleHistEvalErr :: Hist.Term -> Hist.SemErr -> SemError
 handleHistEvalErr e err = HistSemErr err e
@@ -244,16 +244,16 @@ eval (TmFix args g s e) = reThrow (uncurry NonMatchingArgs) (cutArgs g args (fix
 
 eval (TmRec _) = error "Impossible."
 
-eval e@(TmWait rho' r x e') = do
+eval e@(TmWait rho' r s x e') = do
     withEnvM (concatEnvM e rho') $ do
         p <- lookupVar x
         case maximalLift p of
             Just p' -> do
-                e'' <- reThrow handlePrefixSubstError $ maximalPrefixSubst p' x e'
+                e'' <- reThrow handlePrefixSubstError $ maximalPrefixSubst s p' x e'
                 withEnv (unbindEnv x) (eval e'')
             Nothing -> do
                 rho'' <- ask
-                return (emptyPrefix r, TmWait rho'' r x e')
+                return (emptyPrefix r, TmWait rho'' r s x e')
 
 eval (TmHistPgm s he) = do
     p <- reThrow (handleHistEvalErr he) $ do
@@ -486,14 +486,14 @@ denote (TmCons e1 e2) = switch (denote e1 >>^ maximalPass) (\p -> applyToFirst i
 
 denote (TmStarCase {}) = undefined
 
-denote (TmWait rho' t x e) = bufferUntil (concatEnvM e) (maximalOn x) rho' (emptyPrefix t) go
+denote (TmWait rho' t s x e) = bufferUntil (concatEnvM e) (maximalOn x) rho' (emptyPrefix t) go
     where
         maximalOn x rho =
             case lookupEnv x rho of
                 Just p -> return (maximalLift p)
                 Nothing -> throwError (VarLookupFailed x)
-        go mp = case runIdentity (runExceptT (maximalPrefixSubst mp x e)) of
-                  Left (x,p,e) -> arrM (const (throwError (MaximalPrefixSubstErr x p e)))
+        go mp = case runIdentity (runExceptT (maximalPrefixSubst s mp x e)) of
+                  Left (x,s,p,e) -> arrM (const (throwError (MaximalPrefixSubstErr x s p e)))
                   Right e' -> denote e'
 
 denote (TmHistPgm s he) = dSwitch emit sink

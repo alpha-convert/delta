@@ -12,7 +12,7 @@ module CoreSyntax (
   cutArgs
 ) where
 
-import Types ( Ty , CtxStruct (..), Ctx, ctxFoldM, CtxEntry (..) )
+import Types ( Ty , CtxStruct (..), Ctx, ctxFoldM, CtxEntry (..), TyF (..) )
 import Values ( Lit(..), Env, lookupEnv, bindEnv, unbindEnv, Prefix (..), MaximalPrefix (..))
 import Var (Var (..), TyVar, FunVar)
 import qualified Data.Map as M
@@ -23,6 +23,7 @@ import qualified HistPgm as Hist
 import Debug.Trace (trace)
 import Backend.Monomorphizer (Mono)
 import Buffer
+import Util.ErrUtil
 
 data Term buf =
       TmLitR Lit
@@ -41,7 +42,7 @@ data Term buf =
     | TmStarCase buf Ty Ty Var (Term buf) Var Var (Term buf) {- first return type, then star type -}
     | TmFix (CtxStruct (Term buf)) (Ctx Var Ty) Ty (Term buf)
     | TmRec (CtxStruct (Term buf))
-    | TmWait buf Ty Var (Term buf)
+    | TmWait buf Ty Ty Var (Term buf) -- first return type, then waiting type
     | TmCut Var (Term buf) (Term buf)
     | TmHistPgm Ty Hist.Term
     deriving (Eq,Ord,Show)
@@ -75,7 +76,7 @@ instance PrettyPrint buf => PrettyPrint (Term buf) where
             go _ (TmIte rho _ z e1 e2) = concat ["if_", pp rho," ", pp z," then ", go True e1," else ", go True e2]
             go _ (TmCons e1 e2) = concat [go True e1," :: ",go True e2]
             go _ (TmStarCase rho _ _ z e1 x xs e2) = concat ["case_",pp rho," ",pp z," of nil => ",go True e1," | ",pp x,"::",pp xs," => ",go True e2]
-            go False (TmWait rho t x e) = concat ["wait_",pp rho,",",pp t," ", pp x," do ", go True e]
+            go False (TmWait rho _ _ x e) = concat ["wait_",pp rho," ", pp x," do ", go True e]
             go _ (TmCut x e e') = concat ["let ",pp x," = ", go True e, " in ", go True e']
 
 rebind :: Ord k => M.Map k a -> k -> k -> M.Map k a
@@ -121,7 +122,7 @@ substVar (TmStarCase rho r s z e1 x' xs' e2) x y = TmStarCase rho' r s z (substV
 -- TODO: are these correct?
 substVar (TmRec args) x y = TmRec $ (\e -> substVar e x y) <$> args
 substVar (TmFix args g s e) x y = TmFix ((\e' -> substVar e' x y) <$> args) g s e
-substVar (TmWait rho t u e) x y = if x == u then TmWait rho' t y (substVar e x y) else TmWait rho' t u (substVar e x y)
+substVar (TmWait rho t s u e) x y = if x == u then TmWait rho' t s y (substVar e x y) else TmWait rho' t s u (substVar e x y)
   where
     rho' = rebindBuf rho y x
 
@@ -224,100 +225,109 @@ sinkTm StpDone = return TmEpsR
 sinkTm p@(StpA _) = throwError p
 sinkTm (StpB _ p) = sinkTm p
 
-maximalPrefixToTerm :: MaximalPrefix -> (Term buf)
-maximalPrefixToTerm EpsMP = TmEpsR
-maximalPrefixToTerm (LitMP l) = TmLitR l
-maximalPrefixToTerm (CatMP p1 p2) = TmCatR (maximalPrefixToTerm p1) (maximalPrefixToTerm p2)
-maximalPrefixToTerm (ParMP p1 p2) = undefined
-maximalPrefixToTerm (SumMPA p) = TmInl (maximalPrefixToTerm p)
-maximalPrefixToTerm (SumMPB p) = TmInr (maximalPrefixToTerm p)
-maximalPrefixToTerm (StMP ps) = go ps
+maximalPrefixToTerm :: (MonadError (Ty,MaximalPrefix) m) => Ty -> MaximalPrefix -> m (Term buf)
+maximalPrefixToTerm TyEps EpsMP = return TmEpsR
+maximalPrefixToTerm t p@EpsMP = throwError (t,p)
+maximalPrefixToTerm TyInt (LitMP l@(LInt _)) = return (TmLitR l)
+maximalPrefixToTerm t p@(LitMP (LInt _)) = throwError (t,p)
+maximalPrefixToTerm TyBool (LitMP l@(LBool _)) = return (TmLitR l)
+maximalPrefixToTerm t p@(LitMP (LBool _)) = throwError (t,p)
+maximalPrefixToTerm (TyCat s t) (CatMP p1 p2) = TmCatR <$> maximalPrefixToTerm s p1 <*> maximalPrefixToTerm t p2
+maximalPrefixToTerm t p@(CatMP _ _) = throwError (t,p)
+maximalPrefixToTerm (TyPar s t) (ParMP p1 p2) = TmParR <$> maximalPrefixToTerm s p1 <*> maximalPrefixToTerm t p2
+maximalPrefixToTerm t p@(ParMP _ _) = throwError (t,p)
+maximalPrefixToTerm (TyPlus s _) (SumMPA p) = TmInl <$> maximalPrefixToTerm s p
+maximalPrefixToTerm t p@(SumMPA _) = throwError (t,p)
+maximalPrefixToTerm (TyPlus _ t) (SumMPB p) = TmInr <$> maximalPrefixToTerm t p
+maximalPrefixToTerm t p@(SumMPB _) = throwError (t,p)
+maximalPrefixToTerm (TyStar s) (StMP ps) = go s ps
   where
-    go [] = TmNil
-    go (p:ps') = TmCons (maximalPrefixToTerm p) (go ps')
+    go s [] = return TmNil
+    go s (p:ps') = TmCons <$> maximalPrefixToTerm s p <*> go s ps'
+maximalPrefixToTerm t p@(StMP _) = throwError (t,p)
 
 {- Would be ideal to get rid of this, and instead have histvalsubst. -}
-maximalPrefixSubst :: (Buffer buf, Monad m) => MaximalPrefix -> Var -> Term buf -> ExceptT (Var,MaximalPrefix,Term buf) m (Term buf)
-maximalPrefixSubst _ _ e@(TmLitR _) = return e
-maximalPrefixSubst _ _ e@TmEpsR = return e
-maximalPrefixSubst p x (TmVar y) | x == y = return (maximalPrefixToTerm p)
-maximalPrefixSubst _ _ e@(TmVar _) = return e
+maximalPrefixSubst :: (Buffer buf, Monad m) => Ty -> MaximalPrefix -> Var -> Term buf -> ExceptT (Var,Ty,MaximalPrefix,Term buf) m (Term buf)
+maximalPrefixSubst _ _ _ e@(TmLitR _) = return e
+maximalPrefixSubst _ _ _ e@TmEpsR = return e
+maximalPrefixSubst s p x e@(TmVar y) | x == y = reThrow (\(t,mp) -> (x,t,mp,e)) (maximalPrefixToTerm s p)
+maximalPrefixSubst _ _ _ e@(TmVar _) = return e
 
-maximalPrefixSubst p x (TmCatL t x' y' z e') | x /= z = TmCatL t x' y' z <$> maximalPrefixSubst p x e'
-maximalPrefixSubst (CatMP p1 p2) _ (TmCatL _ x' y' _ e') = do
-  e'' <- maximalPrefixSubst p1 x' e'
-  maximalPrefixSubst p2 y' e''
-maximalPrefixSubst p x e@(TmCatL {}) = throwError (x,p,e)
+maximalPrefixSubst s p x (TmCatL t x' y' z e') | x /= z = TmCatL t x' y' z <$> maximalPrefixSubst s p x e'
+maximalPrefixSubst (TyCat s t) (CatMP p1 p2) _ (TmCatL _ x' y' _ e') = do
+  e'' <- maximalPrefixSubst s p1 x' e'
+  maximalPrefixSubst t p2 y' e''
+maximalPrefixSubst s p x e@(TmCatL {}) = throwError (x,s,p,e)
 
-maximalPrefixSubst p x (TmCatR e1 e2) = do
-  e1' <- maximalPrefixSubst p x e1
-  e2' <- maximalPrefixSubst p x e2
+maximalPrefixSubst s p x (TmCatR e1 e2) = do
+  e1' <- maximalPrefixSubst s p x e1
+  e2' <- maximalPrefixSubst s p x e2
   return (TmCatR e1' e2')
 
-maximalPrefixSubst p x (TmParL x' y' z e') | x /= z = TmParL x' y' z <$> maximalPrefixSubst p x e'
-maximalPrefixSubst (ParMP p1 p2) _ (TmParL x' y' _ e') = do
-  e'' <- maximalPrefixSubst p1 x' e'
-  maximalPrefixSubst p2 y' e''
-maximalPrefixSubst p x e@(TmParL {}) = throwError (x,p,e)
+maximalPrefixSubst s p x (TmParL x' y' z e') | x /= z = TmParL x' y' z <$> maximalPrefixSubst s p x e'
+maximalPrefixSubst (TyPar s t) (ParMP p1 p2) _ (TmParL x' y' _ e') = do
+  e'' <- maximalPrefixSubst s p1 x' e'
+  maximalPrefixSubst t p2 y' e''
+maximalPrefixSubst s p x e@(TmParL {}) = throwError (x,s,p,e)
 
-maximalPrefixSubst p x (TmParR e1 e2) = do
-  e1' <- maximalPrefixSubst p x e1
-  e2' <- maximalPrefixSubst p x e2
+maximalPrefixSubst s p x (TmParR e1 e2) = do
+  e1' <- maximalPrefixSubst s p x e1
+  e2' <- maximalPrefixSubst s p x e2
   return (TmParR e1' e2')
 
 
-maximalPrefixSubst p x (TmInl e') = TmInl <$> maximalPrefixSubst p x e'
-maximalPrefixSubst p x (TmInr e') = TmInr <$> maximalPrefixSubst p x e'
+maximalPrefixSubst s p x (TmInl e') = TmInl <$> maximalPrefixSubst s p x e'
+maximalPrefixSubst s p x (TmInr e') = TmInr <$> maximalPrefixSubst s p x e'
 
-maximalPrefixSubst p x (TmPlusCase rho t z x' e1 y' e2) | x /= z = do
-  e1' <- maximalPrefixSubst p x e1
-  e2' <- maximalPrefixSubst p x e2
+maximalPrefixSubst s p x (TmPlusCase rho t z x' e1 y' e2) | x /= z = do
+  e1' <- maximalPrefixSubst s p x e1
+  e2' <- maximalPrefixSubst s p x e2
   return (TmPlusCase (unbindBuf x rho) t z x' e1' y' e2')
-maximalPrefixSubst (SumMPA p) _ (TmPlusCase _ _ _ x' e1 _ _) = maximalPrefixSubst p x' e1
-maximalPrefixSubst (SumMPB p) _ (TmPlusCase _ _ _ _ _ y' e2) = maximalPrefixSubst p y' e2
-maximalPrefixSubst p x e@(TmPlusCase {}) = throwError (x,p,e)
+maximalPrefixSubst (TyPlus s _) (SumMPA p) _ (TmPlusCase _ _ _ x' e1 _ _) = maximalPrefixSubst s p x' e1
+maximalPrefixSubst (TyPlus _ t) (SumMPB p) _ (TmPlusCase _ _ _ _ _ y' e2) = maximalPrefixSubst t p y' e2
+maximalPrefixSubst s p x e@(TmPlusCase {}) = throwError (x,s,p,e)
 
-maximalPrefixSubst p x (TmIte rho t z e1 e2) | x /= z = do
-  e1' <- maximalPrefixSubst p x e1
-  e2' <- maximalPrefixSubst p x e2
+maximalPrefixSubst s p x (TmIte rho t z e1 e2) | x /= z = do
+  e1' <- maximalPrefixSubst s p x e1
+  e2' <- maximalPrefixSubst s p x e2
   return (TmIte (unbindBuf x rho) t z e1' e2')
-maximalPrefixSubst (LitMP (LBool True)) _ (TmIte _ _ _ e1 _) = return e1
-maximalPrefixSubst (LitMP (LBool False)) _ (TmIte _ _ _ _ e2) = return e2
-maximalPrefixSubst p x e@(TmIte {}) = throwError (x,p,e)
+maximalPrefixSubst TyBool (LitMP (LBool True)) _ (TmIte _ _ _ e1 _) = return e1
+maximalPrefixSubst TyBool (LitMP (LBool False)) _ (TmIte _ _ _ _ e2) = return e2
+maximalPrefixSubst s p x e@(TmIte {}) = throwError (x,s,p,e)
 
-maximalPrefixSubst p x (TmStarCase rho t r z e1 y' ys' e2) | x /= z = do
-  e1' <- maximalPrefixSubst p x e1
-  e2' <- maximalPrefixSubst p x e2
+maximalPrefixSubst s p x (TmStarCase rho t r z e1 y' ys' e2) | x /= z = do
+  e1' <- maximalPrefixSubst s p x e1
+  e2' <- maximalPrefixSubst s p x e2
   return (TmStarCase (unbindBuf x rho) t r z e1' y' ys' e2')
-maximalPrefixSubst (StMP []) _ (TmStarCase _ _ _ _ e1 _ _ _) = return e1
-maximalPrefixSubst (StMP (p:ps)) _ (TmStarCase _ _ _ _ _ y' ys' e2) = do
-  e2' <- maximalPrefixSubst p y' e2
-  maximalPrefixSubst (StMP ps) ys' e2'
-maximalPrefixSubst p x e@(TmStarCase {}) = throwError (x,p,e)
+maximalPrefixSubst (TyStar _) (StMP []) _ (TmStarCase _ _ _ _ e1 _ _ _) = return e1
+maximalPrefixSubst (TyStar s) (StMP (p:ps)) _ (TmStarCase _ _ _ _ _ y' ys' e2) = do
+  e2' <- maximalPrefixSubst s p y' e2
+  maximalPrefixSubst (TyStar s) (StMP ps) ys' e2'
+maximalPrefixSubst s p x e@(TmStarCase {}) = throwError (x,s,p,e)
 
-maximalPrefixSubst _ _ e@TmNil = return e
-maximalPrefixSubst p x (TmCons e1 e2) = do
-  e1' <- maximalPrefixSubst p x e1
-  e2' <- maximalPrefixSubst p x e2
+maximalPrefixSubst s _ _ e@TmNil = return e
+maximalPrefixSubst s p x (TmCons e1 e2) = do
+  e1' <- maximalPrefixSubst s p x e1
+  e2' <- maximalPrefixSubst s p x e2
   return (TmCons e1' e2')
 
-maximalPrefixSubst p x (TmWait rho s z e') | x /= z = TmWait (unbindBuf x rho) s z <$> maximalPrefixSubst p x e'
-maximalPrefixSubst p _ (TmWait _ _ x e') = maximalPrefixSubst p x e'
+maximalPrefixSubst s' p x (TmWait rho t s z e') | x /= z = TmWait (unbindBuf x rho) t s z <$> maximalPrefixSubst s' p x e'
+maximalPrefixSubst s p _ (TmWait _ _ _ x e') = maximalPrefixSubst s p x e'
 
-maximalPrefixSubst p x (TmFix args g s e') = do
-  args' <- mapM (maximalPrefixSubst p x) args
+maximalPrefixSubst s' p x (TmFix args g s e') = do
+  args' <- mapM (maximalPrefixSubst s' p x) args
   return (TmFix args' g s e')
 
-maximalPrefixSubst p x (TmRec args) = TmRec <$> mapM (maximalPrefixSubst p x) args
+maximalPrefixSubst s p x (TmRec args) = TmRec <$> mapM (maximalPrefixSubst s p x) args
 
-maximalPrefixSubst p x (TmCut y e1 e2) = do
-  e1' <- maximalPrefixSubst p x e1
-  e2' <- maximalPrefixSubst p x e2
+maximalPrefixSubst s p x (TmCut y e1 e2) = do
+  e1' <- maximalPrefixSubst s p x e1
+  e2' <- maximalPrefixSubst s p x e2
   return (TmCut y e1' e2')
 
-maximalPrefixSubst p x (TmHistPgm t he) = TmHistPgm t <$> withExceptT liftErr (Hist.maximalPrefixSubst p x he)
+maximalPrefixSubst s p x (TmHistPgm t he) = TmHistPgm t <$> withExceptT liftErr (Hist.maximalPrefixSubst p x he)
   where
-    liftErr (x,p,e) = (x,p,TmHistPgm t e)
+    liftErr (x,p,e) = (x,s,p,TmHistPgm t e)
 
 fixSubst :: CtxStruct (CtxEntry Var Ty) -> Ty -> Term buf -> Term buf -> Term buf
 fixSubst g s e = go
@@ -338,6 +348,6 @@ fixSubst g s e = go
         go (TmStarCase rho r t z e1 y ys e2) = TmStarCase rho r t z (go e1) y ys (go e2)
         go (TmFix args g' s' e') = TmFix (fmap go args) g' s' e'
         go (TmRec args) = TmFix args g s e
-        go (TmWait rho r x e') = TmWait rho r x (go e')
+        go (TmWait rho r s x e') = TmWait rho r s x (go e')
         go (TmCut x e1 e2) = TmCut x (go e1) (go e2)
         go (TmHistPgm t he) = TmHistPgm t he

@@ -111,7 +111,7 @@ eval (TmFix args g s e) tev = do
 
 eval (TmRec {}) _ = throwError undefined
 
-eval (TmWait buf r x e) tev = undefined
+eval (TmWait buf r s x e) tev = undefined
 
 eval (TmHistPgm s he) _ = do
     evs <- reThrow undefined (Hist.eval he >>= Hist.valueToEventList s)

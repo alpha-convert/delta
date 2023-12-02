@@ -352,7 +352,8 @@ checkElab r e@(Elab.TmWait x e') = do
     return $ CR p $ do
         rho <- m_rho
         r' <- monomorphizeTy r
-        Core.TmWait rho r' x <$> e''
+        s' <- monomorphizeTy s
+        Core.TmWait rho r' s' x <$> e''
 
 checkElab r e@(Elab.TmHistPgm he) = do
     () <- liftHistCheck e (Hist.check he r)
@@ -527,8 +528,9 @@ inferElab e@(Elab.TmWait x e') = do
     reThrow (handleContUse e) (P.checkNotIn x p)
     return $ IR t p $ do
         t' <- monomorphizeTy t
+        s' <- monomorphizeTy s
         rho <- m_rho
-        Core.TmWait rho t' x <$>e''
+        Core.TmWait rho t' s' x <$> e''
 
 inferElab e@(Elab.TmHistPgm he) = do
     r <- liftHistCheck e (Hist.infer he)
