@@ -13,6 +13,7 @@ import Control.Monad (when)
 import Data.List (intercalate)
 import Control.Monad.Loops (allM)
 import Control.Monad (foldM)
+import Event
 
 
 data Value =
@@ -450,3 +451,6 @@ valueToMaximalPrefix t v@(VInr _)= throwError (WrongTypeValueLift v t)
 
 valueToMaximalPrefix (TyStar s) (VList vs) = StMP <$> mapM (valueToMaximalPrefix s) vs
 valueToMaximalPrefix t v@(VList {}) = throwError (WrongTypeValueLift v t)
+
+valueToEventList :: MonadError SemErr m => Ty -> Value -> m [Event]
+valueToEventList s v = undefined

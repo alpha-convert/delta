@@ -2,7 +2,7 @@
 module Backend.EnvSemantics where
 
 import CoreSyntax
-    ( Term(..), Program, Cmd(..), substVar, sinkTm, maximalPrefixSubst, fixSubst)
+    ( Term(..), Program, Cmd(..), substVar, sinkTm, maximalPrefixSubst, fixSubst, cutArgs)
 import qualified Data.Map as M
 import Control.Monad.Reader
     ( Monad(return), sequence, MonadReader(ask, local), ReaderT (runReaderT), guard, asks )
@@ -35,6 +35,7 @@ import Control.Monad (when)
 import Data.MonadicStreamFunction.InternalCore (MSF(..))
 import Test.QuickCheck
 import Buffer
+import Util.ErrUtil (reThrow)
 
 type EnvBuffer = Env Var.Var Prefix
 
@@ -83,8 +84,6 @@ handlePrefixSubstError (x,p,e) = MaximalPrefixSubstErr x p e
 handleHistEvalErr :: Hist.Term -> Hist.SemErr -> SemError
 handleHistEvalErr e err = HistSemErr err e
 
-reThrow :: (MonadError SemError m) => (e -> SemError) -> ExceptT e m a -> m a
-reThrow k x = runExceptT x >>= either (throwError . k) return
 
 class (MonadReader EnvBuffer m, MonadError SemError m) => EvalM m where
 
@@ -118,16 +117,6 @@ lookupVar x = do
         Nothing -> throwError (VarLookupFailed x)
         Just p -> return p
 
-cutAll :: MonadError SemError m => CtxStruct (Term EnvBuffer) -> CtxStruct (CtxEntry Var.Var Ty) -> Term EnvBuffer -> m (Term EnvBuffer)
-cutAll EmpCtx EmpCtx e = return e
-cutAll (SngCtx e') (SngCtx (CE x _)) e = return (TmCut x e' e)
-cutAll (SemicCtx g1 g2) (SemicCtx g1' g2') e = do
-    e' <- cutAll g1 g1' e
-    cutAll g2 g2' e'
-cutAll (CommaCtx g1 g2) (CommaCtx g1' g2') e = do
-    e' <- cutAll g1 g1' e
-    cutAll g2 g2' e'
-cutAll g g' e = throwError (NonMatchingArgs g' g)
 
 concatEnvM e rho' rho = reThrow (handleConcatError e) (concatEnv rho' rho)
 
@@ -250,7 +239,7 @@ eval (TmCut x e1 e2) = do
         return (p',TmCut x e1' e2')
         -- return (p',e')
 
-eval (TmFix args g s e) = cutAll args g (fixSubst g s e e) >>= eval
+eval (TmFix args g s e) = reThrow (uncurry NonMatchingArgs) (cutArgs g args (fixSubst g s e e)) >>= eval
 
 
 eval (TmRec _) = error "Impossible."

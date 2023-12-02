@@ -8,10 +8,11 @@ module CoreSyntax (
   sinkTm,
   cut,
   maximalPrefixSubst,
-  fixSubst
+  fixSubst,
+  cutArgs
 ) where
 
-import Types ( Ty , CtxStruct (EmpCtx, SngCtx, SemicCtx), Ctx, ctxFoldM, CtxEntry (..) )
+import Types ( Ty , CtxStruct (..), Ctx, ctxFoldM, CtxEntry (..) )
 import Values ( Lit(..), Env, lookupEnv, bindEnv, unbindEnv, Prefix (..), MaximalPrefix (..))
 import Var (Var (..), TyVar, FunVar)
 import qualified Data.Map as M
@@ -192,7 +193,16 @@ rho : env(G(x:s)(z:t))
 -- cut _ (TmCons eh et)   (TmStarCase _ _ _ _ _ _ y ys e2) = cut y eh e2 >>= cut ys et
 -- cut x e                     e'@(TmStarCase {}) = throwError (x,e,e')
 
-
+cutArgs :: MonadError (Ctx Var.Var Ty, CtxStruct (Term buf)) m => Ctx Var.Var Ty -> CtxStruct (Term buf) -> Term buf -> m (Term buf)
+cutArgs EmpCtx EmpCtx e = return e
+cutArgs (SngCtx (CE x _)) (SngCtx e') e = return (TmCut x e' e)
+cutArgs (SemicCtx g1 g2) (SemicCtx g1' g2') e = do
+    e' <- cutArgs g1 g1' e
+    cutArgs g2 g2' e'
+cutArgs (CommaCtx g1 g2) (CommaCtx g1' g2') e = do
+    e' <- cutArgs g1 g1' e
+    cutArgs g2 g2' e'
+cutArgs g g' _ = throwError (g,g')
 
 -- Throws p if p is not maximal. if p : s and p maximal, the sinkTm : d_p s.
 -- At the moment (without par), this returns only TmEpsR
@@ -226,6 +236,7 @@ maximalPrefixToTerm (StMP ps) = go ps
     go [] = TmNil
     go (p:ps') = TmCons (maximalPrefixToTerm p) (go ps')
 
+{- Would be ideal to get rid of this, and instead have histvalsubst. -}
 maximalPrefixSubst :: (Buffer buf, Monad m) => MaximalPrefix -> Var -> Term buf -> ExceptT (Var,MaximalPrefix,Term buf) m (Term buf)
 maximalPrefixSubst _ _ e@(TmLitR _) = return e
 maximalPrefixSubst _ _ e@TmEpsR = return e
