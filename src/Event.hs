@@ -1,12 +1,20 @@
 {-# LANGUAGE  MultiParamTypeClasses, FlexibleInstances #-}
-module Automata.Event() where
+module Event where
 
 import Values (Lit(..), Prefix(..))
 import Types ( TyF(..), Ty, TypeLike(..), ValueLike(..), ValueLikeErr(..))
 import Control.Monad.Except(ExceptT, MonadError (..), withExceptT)
 import Util.ErrUtil(guard)
+import Var (Var)
 
-data Event = LitEv Lit | PlusPuncA | PlusPuncB | CatPunc | CatEvA Event
+data Event =
+      LitEv Lit
+    | PlusPuncA
+    | PlusPuncB
+    | CatPunc
+    | CatEvA Event
+
+data TaggedEvent = TE Var Event
 
 instance ValueLike Event Ty where
     hasType (LitEv (LInt _)) TyInt = return ()

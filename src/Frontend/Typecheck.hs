@@ -32,6 +32,7 @@ import qualified Data.Set as S
 import Backend.Monomorphizer
 import Control.Monad (unless)
 import Data.List (intercalate)
+import Buffer
 
 data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
@@ -55,8 +56,8 @@ data TckErr t = VarNotFound Var t
             | WrongTypeInr t OpenTy
             | WrongTypeNil OpenTy
             | WrongTypeCons t t OpenTy
-            | ListedTypeError Ty Ty Core.Term
-            | ImpossibleCut Var Core.Term Core.Term
+            | ListedTypeError Ty Ty t
+            | ImpossibleCut Var t t
             | UnsaturatedRecursiveCall (Ctx Var OpenTy) (CtxStruct t)
             | HasTypeErr (Env Var.Var Prefix) (M.Map Var.Var OpenTy)
             | NonMatchingRecursiveArgs (Ctx Var OpenTy) (CtxStruct t)
@@ -98,59 +99,51 @@ instance (PrettyPrint t) => PrettyPrint (TckErr t) where
 
 data RecSig = Rec (Ctx Var OpenTy) OpenTy
 
-data FunRecord =
-      PolyFun { funTyVars :: [Var.TyVar], funCtx :: Ctx Var OpenTy, funTy :: OpenTy, funMonoTerm :: Mono Core.Term }
+data FunRecord buf =
+      PolyFun { funTyVars :: [Var.TyVar], funCtx :: Ctx Var OpenTy, funTy :: OpenTy, funMonoTerm :: Mono (Core.Term buf) }
     | SpecFun { specCtx :: Ctx Var Ty }
 
-type FileInfo = M.Map Var.FunVar FunRecord
+type FileInfo buf = M.Map Var.FunVar (FunRecord buf)
 
-data TckCtx = TckCtx { fileInfo :: FileInfo , mp :: M.Map Var.Var OpenTy, rs :: RecSig , histCtx :: M.Map Var OpenTy, tyVars :: S.Set Var.TyVar }
+data TckCtx buf = TckCtx { fileInfo :: FileInfo buf, mp :: M.Map Var.Var OpenTy, rs :: RecSig , histCtx :: M.Map Var OpenTy, tyVars :: S.Set Var.TyVar }
 
-emptyEnvOfType :: TckCtx -> Mono (Env Var Prefix)
-emptyEnvOfType (TckCtx _ m _ _ _) =
-    M.foldrWithKey (\x t m_rho -> do
-        t' <- monomorphizeTy t
-        bindEnv x (emptyPrefix t') <$> m_rho
-    )
-    (return emptyEnv) m
+class (MonadError (TckErr t) m, MonadReader (TckCtx buf) m) => TckM t buf m where
+instance TckM t buf (ReaderT (TckCtx buf) (ExceptT (TckErr t) Identity)) where
 
-class (MonadError (TckErr t) m, MonadReader (TckCtx) m) => TckM t m where
-instance TckM t (ReaderT (TckCtx) (ExceptT (TckErr t) Identity)) where
-
-lookupTy :: (TckM t m) => t -> Var -> m OpenTy
+lookupTy :: (TckM t buf m) => t -> Var -> m OpenTy
 lookupTy e x = do
     m <- asks mp
     maybe (throwError (VarNotFound x e)) return (M.lookup x m)
 
-lookupTyBool :: (TckM t m) => t -> Var -> m ()
+lookupTyBool :: (TckM t buf m) => t -> Var -> m ()
 lookupTyBool e x = do
     s <- lookupTy e x
     case s of
         TyBool -> return ()
         _ -> trace ("TYPE IS: ") $ throwError (ExpectedTyBool x s e)
 
-lookupTyCat :: (TckM t m) => t -> Var -> m (OpenTy, OpenTy)
+lookupTyCat :: (TckM t buf m) => t -> Var -> m (OpenTy, OpenTy)
 lookupTyCat e x = do
     s' <- lookupTy e x
     case s' of
         TyCat s t -> return (s,t)
         _ -> throwError (ExpectedTyCat x s' e)
 
-lookupTyPar :: (TckM t m) => t -> Var -> m (OpenTy, OpenTy)
+lookupTyPar :: (TckM t buf m) => t -> Var -> m (OpenTy, OpenTy)
 lookupTyPar e x = do
     s' <- lookupTy e x
     case s' of
         TyPar s t -> return (s,t)
         _ -> throwError (ExpectedTyPar x s' e)
 
-lookupTyPlus :: (TckM t m) => t -> Var -> m (OpenTy, OpenTy)
+lookupTyPlus :: (TckM t buf m) => t -> Var -> m (OpenTy, OpenTy)
 lookupTyPlus e x = do
     s' <- lookupTy e x
     case s' of
         TyPlus s t -> return (s,t)
         _ -> throwError (ExpectedTyPlus x s' e)
 
-lookupTyStar :: (TckM t m) => t -> Var -> m OpenTy
+lookupTyStar :: (TckM t buf m) => t -> Var -> m OpenTy
 lookupTyStar e x = do
     s' <- lookupTy e x
     case s' of
@@ -159,39 +152,39 @@ lookupTyStar e x = do
 
 -- Don't tell me to use lens, i refuse.
 
-lookupFunRecord :: (TckM t m) => Var.FunVar -> m FunRecord
+lookupFunRecord :: (TckM t buf m) => Var.FunVar -> m (FunRecord buf)
 lookupFunRecord f = do
     asks (M.lookup f . fileInfo) >>= maybe (throwError (FunRecordNotFound f)) return
 
 
-withUnbind :: (TckM t m) => Var -> m a -> m a
+withUnbind :: (TckM t buf m) => Var -> m a -> m a
 withUnbind x = local (\t -> TckCtx (fileInfo t) (M.delete  x (mp t)) (rs t) (histCtx t) (tyVars t))
 
-withBind :: (TckM t m) => Var -> OpenTy -> m a -> m a
+withBind :: (TckM t buf m) => Var -> OpenTy -> m a -> m a
 withBind x s = local (\t -> TckCtx (fileInfo t) (M.insert x s (mp t)) (rs t) (histCtx t) (tyVars t))
 
-withBindAll :: (TckM t m) => [(Var,OpenTy)] -> m a -> m a
+withBindAll :: (TckM t buf m) => [(Var,OpenTy)] -> m a -> m a
 withBindAll xs = local $ \t -> TckCtx (fileInfo t) (foldr (\(x,s) -> (M.insert x s .)) id xs (mp t)) (rs t) (histCtx t) (tyVars t)
 
-withUnbindAll :: (TckM t m) => [Var] -> m a -> m a
+withUnbindAll :: (TckM t buf m) => [Var] -> m a -> m a
 withUnbindAll xs = local (\t -> TckCtx (fileInfo t) (foldr M.delete (mp t) xs) (rs t) (histCtx t) (tyVars t))
 
-withRecSig :: (TckM t m) => Ctx Var OpenTy -> OpenTy -> m a -> m a
+withRecSig :: (TckM t buf m) => Ctx Var OpenTy -> OpenTy -> m a -> m a
 withRecSig g s = local $ \t -> TckCtx (fileInfo t) (mp t) (Rec g s) (histCtx t) (tyVars t)
 
-withCtx :: (TckM t m) => M.Map Var OpenTy -> m a -> m a
+withCtx :: (TckM t buf m) => M.Map Var OpenTy -> m a -> m a
 withCtx m = local (\(TckCtx fi _ rs hc tv) -> TckCtx fi m rs hc tv)
 
-withBindHist :: (TckM t m) => Var -> OpenTy -> m a -> m a
+withBindHist :: (TckM t buf m) => Var -> OpenTy -> m a -> m a
 withBindHist x s = local (\t -> TckCtx (fileInfo t) (mp t) (rs t) (M.insert x s (histCtx t)) (tyVars t))
 
 handleHasTypeErr :: Types.ValueLikeErr (Env Var Prefix) (M.Map Var OpenTy) -> TckErr t
 handleHasTypeErr (IllTyped rho m) = HasTypeErr rho m
 
-guard :: (TckM t m) => Bool -> TckErr t -> m ()
+guard :: (TckM t buf m) => Bool -> TckErr t -> m ()
 guard b e = if b then return () else throwError e
 
-reThrow :: (TckM t m) => (e -> TckErr t) -> ExceptT e m a -> m a
+reThrow :: (TckM t buf m) => (e -> TckErr t) -> ExceptT e m a -> m a
 reThrow k x = runExceptT x >>= either (throwError . k) return
 
 handleOrderErr :: t -> P.OrderErr Var -> TckErr t
@@ -205,29 +198,26 @@ handleReUse e x = ReUse x e
 handleContUse :: t -> Var -> TckErr t
 handleContUse e x = ContUse x e
 
-handleImpossibleCut :: (Var, Core.Term, Core.Term) -> TckErr t
+handleImpossibleCut :: (Var, t, t) -> TckErr t
 handleImpossibleCut (x,e,e') = ImpossibleCut x e e'
 
 handleReparErr :: Var.TyVar -> TckErr t
 handleReparErr = undefined
 
+data InferElabResult buf = IR { ty :: OpenTy , iusages :: P.Partial Var, itm :: Mono (Core.Term buf) }
+data CheckElabResult buf = CR { cusages :: P.Partial Var, ctm :: Mono (Core.Term buf) }
 
-
-data InferElabResult = IR { ty :: OpenTy , iusages :: P.Partial Var, itm :: Mono Core.Term }
-data CheckElabResult = CR { cusages :: P.Partial Var, ctm :: Mono Core.Term }
-
-
-promoteResult :: OpenTy -> CheckElabResult -> InferElabResult
+promoteResult :: OpenTy -> CheckElabResult buf -> InferElabResult buf
 promoteResult t (CR p e) = IR t p e
 
-liftHistCheck :: (TckM t m') => t -> ReaderT (M.Map Var OpenTy) (ExceptT Hist.TckErr Identity) a -> m' a
+liftHistCheck :: (TckM t buf m') => t -> ReaderT (M.Map Var OpenTy) (ExceptT Hist.TckErr Identity) a -> m' a
 liftHistCheck e m = do
     ma <- asks ((runIdentity . runExceptT . runReaderT m) . histCtx)
     case ma of
         Left err -> throwError (HistTckErr e err)
         Right a -> return a
 
-checkElab :: (TckM Elab.Term m) => OpenTy -> Elab.Term -> m CheckElabResult
+checkElab :: (Buffer buf, TckM Elab.Term buf m) => OpenTy -> Elab.Term -> m (CheckElabResult buf)
 checkElab TyInt (Elab.TmLitR l@(LInt _)) = return $ CR P.empty (return (Core.TmLitR l))
 checkElab TyBool (Elab.TmLitR l@(LBool _)) = return $ CR P.empty (return (Core.TmLitR l))
 checkElab t (Elab.TmLitR l) = throwError (WrongTypeLit l t)
@@ -291,7 +281,7 @@ checkElab r e@(Elab.TmPlusCase z x e1 y e2) = do
     reThrow (handleContUse e2) (P.checkNotIn z p2)
     p' <- reThrow (handleOrderErr e) (P.union p1 p2)
     p'' <- reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
-    m_rho <- asks emptyEnvOfType
+    m_rho <- asks (emptyBufOfType . mp)
     m_m <- asks (mapM monomorphizeTy . mp)
     return $ CR p'' $ do
         r' <- monomorphizeTy r
@@ -306,7 +296,7 @@ checkElab r e@(Elab.TmIte z e1 e2) = do
     CR p1 e1' <- checkElab r e1
     CR p2 e2' <- checkElab r e2
     p' <- reThrow (handleOrderErr e) (P.union p1 p2)
-    m_rho <- asks emptyEnvOfType
+    m_rho <- asks (emptyBufOfType . mp)
     m_m <- asks (mapM monomorphizeTy . mp)
     return $ CR p' $ do
         m <- m_m
@@ -336,7 +326,7 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
     reThrow (handleContUse e) (P.checkNotIn z p2)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     p'' <- reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
-    m_rho <- asks emptyEnvOfType
+    m_rho <- asks (emptyBufOfType . mp)
     m_m <- asks (mapM monomorphizeTy . mp)
     return $ CR p'' $ do
         s' <- monomorphizeTy s
@@ -361,7 +351,7 @@ checkElab r e@(Elab.TmRec es) = do
     return (CR p (Core.TmRec <$> args))
 
 checkElab r e@(Elab.TmWait x e') = do
-    m_rho <- asks emptyEnvOfType
+    m_rho <- asks (emptyBufOfType . mp)
     s <- lookupTy e x
     CR p e'' <- withBindHist x s (checkElab r e')
     reThrow (handleContUse e) (P.checkNotIn x p)
@@ -399,7 +389,7 @@ checkElab r e@(Elab.TmFunCall f ts es) = do
 
 
 
-elabRec :: (TckM Elab.Term m) => Ctx Var OpenTy -> CtxStruct Elab.Term -> m (P.Partial Var, Mono (CtxStruct Core.Term))
+elabRec :: (Buffer buf, TckM Elab.Term buf m) => Ctx Var OpenTy -> CtxStruct Elab.Term -> m (P.Partial Var, Mono (CtxStruct (Core.Term buf)))
 elabRec EmpCtx EmpCtx = return (P.empty,return EmpCtx)
 elabRec g@EmpCtx g' = throwError (UnsaturatedRecursiveCall g g')
 elabRec (SngCtx (CE _ s)) (SngCtx e) = do
@@ -421,7 +411,7 @@ elabRec (CommaCtx g1 g2) (CommaCtx args1 args2) = do
 elabRec g@(CommaCtx {}) g' = throwError (UnsaturatedRecursiveCall g g')
 
 
-inferElab :: (TckM Elab.Term m) => Elab.Term -> m InferElabResult
+inferElab :: (Buffer buf, TckM Elab.Term buf m) => Elab.Term -> m (InferElabResult buf)
 inferElab (Elab.TmLitR (LInt n)) = return $ IR TyInt P.empty (return (Core.TmLitR (LInt n)))
 inferElab (Elab.TmLitR (LBool b)) = return $ IR TyBool P.empty (return (Core.TmLitR (LBool b)))
 inferElab Elab.TmEpsR = return $ IR TyEps P.empty (return Core.TmEpsR)
@@ -477,7 +467,7 @@ inferElab e@(Elab.TmPlusCase z x e1 y e2) = do
     reThrow (handleContUse e1) (P.checkNotIn z p1)
     reThrow (handleContUse e2) (P.checkNotIn z p2)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
-    m_rho <- asks emptyEnvOfType
+    m_rho <- asks (emptyBufOfType . mp)
     m_m <- asks (mapM monomorphizeTy . mp)
     return $ IR r1 p' $ do
         r1' <- monomorphizeTy r1
@@ -493,7 +483,7 @@ inferElab e@(Elab.TmIte z e1 e2) = do
     IR r2 p2 e2' <- inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
-    m_rho <- asks emptyEnvOfType
+    m_rho <- asks (emptyBufOfType . mp)
     m_m <- asks (mapM monomorphizeTy . mp)
     return $ IR r1 p' $ do
         rho <- m_rho
@@ -518,7 +508,7 @@ inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
     reThrow (handleContUse e) (P.checkNotIn z p2)
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
-    m_rho <- asks emptyEnvOfType
+    m_rho <- asks (emptyBufOfType . mp)
     m_m <- asks (mapM monomorphizeTy . mp)
     return $ IR r1 p' $ do
         mr <- monomorphizeTy r1
@@ -543,7 +533,7 @@ inferElab e@(Elab.TmRec es) = do
     return (IR r p (Core.TmRec <$> args))
 
 inferElab e@(Elab.TmWait x e') = do
-    m_rho <- asks emptyEnvOfType
+    m_rho <- asks (emptyBufOfType . mp)
     s <- lookupTy e x
     IR t p e'' <- withBindHist x s $ inferElab e'
     reThrow (handleContUse e) (P.checkNotIn x p)
@@ -905,13 +895,13 @@ checkUntypedPrefixCtx g@(CommaCtx {}) g' = throwError (WrongArgShape g g')
 
 
 -- Doublecheck argument typechecks the resulting term, again.
-doCheckElabTm :: (MonadIO m) => FileInfo -> [Var.TyVar] -> Ctx Var OpenTy -> OpenTy -> Elab.Term -> m (Mono Core.Term)
+doCheckElabTm :: (Buffer buf, MonadIO m) => FileInfo buf -> [Var.TyVar] -> Ctx Var OpenTy -> OpenTy -> Elab.Term -> m (Mono (Core.Term buf))
 doCheckElabTm fi vs g t e = do
-    let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e :: (ReaderT TckCtx (ExceptT (TckErr Elab.Term) Identity) CheckElabResult)) (TckCtx fi (ctxBindings g) (Rec g t) M.empty (S.fromList vs))
+    let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e) (TckCtx fi (ctxBindings g) (Rec g t) M.empty (S.fromList vs))
     case ck of
         Left err -> error (pp err)
         Right (CR usages m_tm) -> do
-            (usageConsist :: Either (TckErr Elab.Term) ())<- runExceptT (withExceptT (handleOrderErr e) $ P.consistentWith usages (_fst <$> g))
+            (usageConsist :: Either (TckErr Elab.Term) ()) <- runExceptT (withExceptT (handleOrderErr e) $ P.consistentWith usages (_fst <$> g))
             case usageConsist of
                 Left err -> error (pp err)
                 Right _ -> return $ do
@@ -928,10 +918,10 @@ wfTy :: (Eq v) => [v] -> TyF v -> Bool
 wfTy tvs = all (`elem` tvs)
 
 
-doCheckElabPgm :: (MonadIO m) => Elab.Program -> m Core.Program
+doCheckElabPgm :: (MonadIO m, Buffer buf) => Elab.Program -> m (Core.Program buf)
 doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
     where
-        go :: (MonadIO m) => Elab.Cmd -> StateT FileInfo m Core.Cmd
+        go :: (MonadIO m, Buffer buf) => Elab.Cmd -> StateT (FileInfo buf) m (Core.Cmd buf)
         go (Elab.FunDef f tvs _ g t e) = do
             -- Check that type type and context are well-formed with the type variables
             unless (wfCtx tvs g) $ error $ "Context " ++ pp g ++ " ill-formed with type variables " ++ (intercalate "," $ pp <$> tvs)
