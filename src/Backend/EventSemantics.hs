@@ -1,31 +1,37 @@
 {-# LANGUAGE FlexibleInstances, FlexibleContexts #-}
 module Backend.EventSemantics where
-import Event (TaggedEvent(..), Event(..))
+import Event (TaggedEvent(..), Event(..), isMaximal)
 
 import CoreSyntax
 import Buffer
 import Values
 import qualified HistPgm as Hist
-import Types (TyF(TyStar))
+import Types (TyF(TyStar), deriv)
 import Util.ErrUtil
 import Control.Monad.Except (MonadError (throwError))
+import Data.Maybe (mapMaybe)
 
 
 tagWith :: Var -> Event -> TaggedEvent
 tagWith = TE
 
+isTaggedFor :: TaggedEvent -> Var -> Maybe Event
 (TE y ev) `isTaggedFor` x = if x == y then Just ev else Nothing
+
 
 type EventBuf = [TaggedEvent]
 
 instance Buffer EventBuf where
+
+bufferAt :: Var -> EventBuf -> [Event]
+bufferAt x = mapMaybe (`isTaggedFor` x)
 
 data SemErr
 
 eval :: (MonadError SemErr m) => Term EventBuf -> TaggedEvent -> m ([Event], Term EventBuf)
 eval TmEpsR _ = return ([],TmEpsR)
 eval (TmLitR v) _ = return ([LitEv v],TmEpsR)
-eval (TmVar x) tev = 
+eval (TmVar x) tev =
     case tev `isTaggedFor` x of
         Just ev -> return ([ev],TmVar x)
         Nothing -> return ([], TmVar x)
@@ -43,10 +49,15 @@ eval (TmCatL t x y z e) tev =
             sink <- undefined
             return ([], TmCut x sink e')
         Just _ -> throwError undefined
-        
 
--- Maximality depends on the type!
-eval (TmCatR s e1 e2) ev = undefined
+
+eval (TmCatR s e1 e2) tev = do
+    (evs,e1') <- eval e1 tev
+    if Event.isMaximal s evs then
+        return (CatEvA <$> evs ++ [CatPunc],e2)
+    else do
+        s' <- reThrow undefined (deriv evs s)
+        return (CatEvA <$> evs, TmCatR s' e1' e2)
 
 eval (TmParL x y z e) tev = do
     tev' <- case tev `isTaggedFor` z of
@@ -89,7 +100,13 @@ eval (TmPlusCase buf r z x e1 y e2) tev =
 
 
 eval TmNil _ = return ([PlusPuncA],TmEpsR)
-eval (TmCons s e1 e2) ev = undefined
+eval (TmCons s e1 e2) tev = do
+    (evs,e1') <- eval e1 tev
+    if Event.isMaximal s evs then
+        return (PlusPuncB : (CatEvA <$> evs ++ [CatPunc]),e2)
+    else do
+        s' <- reThrow undefined (deriv evs s)
+        return (PlusPuncB : (CatEvA <$> evs), TmCatR s' e1' e2)
 
 eval (TmStarCase buf r s z e1 x xs e2) tev =
     case tev `isTaggedFor` z of
@@ -106,12 +123,18 @@ eval (TmIte buf t z e1 e2) tev =
         Just _ -> throwError undefined
 
 eval (TmFix args g s e) tev = do
-    e' <- reThrow undefined (cutArgs g args (fixSubst g s e e)) 
+    e' <- reThrow undefined (cutArgs g args (fixSubst g s e e))
     eval e' tev
 
 eval (TmRec {}) _ = throwError undefined
 
-eval (TmWait buf r s x e) tev = undefined
+eval (TmWait buf r s x e) tev =
+    let buf' = buf ++ [tev] in
+    if Event.isMaximal s (bufferAt x buf') then
+        _
+    else
+        return ([], TmWait buf' r s x e)
+
 
 eval (TmHistPgm s he) _ = do
     evs <- reThrow undefined (Hist.eval he >>= Hist.valueToEventList s)
