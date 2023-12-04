@@ -1,6 +1,6 @@
-name:                Delta
+name:                delta
 version:             0.1.0.0
-github:              "jdublu10/Delta"
+github:              "alpha-convert/delta"
 license:             BSD-3-Clause
 author:              "Joseph W. Cutler"
 maintainer:          "jwc@seas.upenn.edu"
@@ -17,7 +17,7 @@ extra-source-files:
 # To avoid duplicated efforts in documentation and dealing with the
 # complications of embedding Haddock markup inside cabal files, it is
 # common to point users to the README.md file.
-description:         Please see the README on GitHub at <https://github.com/jdublu10/Delta#readme>
+description:         Please see the README on GitHub at <https://github.com/alpha-convert/delta#readme>
 
 dependencies:
 - base >= 4.7 && < 5
@@ -29,6 +29,7 @@ dependencies:
 - monad-loops
 - dunai
 - QuickCheck
+- MonadRandom
 
 ghc-options:
 - -Wall
@@ -58,7 +59,7 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - Delta
+    - delta
 
 tests:
   stream-types2-test:
@@ -69,4 +70,4 @@ tests:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - Delta
+    - delta

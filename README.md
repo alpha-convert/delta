@@ -1,17 +1,17 @@
-# Delta
+# delta
 
-The Delta language is a functional programming language that compiles to stream-processing automata. 
-For a full introduction to the core calculus that Delta is based on, see [Stream Types](https://www.seas.upenn.edu/~jwc/assets/stream-types.pdf).
+The delta language is a functional programming language that compiles to stream-processing automata. 
+For a full introduction to the core calculus that delta is based on, see [Stream Types](https://www.seas.upenn.edu/~jwc/assets/stream-types.pdf).
 
-Delta has a number of features that set it apart from existing stream-processing languages:
+delta has a number of features that set it apart from existing stream-processing languages:
 
-1. Delta is not combinator-based. Unlike many stream processing languages, which provides a limited set of combinators like `map`, `filter`, and `fold`, Delta programs are written as standard functional list programs. All of the afformentioned standard streaming combinators can be written in Delta, but programmers are not required to fit their programs into a composition of ad-hoc recursion schemes. This is enabled by a novel ordered type system, which statically rejects list programs that cannot be run a stream programs.
+1. delta is not combinator-based. Unlike many stream processing languages, which provides a limited set of combinators like `map`, `filter`, and `fold`, delta programs are written as standard functional list programs. All of the afformentioned standard streaming combinators can be written in delta, but programmers are not required to fit their programs into a composition of ad-hoc recursion schemes. This is enabled by a novel ordered type system, which statically rejects list programs that cannot be run a stream programs.
 
-2. Delta has rich ``stream types'', which allow programmers to express and rely on complex temporal patterns in their streams.
+2. delta has rich ``stream types'', which allow programmers to express and rely on complex temporal patterns in their streams.
 
-3. Delta is deterministic by default: all well-typed programs are guaranteed to run deterministically, even in the presence of parallel input streams.
+3. delta is deterministic by default: all well-typed programs are guaranteed to run deterministically, even in the presence of parallel input streams.
 
-A simple Delta program is the running sum function, which takes a stream of integers (written `Int*`), and produces the stream that is a running sum of the input.
+A simple delta program is the running sum function, which takes a stream of integers (written `Int*`), and produces the stream that is a running sum of the input.
 
 ```
 fun go(n : Int; xs : Int*) : Int* = 
@@ -58,9 +58,9 @@ fun rev(xs : Int*) : Int* =
      | y::ys => snoc(y;ys)
 ```
 
-The function `snoc` is rejected by Delta with the error message "Variable `y` used before `x`, but expected the other order".
+The function `snoc` is rejected by delta with the error message "Variable `y` used before `x`, but expected the other order".
 (Actually, the error message doesn't say this, it says something much less readable and even less understandable. This is still a prototype, the error messages are terrible.)
-This is because the order of arguments to a Delta function matters. The order of arguments describes the order of *arrival*: `snoc`
+This is because the order of arguments to a delta function matters. The order of arguments describes the order of *arrival*: `snoc`
 is a function that expects first a single `Int`, bound to `x`, and then some more `Int`s, which get bound to `xs`. When we pattern match
 on `xs` and get a head `y` and tails `ys`, these also have an order. The second branch of the case expects to first get `x`, and then `y`,
 and then `ys`. The error arises when we *use* `y` first, out of order.
@@ -71,9 +71,9 @@ and then continue once the next piece of input arrives.
 
 ### Types
 
-Values in Delta are data streams, and so the types in Delta are *stream types*. Stream types are similar to regular expressions in that they describe the structure of a sequence of data.
+Values in delta are data streams, and so the types in delta are *stream types*. Stream types are similar to regular expressions in that they describe the structure of a sequence of data.
 
-The most important type in Delta is the *star* type of repeated values. This type is written like `s*`, where `s` is another stream type. For example, type `Int*` is the type of streams of ints, one int after another. A value of type `Int*` is a finite, but potentially unbounded, stream of values of type `Int`. Programming with star streams is a lot like programming with lists. Terms of type `s*` come in two forms: they are either `nil`, the empty stream of `s`s, or `e :: e'`, where `e` has type `s`, and `e'` has type `s*`.
+The most important type in delta is the *star* type of repeated values. This type is written like `s*`, where `s` is another stream type. For example, type `Int*` is the type of streams of ints, one int after another. A value of type `Int*` is a finite, but potentially unbounded, stream of values of type `Int`. Programming with star streams is a lot like programming with lists. Terms of type `s*` come in two forms: they are either `nil`, the empty stream of `s`s, or `e :: e'`, where `e` has type `s`, and `e'` has type `s*`.
 
 ### Syntax
 
@@ -87,5 +87,5 @@ Todo
 
 ## Acknowledgements
 
-The Delta language is actively being developed by Joseph Cutler. Delta is based on the [Stream Types](https://arxiv.org/abs/2307.09553) Calculus,
-created by Joseph Cutler, Christopher Watson, Phillip Hilliard, Harrison Goldstein, Caleb Stanford, and Benjamin C. Pierce. The typechecking algorithm in Delta was developed by Emeka Nkurumeh.
+The delta language is actively being developed by Joseph Cutler. delta is based on the [Stream Types](https://arxiv.org/abs/2307.09553) Calculus,
+created by Joseph Cutler, Christopher Watson, Phillip Hilliard, Harrison Goldstein, Caleb Stanford, and Benjamin C. Pierce. The typechecking algorithm in delta was developed by Emeka Nkurumeh.
