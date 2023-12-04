@@ -100,7 +100,7 @@ instance (PrettyPrint t) => PrettyPrint (TckErr t) where
 data RecSig = Rec (Ctx Var OpenTy) OpenTy
 
 data FunRecord buf =
-      PolyFun { funTyVars :: [Var.TyVar], funCtx :: Ctx Var OpenTy, funTy :: OpenTy, funMonoTerm :: Mono (Core.Term buf) }
+      PolyFun { funTyVars :: [Var.TyVar], funCtx :: Ctx Var OpenTy, funTy :: OpenTy, funMonoTerm :: Template (Core.Term buf) }
     | SpecFun { specCtx :: Ctx Var Ty }
 
 type FileInfo buf = M.Map Var.FunVar (FunRecord buf)
@@ -204,8 +204,8 @@ handleImpossibleCut (x,e,e') = ImpossibleCut x e e'
 handleReparErr :: Var.TyVar -> TckErr t
 handleReparErr = undefined
 
-data InferElabResult buf = IR { ty :: OpenTy , iusages :: P.Partial Var, itm :: Mono (Core.Term buf) }
-data CheckElabResult buf = CR { cusages :: P.Partial Var, ctm :: Mono (Core.Term buf) }
+data InferElabResult buf = IR { ty :: OpenTy , iusages :: P.Partial Var, itm :: Template (Core.Term buf) }
+data CheckElabResult buf = CR { cusages :: P.Partial Var, ctm :: Template (Core.Term buf) }
 
 promoteResult :: OpenTy -> CheckElabResult buf -> InferElabResult buf
 promoteResult t (CR p e) = IR t p e
@@ -376,7 +376,7 @@ checkElab r e@(Elab.TmFunCall f ts es) = do
                 g_mono <- monomorphizeCtx g'
                 r_mono <- monomorphizeTy r''
                 args <- margs
-                e <- reparameterizeMono repar_map me
+                e <- reparameterizeTemplate repar_map me
                 case e of
                     Core.TmFix _ _ _ e' -> return (Core.TmFix args g_mono r_mono e')
                     _ -> error "Top level definition isn't a fix"
@@ -384,7 +384,7 @@ checkElab r e@(Elab.TmFunCall f ts es) = do
 
 
 
-elabRec :: (Buffer buf, TckM Elab.Term buf m) => Ctx Var OpenTy -> CtxStruct Elab.Term -> m (P.Partial Var, Mono (CtxStruct (Core.Term buf)))
+elabRec :: (Buffer buf, TckM Elab.Term buf m) => Ctx Var OpenTy -> CtxStruct Elab.Term -> m (P.Partial Var, Template (CtxStruct (Core.Term buf)))
 elabRec EmpCtx EmpCtx = return (P.empty,return EmpCtx)
 elabRec g@EmpCtx g' = throwError (UnsaturatedRecursiveCall g g')
 elabRec (SngCtx (CE _ s)) (SngCtx e) = do
@@ -552,7 +552,7 @@ inferElab e@(Elab.TmFunCall f ts es) = do
                 g_mono <- monomorphizeCtx g'
                 r_mono <- monomorphizeTy r'
                 args <- margs
-                e' <- reparameterizeMono repar_map me
+                e' <- reparameterizeTemplate repar_map me
                 case e' of
                     Core.TmFix _ _ _ e'' -> return (Core.TmFix args g_mono r_mono e'')
                     _ -> error "Top level definition isn't a fix"
@@ -885,7 +885,7 @@ checkUntypedPrefixCtx g@(CommaCtx {}) g' = throwError (WrongArgShape g g')
 
 
 -- Doublecheck argument typechecks the resulting term, again.
-doCheckElabTm :: (Buffer buf, MonadIO m) => FileInfo buf -> [Var.TyVar] -> Ctx Var OpenTy -> OpenTy -> Elab.Term -> m (Mono (Core.Term buf))
+doCheckElabTm :: (Buffer buf, MonadIO m) => FileInfo buf -> [Var.TyVar] -> Ctx Var OpenTy -> OpenTy -> Elab.Term -> m (Template (Core.Term buf))
 doCheckElabTm fi vs g t e = do
     let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e) (TckCtx fi (ctxBindings g) (Rec g t) M.empty (S.fromList vs))
     case ck of
@@ -928,7 +928,7 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
                 PolyFun tvs og _ _ -> do
                     when (length ts /= length tvs) $ error ("Unsaturated type parameters when specializing " ++ pp f)
                     let monomap = foldr (uncurry M.insert) M.empty (zip tvs ts)
-                    case runMono (monomorphizeCtx og) monomap of
+                    case runTemplate (monomorphizeCtx og) monomap of
                         Left err -> error (pp err)
                         Right g -> do
                             modify' (M.insert f (SpecFun g))

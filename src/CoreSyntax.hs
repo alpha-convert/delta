@@ -21,7 +21,7 @@ import Control.Monad.Except (MonadError (throwError), ExceptT, withExceptT)
 import Data.Bifunctor
 import qualified HistPgm as Hist
 import Debug.Trace (trace)
-import Backend.Template (Mono)
+import Backend.Template (Template)
 import Buffer
 import Util.ErrUtil
 
@@ -48,7 +48,7 @@ data Term buf =
     deriving (Eq,Ord,Show)
 
 data Cmd buf =
-    FunDef Var.FunVar [Var.TyVar] (Mono (Ctx Var.Var Ty)) (Mono Ty) (Mono (Term buf))
+    FunDef Var.FunVar [Var.TyVar] (Template (Ctx Var.Var Ty)) (Template Ty) (Template (Term buf))
   | SpecializeCommand Var.FunVar [Ty]
   | RunCommand Var.FunVar  (Env Var Prefix)
   | RunStepCommand Var.FunVar (Env Var Prefix)

@@ -275,7 +275,7 @@ eval (TmHistPgm s he) = do
 -- A function can be in one of two states. It can have been defined (and not yet specialized), or specialized.
 -- An unspecialized function is a monomorphizer, accepting type varibles matching its required type arguments.
 data FunState =
-      PolymorphicDefn [Var.TyVar] (Mono (Term EnvBuf)) (Mono (Ctx Var.Var Ty)) (Mono Ty)
+      PolymorphicDefn [Var.TyVar] (Template (Term EnvBuf)) (Template (Ctx Var.Var Ty)) (Template Ty)
     | SpecTerm (Term EnvBuf) (Ctx Var.Var Ty) Ty
 
 type TopLevel = M.Map Var.FunVar FunState
@@ -298,7 +298,7 @@ doRunPgm p = do
                     let monomap = foldr (uncurry M.insert) M.empty (zip tvs ts)
                     let monoAll = do {e <- me; g <- mg; s <- ms; return (e,g,s)}
                     -- Monomorphize everything, then insert it as a specialized term into the file info.
-                    case runMono monoAll monomap of
+                    case runTemplate monoAll monomap of
                         Left err -> error (pp err)
                         Right (e,g,s) -> modify' (M.insert f (SpecTerm e g s))
         go (RunCommand f rho) = do
