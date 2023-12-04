@@ -8,6 +8,7 @@ import Util.ErrUtil(guard)
 import Var (Var)
 import Data.Maybe (isJust, mapMaybe)
 import Data.Void (absurd)
+import Data.Either (partitionEithers)
 
 data Event =
       LitEv Lit
@@ -86,13 +87,12 @@ instance ValueLike [Event] Ty where
         s' <- promote xs (deriv x s)
         deriv xs s'
 
-partitionPar [] = return ([],[])
-partitionPar (ev : evs) = do
-    (evs1,evs2) <- partitionPar evs
-    case ev of
-        ParEvA x -> return (x:evs1,evs2)
-        ParEvB x -> return (evs1,x:evs2)
-        _ -> Nothing
+partitionPar :: [Event] -> Maybe ([Event], [Event])
+partitionPar evs = partitionEithers <$> mapM go evs
+    where
+        go (ParEvA x) = Just (Left x)
+        go (ParEvB x) = Just (Right x)
+        go _ = Nothing
 
 partitionCat [] = Nothing
 partitionCat (CatPunc : evs) = Just ([],evs)

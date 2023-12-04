@@ -29,7 +29,7 @@ import Data.Bifunctor
 import qualified HistPgm as Hist
 import Debug.Trace (trace)
 import qualified Data.Set as S
-import Backend.Monomorphizer
+import Backend.Template
 import Control.Monad (unless)
 import Data.List (intercalate)
 import Buffer

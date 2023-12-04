@@ -3,7 +3,7 @@ module Buffer where
 import Var
 import Data.Map
 import Types
-import Backend.Monomorphizer (Mono)
+import Backend.Template (Mono)
 
 class Buffer buf where
   rebindBuf :: buf -> Var -> Var -> buf

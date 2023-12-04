@@ -23,7 +23,7 @@ import Debug.Trace (trace)
 import qualified HistPgm as Hist
 import GHC.IO.Handle.Types (Handle__(Handle__))
 import qualified Data.Bifunctor
-import Backend.Monomorphizer
+import Backend.Template
 import Control.Monad (unless)
 import Data.MonadicStreamFunction (MSF, arrM, iPost, constM)
 import Data.MonadicStreamFunction.Util (next)
@@ -36,10 +36,11 @@ import Data.MonadicStreamFunction.InternalCore (MSF(..))
 import Test.QuickCheck
 import Buffer
 import Util.ErrUtil (reThrow)
+import Util.MSFUtil
 
-type EnvBuffer = Env Var.Var Prefix
+type EnvBuf = Env Var.Var Prefix
 
-instance Buffer EnvBuffer where
+instance Buffer EnvBuf where
 
 data SemError =
       VarLookupFailed Var.Var
@@ -47,13 +48,13 @@ data SemError =
     | NotParPrefix Var.Var Prefix
     | NotPlusPrefix Var.Var Prefix
     | NotBoolPrefix Var.Var Prefix
-    | ConcatError (Term EnvBuffer) Var.Var Prefix Prefix
-    | RuntimeCutError Var.Var (Term EnvBuffer) (Term EnvBuffer)
+    | ConcatError (Term EnvBuf) Var.Var Prefix Prefix
+    | RuntimeCutError Var.Var (Term EnvBuf) (Term EnvBuf)
     | SinkError Prefix
-    | MaximalPrefixSubstErr Var.Var Ty Values.MaximalPrefix (Term EnvBuffer)
+    | MaximalPrefixSubstErr Var.Var Ty Values.MaximalPrefix (Term EnvBuf)
     | MaximalPrefixError Prefix
     | HistSemErr Hist.SemErr Hist.Term
-    | NonMatchingArgs (Ctx Var.Var Ty) (CtxStruct (Term EnvBuffer))
+    | NonMatchingArgs (Ctx Var.Var Ty) (CtxStruct (Term EnvBuf))
     | UnionEnvError Var.Var Prefix Prefix
     deriving (Eq, Ord, Show)
 
@@ -72,27 +73,27 @@ instance PrettyPrint SemError where
     pp (NonMatchingArgs g g') = concat ["Arguments ", pp g', " do not match ", pp g]
     pp (UnionEnvError x p p') = concat ["Variable ", pp x, " has two different bindings: ", pp p, " and ", pp p']
 
-handleConcatError :: Term EnvBuffer -> (Var.Var,Prefix, Prefix) -> SemError
+handleConcatError :: Term EnvBuf -> (Var.Var,Prefix, Prefix) -> SemError
 handleConcatError e (x,p,p') = ConcatError e x p p'
 
-handleRuntimeCutError :: (Var.Var, Term EnvBuffer, Term EnvBuffer) -> SemError
+handleRuntimeCutError :: (Var.Var, Term EnvBuf, Term EnvBuf) -> SemError
 handleRuntimeCutError (x,e,e') = RuntimeCutError x e e'
 
-handlePrefixSubstError :: (Var.Var,Ty,Values.MaximalPrefix, Term EnvBuffer) -> SemError
+handlePrefixSubstError :: (Var.Var,Ty,Values.MaximalPrefix, Term EnvBuf) -> SemError
 handlePrefixSubstError (x,s,p,e) = MaximalPrefixSubstErr x s p e
 
 handleHistEvalErr :: Hist.Term -> Hist.SemErr -> SemError
 handleHistEvalErr e err = HistSemErr err e
 
 
-class (MonadReader EnvBuffer m, MonadError SemError m) => EvalM m where
+class (MonadReader EnvBuf m, MonadError SemError m) => EvalM m where
 
-instance EvalM (ReaderT EnvBuffer (ExceptT SemError Identity)) where
+instance EvalM (ReaderT EnvBuf (ExceptT SemError Identity)) where
 
 doEval :: ReaderT (Env Var.Var Prefix) (ExceptT SemError Identity) a -> Env Var.Var Prefix -> Either SemError a
 doEval x rho = runIdentity (runExceptT (runReaderT x rho))
 
-doEvalN :: Term EnvBuffer -> [Env Var.Var Prefix] -> Either SemError [Prefix]
+doEvalN :: Term EnvBuf -> [Env Var.Var Prefix] -> Either SemError [Prefix]
 doEvalN _ [] = return []
 doEvalN e (rho:rhos) = do
     (p,e') <- doEval (eval e) rho
@@ -120,7 +121,7 @@ lookupVar x = do
 
 concatEnvM e rho' rho = reThrow (handleConcatError e) (concatEnv rho' rho)
 
-eval :: (EvalM m) => Term EnvBuffer -> m (Prefix,Term EnvBuffer)
+eval :: (EvalM m) => Term EnvBuf -> m (Prefix,Term EnvBuf)
 eval (TmLitR v) = return (LitPFull v,TmEpsR)
 
 eval TmEpsR = return (EpsP,TmEpsR)
@@ -274,17 +275,17 @@ eval (TmHistPgm s he) = do
 -- A function can be in one of two states. It can have been defined (and not yet specialized), or specialized.
 -- An unspecialized function is a monomorphizer, accepting type varibles matching its required type arguments.
 data FunState =
-      PolymorphicDefn [Var.TyVar] (Mono (Term EnvBuffer)) (Mono (Ctx Var.Var Ty)) (Mono Ty)
-    | SpecTerm (Term EnvBuffer) (Ctx Var.Var Ty) Ty
+      PolymorphicDefn [Var.TyVar] (Mono (Term EnvBuf)) (Mono (Ctx Var.Var Ty)) (Mono Ty)
+    | SpecTerm (Term EnvBuf) (Ctx Var.Var Ty) Ty
 
 type TopLevel = M.Map Var.FunVar FunState
 
-doRunPgm :: Program EnvBuffer -> IO ()
+doRunPgm :: Program EnvBuf -> IO ()
 doRunPgm p = do
     !_ <- runStateT (mapM go p) M.empty
     return ()
     where
-        go :: Cmd EnvBuffer -> StateT TopLevel IO ()
+        go :: Cmd EnvBuf -> StateT TopLevel IO ()
         go (FunDef f tvs g s e) = modify' (M.insert f (PolymorphicDefn tvs e g s))
         go (SpecializeCommand f ts) = do
             lift (putStrLn "\n")
@@ -374,28 +375,6 @@ semTests = TestList [
 var = Var.Var
 
 
--- prop_denote_correct :: Ctx Var.Var Ty -> Term -> Property
--- prop_denote_correct g e = forAll (genSequenceOf 10 g) $ \rhos -> embed (denote e) rhos == doEvalN e rhos
-
-dThen :: (Monad m) => MSF m a b -> MSF m a b -> MSF m a b
-dThen m m' = dSwitch (m >>> arr (,Just ())) (const m')
-
-applyOnce :: (Monad m) => (a -> a) -> MSF m a a
-applyOnce f = dSwitch (arr ((,Just ()) . f)) (const (arr id))
-
-applyOnceM :: (Monad m) => (a -> m a) -> MSF m a a
-applyOnceM f = dSwitch (arrM ((fmap (,Just ())) . f)) (const (arr id))
-
-applyToFirst :: (Monad m) => (a -> a) -> (b -> b) -> MSF m a b -> MSF m a b
-applyToFirst f g m = applyOnce f >>> m >>> applyOnce g
-
-applyToFirstM :: (Monad m) => (a -> m a) -> (b -> m b) -> MSF m a b -> MSF m a b
-applyToFirstM f g m = applyOnceM f >>> m >>> applyOnceM g
-
---- Run with the second input, and then the first for the rest of the time
-switchInputs :: (Monad m) => MSF m a b -> MSF m (a,a) b
-switchInputs m = dSwitch (arr $ \(x,_) -> (x,Just ())) (const (arr snd)) >>> m
-
 -- Accumulates inputs until the total combined input (with comb) passes the predicate. Then, we run the continuation,
 -- first with the combined input, then with whatever comes in from then on.
 bufferUntil :: (Monad m) => (a -> a -> m a) -> (a -> m (Maybe c)) -> a -> b -> (c -> MSF m a b) -> MSF m a b
@@ -418,9 +397,9 @@ msfBindEnv x p = arrM (return . bindEnv x p)
 msfUnionEnv :: (MonadError SemError m) => MSF m (Env Var.Var Prefix, Env Var.Var Prefix) (Env Var.Var Prefix)
 msfUnionEnv = arrM (reThrow (\(x,p,p') -> UnionEnvError x p p') . uncurry unionDisjointEnv)
 
-denote :: (MonadError SemError m) => Term EnvBuffer -> MSF m (Env Var.Var Prefix) Prefix
-denote (TmLitR v) = dSwitch (arr (const (LitPFull v, Just ()))) (const (denote TmEpsR))
-denote TmEpsR = dSwitch (arr (const (EpsP, Just ()))) (const (denote TmEpsR))
+denote :: (MonadError SemError m) => Term EnvBuf -> MSF m (Env Var.Var Prefix) Prefix
+denote (TmLitR v) = arr (const (LitPFull v)) `dThen` denote TmEpsR
+denote TmEpsR = arr (const EpsP)
 denote (TmVar x) = msfLookupEnv x
 denote (TmCatR _ e1 e2) = switch (denote e1 >>^ maximalPass) (\p -> applyToFirst id (CatPB p) (denote e2))
     where

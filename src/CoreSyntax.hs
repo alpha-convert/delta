@@ -21,7 +21,7 @@ import Control.Monad.Except (MonadError (throwError), ExceptT, withExceptT)
 import Data.Bifunctor
 import qualified HistPgm as Hist
 import Debug.Trace (trace)
-import Backend.Monomorphizer (Mono)
+import Backend.Template (Mono)
 import Buffer
 import Util.ErrUtil
 
