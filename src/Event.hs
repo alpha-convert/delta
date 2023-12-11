@@ -18,8 +18,9 @@ data Event =
     | CatEvA Event
     | ParEvA Event
     | ParEvB Event
+    deriving (Eq,Ord,Show)
 
-data TaggedEvent = TE Var Event
+data TaggedEvent = TE Var Event deriving (Eq,Ord,Show)
 
 instance ValueLike Event Ty where
     hasType (LitEv (LInt _)) TyInt = return ()

@@ -1,4 +1,5 @@
-{-# LANGUAGE FlexibleInstances, FlexibleContexts, Arrows #-}
+{-# LANGUAGE FlexibleInstances, FlexibleContexts, Arrows, TupleSections #-}
+{-# LANGUAGE LambdaCase #-}
 module Backend.EventSemantics where
 import Event (TaggedEvent(..), Event(..), isMaximal, maximalLift)
 
@@ -8,7 +9,7 @@ import Values
 import qualified HistPgm as Hist
 import Types (Ty,TyF(TyStar), deriv, ValueLikeErr (IllTyped), CtxStruct, Ctx)
 import Util.ErrUtil
-import Control.Monad.Except (MonadError (throwError))
+import Control.Monad.Except (MonadError (throwError), runExceptT)
 import Data.Maybe (mapMaybe, maybeToList)
 import Data.Either
 import qualified Var
@@ -16,7 +17,12 @@ import Data.MonadicStreamFunction
 import Util.MSFUtil
 import Control.Monad.Trans.MSF.Except (switch, dSwitch)
 import Util.Shuffle
+import Data.MonadicStreamFunction.InternalCore
+import Control.Monad.Random (runRandT,runRand, MonadRandom)
 
+tagSubst :: Var -> Var -> TaggedEvent -> TaggedEvent
+tagSubst x y (TE z ev) | z == y = TE x ev
+tagSubst _ _ tev       | otherwise = tev
 
 tagWith :: Var -> Event -> TaggedEvent
 tagWith = TE
@@ -40,7 +46,7 @@ bufferPartition :: Var -> EventBuf -> ([Event],EventBuf)
 bufferPartition x = partitionEithers . map untag
     where
         untag tev@(TE y ev) = if x == y then Left ev else Right tev
-    
+
 
 data SemError =
       NotCatEv Var.Var Event
@@ -51,7 +57,8 @@ data SemError =
     | IllTypedEvents [Event] Ty (Term EventBuf)
     | MaximalPrefixSubstErr Var.Var Ty Values.MaximalPrefix (Term EventBuf)
     | NonMatchingArgs (Ctx Var.Var Ty) (CtxStruct (Term EventBuf))
-    | HistSemErr Hist.Term Hist.SemErr 
+    | HistSemErr Hist.Term Hist.SemErr
+    deriving (Eq,Ord,Show)
 
 
 handleValueLikeErr :: Term EventBuf -> Types.ValueLikeErr [Event] Ty -> SemError
@@ -182,14 +189,39 @@ evalMany e (ev:evs_in) = do
     (evs_out',e'') <- evalMany e' evs_in
     return (evs_out ++ evs_out',e'')
 
-msfDeriv :: MonadError SemError m => MSF m ([Event],Ty) Ty
-msfDeriv = undefined
+msfDeriv :: MonadError SemError m => Term EventBuf -> MSF m ([Event],Ty) Ty
+msfDeriv e = arrM (uncurry go)
+    where
+        go evs t = reThrow (handleValueLikeErr e) (deriv evs t)
 
-denote :: (MonadError SemError m, MonadShuffle m) => Term EventBuf -> MSF m TaggedEvent [Event]
+msfIterate :: (Monad m) => MSF m a [b] -> MSF m [a] [b]
+msfIterate f = MSF $ \case
+                        [] -> return ([], msfIterate f)
+                        y:ys -> do
+                            (bs,f') <- unMSF f y
+                            (bs',f'') <- unMSF (msfIterate f') ys
+                            return (bs ++ bs', f'')
+
+-- msfCatchUp xs f runs f on xs at the first step (ignoring the first input), then continues to behave normally after.
+msfCatchUp :: (Monad m) => [a] -> MSF m a [b] -> MSF m a [b]
+msfCatchUp xs f = (arr (const xs) `dThen` arr pure) >>> msfIterate f
+
+--
+
+bufferUntil :: (Monad m) => ([a] -> a -> m (Maybe c)) -> (c -> MSF m a [b]) -> MSF m a [b]
+bufferUntil p m = switch (feedback [] (arrM acc)) (\(c,buf) -> msfCatchUp buf (m c))
+    where
+        acc (ev,buf) = do
+            let buf' = buf ++ [ev]
+            mc <- p buf ev
+            return (([],(,buf) <$> mc),buf')
+
+
+denote :: (MonadError SemError m, MonadRandom m) => Term EventBuf -> MSF m TaggedEvent [Event]
 denote (TmLitR v) = arr (const [LitEv v]) `dThen` denote TmEpsR
 denote TmEpsR = arr (const [])
 denote (TmVar x) = arr (maybeToList . (`isTaggedFor` x))
-denote (TmCatR s e1 e2) = dSwitch (feedback s ((denote e1 *** returnA) >>> (maximalCheck &&& msfDeriv))) (const (denote e2))
+denote e@(TmCatR s e1 e2) = dSwitch (feedback s ((denote e1 *** returnA) >>> (maximalCheck &&& msfDeriv e))) (const (denote e2))
     where
         maximalCheck = arrM $ \(evs,s') ->
             if Event.isMaximal s' evs then
@@ -197,25 +229,19 @@ denote (TmCatR s e1 e2) = dSwitch (feedback s ((denote e1 *** returnA) >>> (maxi
             else
                 return (CatEvA <$> evs, Nothing)
 
-denote (TmCatL t x y z e) = undefined
-
--- eval (TmCatL t x y z e) tev =
---     case tev `isTaggedFor` z of
---         Nothing -> do
---             (evs,e') <- eval e tev
---             return (evs,TmCatL t x y z e')
---         Just (CatEvA ev) -> do
---             (evs,e') <- eval e (tagWith x ev)
---             return (evs,TmCatL t x y z e')
---         Just CatPunc -> do
---             let e' = substVar e z y
---             sink <- undefined
---             return ([], TmCut x sink e')
---         Just ev -> throwError (NotCatEv z ev)
-
-denote (TmParL x y z e) = arrM reTag >>> denote e
+denote (TmCatL _ x y z e) = foo >>> denote e
     where
-        reTag tev =
+        foo = dSwitch (arrM f) (const (arr (tagSubst z y)))
+        f tev = case tev `isTaggedFor` z of
+                  Nothing -> return (tev,Nothing)
+                  Just (CatEvA ev) -> return (tagWith x ev,Nothing)
+                  Just CatPunc -> return (tev,Just ())
+                  Just ev -> throwError (NotCatEv z ev)
+
+
+denote (TmParL x y z e) = arrM go >>> denote e
+    where
+        go tev =
            case tev `isTaggedFor` z of
              Nothing -> return tev
              Just (ParEvA ev) -> return (tagWith x ev)
@@ -227,8 +253,33 @@ denote (TmParR e1 e2) = (denote e1 &&& denote e2) >>> (arr (fmap ParEvA) *** arr
 denote (TmInl e) = applyToFirst id (PlusPuncA:) (denote e)
 denote (TmInr e) = applyToFirst id (PlusPuncB:) (denote e)
 
-denote (TmPlusCase {}) = undefined
-denote (TmIte {}) = undefined
+denote (TmPlusCase _ _ z x e1 y e2) = bufferUntil isPunc go
+    where
+        isPunc _ tev = case tev `isTaggedFor` z of
+                         Nothing -> return Nothing
+                         Just PlusPuncA -> return (Just (Left ()))
+                         Just PlusPuncB -> return (Just (Right ()))
+                         Just ev -> throwError (NotCatEv z ev)
+        go (Left _) = arr (tagSubst z x) >>> denote e1
+        go (Right _) = arr (tagSubst z y) >>> denote e2
+
+denote (TmIte _ _ z e1 e2) = bufferUntil isBool go
+    where
+        isBool _ tev = case tev `isTaggedFor` z of
+                         Nothing -> return Nothing
+                         Just (LitEv (LBool b)) -> return (Just b)
+                         Just ev -> throwError (NotBoolEv z ev)
+        go True = denote e1
+        go False = denote e2
+
 denote TmNil = arr (const [PlusPuncA]) `dThen` denote TmEpsR
 
 denote _ = undefined
+
+var = Var.Var
+
+--- >>> runRand $ embed (denote (TmPlusCase [] undefined (var "z") (var "x") (TmVar (var "x")) (var "y") (TmVar (var "y")))) [TE (var "z") CatPunc]
+-- Variable not in scope:
+--   runExceptT :: m0_a1AuTE[tau:1] [[Event]] -> b_a1AuTC[sk:1]
+
+-- E.denote (C.TmPlusCase [] undefined (var "z") (var "x") (C.TmVar (var "x")) (var "y") (C.TmVar (var "y")))
