@@ -9,7 +9,8 @@ module CoreSyntax (
   cut,
   maximalPrefixSubst,
   fixSubst,
-  cutArgs
+  cutArgs,
+  bufMap
 ) where
 
 import Types ( Ty , CtxStruct (..), Ctx, ctxFoldM, CtxEntry (..), TyF (..) )
@@ -52,6 +53,7 @@ data Cmd buf =
   | SpecializeCommand Var.FunVar [Ty]
   | RunCommand Var.FunVar  (Env Var Prefix)
   | RunStepCommand Var.FunVar (Env Var Prefix)
+  | QuickCheckCommand Var.FunVar
 
 type Program buf = [Cmd buf]
 
@@ -352,3 +354,25 @@ fixSubst g s e = go
         go (TmWait rho r s x e') = TmWait rho r s x (go e')
         go (TmCut x e1 e2) = TmCut x (go e1) (go e2)
         go (TmHistPgm t he) = TmHistPgm t he
+
+bufMap :: (buf -> buf') -> Term buf -> Term buf'
+bufMap _ (TmLitR l) = TmLitR l
+bufMap _ TmEpsR = TmEpsR
+bufMap _ (TmVar x) = TmVar x
+bufMap f (TmCatL t x y z e) = TmCatL t x y z (bufMap f e)
+bufMap f (TmCatR t e1 e2) = TmCatR t (bufMap f e1) (bufMap f e2)
+bufMap f (TmParL x y z e) = TmParL x y z (bufMap f e)
+bufMap f (TmParR e1 e2) = TmParR (bufMap f e1) (bufMap f e2)
+bufMap f (TmInl e) = TmInl (bufMap f e)
+bufMap f (TmInr e) = TmInr (bufMap f e)
+bufMap f (TmPlusCase buf r z x e1 y e2) = TmPlusCase (f buf) r z x (bufMap f e1) y (bufMap f e2)
+bufMap f (TmIte buf t z e1 e2) = TmIte (f buf) t z (bufMap f e1) (bufMap f e2)
+bufMap _ TmNil = TmNil
+bufMap f (TmCons t e1 e2) = TmCons t (bufMap f e1) (bufMap f e2)
+        -- go (TmStarCase rho r t z e1 y ys e2) = TmStarCase rho r t z (go e1) y ys (go e2)
+bufMap f (TmStarCase buf r t z e1 y ys e2) = TmStarCase (f buf) r t z (bufMap f e1) y ys (bufMap f e2)
+bufMap f (TmFix args g t e) = TmFix (bufMap f <$> args) g t (bufMap f e)
+bufMap f (TmRec args) = TmRec (bufMap f <$> args)
+bufMap f (TmWait buf r t z e) = TmWait (f buf) r t z (bufMap f e)
+bufMap f (TmCut x e1 e2) = TmCut x (bufMap f e1) (bufMap f e2)
+bufMap _ (TmHistPgm s hp) = TmHistPgm s hp

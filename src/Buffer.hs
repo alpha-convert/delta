@@ -8,5 +8,5 @@ import Backend.Template (Template)
 class Buffer buf where
   rebindBuf :: buf -> Var -> Var -> buf
   unbindBuf :: Var -> buf -> buf
-  emptyBufOfType :: Map Var OpenTy -> Template buf
   emptyBuf :: buf
+  emptyBufOfType :: Map Var OpenTy -> Template buf

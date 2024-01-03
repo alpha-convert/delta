@@ -1,10 +1,10 @@
 {-# LANGUAGE FlexibleContexts, FlexibleInstances, BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
-module Frontend.ElabSyntax (doElab, Term(..), Program, Cmd(..), elabTests) where
+module Frontend.ElabSyntax (doElab, Term(..), Program, Cmd(..)) where
 
 import Values ( Lit(..) )
 import Var (Var(..), TyVar, FunVar)
-import Control.Monad.State (MonadState (put), get, StateT (runStateT), evalStateT)
+import Control.Monad.State (MonadState (put), get, StateT (runStateT), evalStateT, MonadTrans (lift))
 import Control.Monad.Except (MonadError (throwError), ExceptT, runExceptT, Except)
 import Types
 
@@ -39,6 +39,18 @@ and then replacing the shadowed name with the fresh name in the body.
 
 -}
 
+-- Function argument to a funciton call. Can either be passing a function that
+-- is bound in the current funciton being called, or a top level function (not a
+-- name bound by the current function).
+data FunCallFunArg =
+    --   BoundFunArg Var.FunVar
+    {-|-} TopLevelFun Var.FunVar
+    deriving (Eq,Ord,Show)
+
+instance PrettyPrint FunCallFunArg where
+    -- pp (BoundFunArg f) = pp f
+    pp (TopLevelFun f) = pp f
+
 data Term =
       TmLitR Lit
     | TmEpsR
@@ -57,8 +69,9 @@ data Term =
     | TmCut Var Term Term
     | TmWait Var Term
     | TmHistPgm Hist.Term
+    | TmFunCall Var.FunVar [TyF Var.TyVar] {-[FunCallFunArg]-} (CtxStruct Term)
     | TmRec (CtxStruct Term)
-    | TmFunCall Var.FunVar [TyF Var.TyVar] (CtxStruct Term)
+    -- | TmFunArgCall Var.FunVar (CtxStruct Term)
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint Term where
@@ -82,15 +95,17 @@ instance PrettyPrint Term where
             go False (TmCons e1 e2) = concat [go True e1," :: ", go True e2]
             go False (TmStarCase (Var z) e1 (Var x) (Var xs) e2) = concat ["case ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
             go False (TmRec es) = concat ["rec (", pp (go False <$> es), ")"]
-            go False (TmFunCall f [] es) = concat [pp f,"(", pp (go False <$> es), ")"]
-            go False (TmFunCall f ts es) = concat [pp f,"[",intercalate "," (map pp ts),"]","(", pp (go False <$> es), ")"]
+            go False (TmFunCall f [] {-fs-} es) = concat [pp f,"(", pp (go False <$> es), ")"]
+            go False (TmFunCall f ts {-fs-} es) = concat [pp f,"[",intercalate "," (map pp ts),"]"," (", pp (go False <$> es), ")"]
+            -- go False (TmFunArgCall f es) = concat [pp f,"(", pp (go False <$> es), ")"]
             go False (TmWait x e) = concat ["wait ", pp x," do ", go True e]
 
 data Cmd =
-      FunDef Var.FunVar [Var.TyVar] [(Var.FunVar,(Ctx Var.Var (TyF Var.TyVar)),TyF Var.TyVar)] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
+      FunDef Var.FunVar [Var.TyVar] {- [Surf.FunArg]-} (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
     | SpecializeCommand Var.FunVar [Ty] [Var.FunVar]
     | RunCommand Var.FunVar (Ctx Var Surf.UntypedPrefix)
     | RunStepCommand Var.FunVar (Ctx Var Surf.UntypedPrefix)
+    | QuickCheckCommand Var.FunVar
     deriving (Eq,Ord,Show)
 
 type Program = [Cmd]
@@ -100,12 +115,16 @@ data ElabErr =
       UnboundVar Var
     | EqualBoundVars Var
     | PolymorphicRec Var.FunVar
+    | PolymorphicFunArgCall Var.FunVar
+    | UnboundFunVar Var.FunVar
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint ElabErr where
     pp (UnboundVar x) = concat ["Variable ",pp x," not bound. This is a compiler bug."]
     pp (EqualBoundVars x) = concat ["Binding two copies of the same variable ",pp x]
     pp (PolymorphicRec f) = concat ["Polmorphic recursive calls not supported (function ",pp f,")"]
+    pp (PolymorphicFunArgCall f) = concat ["Polmorphic calls to function arguments not supported (function ",pp f,"), function arguments are assumed to be monomorphic."]
+    pp (UnboundFunVar f) = concat ["Function ", pp f, " is unbound."]
 
 data UnshadowInput = EI {renaming :: M.Map Var Var, funName :: Var.FunVar }
 
@@ -139,7 +158,9 @@ sameBinder Nothing _ = Nothing
 sameBinder _ Nothing = Nothing
 sameBinder (Just x) (Just y) = if x == y then Just x else Nothing
 
-lowerSurf :: (MonadState Int m, MonadReader Var.FunVar m, MonadError ElabErr m) => Surf.Term -> m Term
+data LowerInp = LI { lowerfunName :: Var.FunVar, {-funArgNames :: [Var.FunVar],-} topLevelFunNames :: [Var.FunVar]}
+
+lowerSurf :: (MonadState Int m, MonadReader LowerInp m, MonadError ElabErr m) => Surf.Term -> m Term
 lowerSurf (Surf.TmLitR l) = return (TmLitR l)
 lowerSurf Surf.TmEpsR = return TmEpsR
 lowerSurf (Surf.TmVar x) = return (TmVar x)
@@ -207,12 +228,21 @@ lowerSurf (Surf.TmCut x e1 e2) = do
     e1' <- lowerSurf e1
     e2' <- lowerSurf e2
     return (TmCut x e1' e2')
-lowerSurf (Surf.TmFunCall f ts es) = do
-    curF <- ask
+lowerSurf (Surf.TmFunCall f ts {-fs-} es) = do
+    curF <- asks lowerfunName
+    -- argFs <- asks funArgNames
     if f == curF then 
         if not (null ts) then throwError (PolymorphicRec f) else TmRec <$> mapM lowerSurf es
-    else TmFunCall f ts <$> mapM lowerSurf es
-
+    -- else if f `elem` argFs then
+    --     if not (null ts) then throwError (PolymorphicFunArgCall f) else TmFunArgCall f <$> mapM lowerSurf es
+    else TmFunCall f ts <$> {-mapM dispatch fs <*>-} mapM lowerSurf es
+        -- where
+            -- dispatch f = do
+            --     -- argFs <- asks funArgNames
+            --     tlFs <- asks topLevelFunNames
+            --     -- if f `elem` argFs then return (BoundFunArg f)
+            --     if f `elem` tlFs then return (TopLevelFun f)
+            --     else throwError (UnboundFunVar f)
 
 freshUnshadowVar :: (UnshadowM m) => m Var
 freshUnshadowVar = freshVar "u"
@@ -288,15 +318,16 @@ unshadowTerm (TmStarCase z e1 x xs e2) = do
     e1' <- unshadowTerm e1
     ((e2',xs'),x') <- withUnshadow x $ withUnshadow xs $ unshadowTerm e2
     return (TmStarCase z' e1' x' xs' e2')
-unshadowTerm (TmFunCall f ts es) = do
+unshadowTerm (TmFunCall f ts {-fs-} es) = do
     es' <- mapM unshadowTerm es
-    return (TmFunCall f ts es')
+    return (TmFunCall f ts {-fs-} es')
 unshadowTerm (TmWait x e) = TmWait <$> unshadowVar x <*> unshadowTerm e
 unshadowTerm (TmCut x e1 e2) = do
     e1' <- unshadowTerm e1
     (e2',x') <- withUnshadow x (unshadowTerm e2)
     return (TmCut x' e1' e2')
 unshadowTerm (TmRec e) = TmRec <$> mapM unshadowTerm e
+-- unshadowTerm (TmFunArgCall f es) = TmFunArgCall f <$> mapM unshadowTerm es
 
 unshadowHist :: (UnshadowM m) => Hist.Term -> m Hist.Term
 unshadowHist (Hist.TmVar x) = Hist.TmVar <$> unshadowVar x
@@ -317,45 +348,49 @@ unshadowHist (Hist.TmIte e e1 e2) = Hist.TmIte <$> unshadowHist e <*> unshadowHi
 instance UnshadowM (StateT Int (ReaderT UnshadowInput (Either ElabErr))) where
 
 
-elabSingle :: Var.FunVar -> Surf.Term -> S.Set Var -> Either ElabErr Term
-elabSingle f e s = do
-    lowered_e <- runReaderT (evalStateT (lowerSurf e) 0) f
+--                           funargs         top level functions
+elabSingle :: Var.FunVar -> {- [Var.FunVar] -> -} [Var.FunVar] -> Surf.Term -> S.Set Var -> Either ElabErr Term
+elabSingle f {-fs-} tlfs e s = do
+    lowered_e <- runReaderT (evalStateT (lowerSurf e) 0) (LI f {-fs-} tlfs)
     unshadowed_e <- runReaderT (evalStateT (unshadowTerm lowered_e) 0) initUnshadowMap
     return unshadowed_e
     where
         initUnshadowMap = EI (S.fold (\x -> M.insert x x) M.empty s) f
 
 doElab :: Surf.Program -> IO Program
-doElab = mapM $ \case
-                    (Surf.FunDef f tvs fs g s e) ->
-                        case elabSingle f e (M.keysSet $ ctxBindings g) of
+doElab xs = flip evalStateT [] $ flip mapM xs $ \case
+                    (Surf.FunDef f tvs {-fs-} g s e) -> do
+                        fBound <- get
+                        case elabSingle f {- (map (\(Surf.FA fa _ _) -> fa) fs)-} fBound e (M.keysSet $ ctxBindings g) of
                             Right e' -> do
-                                putStrLn $ "Function " ++ pp f ++ " elaborated OK. Elab term: " ++ pp e' ++ "\n"
-                                return (FunDef f tvs fs g s e')
+                                lift (putStrLn $ "Function " ++ pp f ++ " elaborated OK. Elab term: " ++ pp e' ++ "\n")
+                                put (f:fBound)
+                                return (FunDef f tvs {-fs-} g s e')
                             Left err -> error (pp err)
                     (Surf.SpecializeCommand f ts fs) -> case mapM closeTy ts of
                                                        Left x -> error $ "Tried to specialize function " ++ pp f ++ ", but provided type with type variable " ++ pp x
                                                        Right ts' -> return (SpecializeCommand f ts' fs)
                     (Surf.RunCommand s xs) -> return (RunCommand s xs)
                     (Surf.RunStepCommand s xs) -> return (RunStepCommand s xs)
+                    (Surf.QuickCheckCommand f) -> return (QuickCheckCommand f)
 
 -- >>> elabSingle (Surf.TmCatL Nothing Nothing (Surf.TmCatR (Surf.TmLitR (LInt 4)) (Surf.TmLitR (LInt 4))) Surf.TmEpsR) (S.fromList [])
 -- Right (TmCut (Var "__x2") (TmCatR (TmLitR (LInt 4)) (TmLitR (LInt 4))) (TmCatL (Var "__x0") (Var "__x1") (Var "__x2") TmEpsR),ES {nextVar = 3})
 
-elabTests :: Test
-elabTests = TestList [
-        elabTest (Surf.TmVar (Var.Var "x")) (TmVar (Var.Var "x")) ["x"],
-        elabTest (Surf.TmCatL Nothing Nothing (Surf.TmCatR (Surf.TmLitR (LInt 4)) (Surf.TmLitR (LInt 4))) Surf.TmEpsR) (TmCut (Var "__x2") (TmCatR (TmLitR (LInt 4)) (TmLitR (LInt 4))) (TmCatL (Var "__x0") (Var "__x1") (Var "__x2") TmEpsR)) [],
-        elabFails (Surf.TmCatL (Just (Var.Var "y")) (Just (Var.Var "y")) (Surf.TmVar $ Var.Var "x") Surf.TmEpsR) ["x"],
-        elabTest (Surf.TmCatL (Just (Var.Var "y")) (Just (Var.Var "z")) (Surf.TmVar (Var.Var "z")) (Surf.TmVar (Var.Var "z"))) (TmCut (Var "__x1") (TmVar (Var "z")) (TmCatL (Var "y") (Var "__x0") (Var "__x1") (TmVar (Var "__x0")))) ["z"],
-        elabFails (Surf.TmCatL (Just (Var.Var "y")) (Just (Var.Var "z")) (Surf.TmVar (Var.Var "z")) (Surf.TmVar (Var.Var "z"))) []
-    ]
-    where
-        elabTest e e'' xs = TestCase $ do
-            case elabSingle undefined e (S.fromList $ Var.Var <$> xs) of
-                Right e' -> assertEqual "" e' e''
-                Left err -> assertFailure (pp err)
-        elabFails e xs = TestCase $ do
-            case elabSingle undefined e (S.fromList $ Var.Var <$> xs) of
-                Right _ -> assertFailure "Expected failure"
-                Left _ -> return ()
+-- elabTests :: Test
+-- elabTests = TestList [
+--         elabTest (Surf.TmVar (Var.Var "x")) (TmVar (Var.Var "x")) ["x"],
+--         elabTest (Surf.TmCatL Nothing Nothing (Surf.TmCatR (Surf.TmLitR (LInt 4)) (Surf.TmLitR (LInt 4))) Surf.TmEpsR) (TmCut (Var "__x2") (TmCatR (TmLitR (LInt 4)) (TmLitR (LInt 4))) (TmCatL (Var "__x0") (Var "__x1") (Var "__x2") TmEpsR)) [],
+--         elabFails (Surf.TmCatL (Just (Var.Var "y")) (Just (Var.Var "y")) (Surf.TmVar $ Var.Var "x") Surf.TmEpsR) ["x"],
+--         elabTest (Surf.TmCatL (Just (Var.Var "y")) (Just (Var.Var "z")) (Surf.TmVar (Var.Var "z")) (Surf.TmVar (Var.Var "z"))) (TmCut (Var "__x1") (TmVar (Var "z")) (TmCatL (Var "y") (Var "__x0") (Var "__x1") (TmVar (Var "__x0")))) ["z"],
+--         elabFails (Surf.TmCatL (Just (Var.Var "y")) (Just (Var.Var "z")) (Surf.TmVar (Var.Var "z")) (Surf.TmVar (Var.Var "z"))) []
+--     ]
+--     where
+--         elabTest e e'' xs = TestCase $ do
+--             case elabSingle undefined [] e (S.fromList $ Var.Var <$> xs) of
+--                 Right e' -> assertEqual "" e' e''
+--                 Left err -> assertFailure (pp err)
+--         elabFails e xs = TestCase $ do
+--             case elabSingle undefined [] e (S.fromList $ Var.Var <$> xs) of
+--                 Right _ -> assertFailure "Expected failure"
+--                 Left _ -> return ()

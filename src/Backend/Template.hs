@@ -24,10 +24,12 @@ instance PrettyPrint TemplateErr where
     pp (TyVarNotFound v) = "Could not find binding for type variable " ++ pp v ++ " while monomorphizing."
     pp (ReparErr v) = "Reparamaterize error: " ++ pp v ++ "."
 
-type Template = ReaderT (M.Map Var.TyVar Ty) (Except TemplateErr)
+data TempData = TD { tyMap :: M.Map Var.TyVar Ty }
+
+type Template = ReaderT TempData (Except TemplateErr)
 
 getTy :: Var.TyVar -> Template Ty
-getTy alpha = ask >>= maybe (throwError (TyVarNotFound alpha)) return . M.lookup alpha
+getTy alpha = asks tyMap >>= maybe (throwError (TyVarNotFound alpha)) return . M.lookup alpha
 
 reThrowReparErr :: ExceptT Var.TyVar Template a -> Template a
 reThrowReparErr x = runExceptT x >>= either (throwError . ReparErr) return
@@ -37,9 +39,9 @@ reThrowReparErr x = runExceptT x >>= either (throwError . ReparErr) return
 -- construct the monomorphizer (\f' -> m (f' . f))
 reparameterizeTemplate :: M.Map Var.TyVar OpenTy -> Template a -> Template a
 reparameterizeTemplate f m = do
-    f' <- ask
+    f' <- asks tyMap
     f'' <- mapM (reThrowReparErr . reparameterizeTy f') f
-    local (const f'') m
+    local (const (TD f'')) m
 
 monomorphizeTy :: OpenTy -> Template Ty
 monomorphizeTy TyEps = return TyEps
@@ -49,7 +51,7 @@ monomorphizeTy (TyCat s t) = TyCat <$> monomorphizeTy s <*> monomorphizeTy t
 monomorphizeTy (TyPar s t) = TyPar <$> monomorphizeTy s <*> monomorphizeTy t
 monomorphizeTy (TyPlus s t) = TyPlus <$> monomorphizeTy s <*> monomorphizeTy t
 monomorphizeTy (TyStar s) = TyStar <$> monomorphizeTy s
-monomorphizeTy (TyVar x) = asks (M.lookup x) >>= maybe (throwError (TyVarNotFound x)) return
+monomorphizeTy (TyVar x) = asks (M.lookup x . tyMap) >>= maybe (throwError (TyVarNotFound x)) return
 
 monomorphizeCtx :: Ctx Var.Var OpenTy -> Template (Ctx Var.Var Ty)
 monomorphizeCtx EmpCtx = return EmpCtx
@@ -58,4 +60,6 @@ monomorphizeCtx (CommaCtx g g') =  CommaCtx <$> monomorphizeCtx g <*> monomorphi
 monomorphizeCtx (SemicCtx g g') =  SemicCtx <$> monomorphizeCtx g <*> monomorphizeCtx g'
 
 runTemplate :: Template a -> M.Map Var.TyVar Ty -> Either TemplateErr a
-runTemplate x m = runIdentity (runExceptT (runReaderT x m))
+runTemplate x m = runIdentity (runExceptT (runReaderT x td_init))
+    where
+        td_init = TD m

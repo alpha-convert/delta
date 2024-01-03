@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, FlexibleContexts, TupleSections #-}
+{-# LANGUAGE DeriveFoldable, DeriveTraversable, MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, FlexibleContexts, TupleSections, UndecidableInstances #-}
 module Types (
   TyF(..),
   Ty,
@@ -34,7 +34,7 @@ import Data.Bifunctor (Bifunctor (..))
 import Data.Void
 import qualified Var
 import Test.QuickCheck.Gen (Gen, frequency, choose)
-import Test.QuickCheck (Arbitrary(arbitrary))
+import Test.QuickCheck (Arbitrary(arbitrary), Property, forAll)
 import Data.Foldable (foldrM)
 
 data TyF v =
@@ -48,6 +48,7 @@ data TyF v =
   | TyStar (TyF v)
   deriving (Eq,Ord,Show,Foldable)
 
+
 closeTy :: TyF v -> Either v Ty
 closeTy (TyVar x) = Left x
 closeTy TyEps = return TyEps
@@ -59,6 +60,21 @@ closeTy (TyPlus s t) = TyPlus <$> closeTy s <*> closeTy t
 closeTy (TyStar s) = TyStar <$> closeTy s
 
 type Ty = TyF Void
+
+instance Arbitrary Ty where
+  arbitrary = choose (0 :: Int,5) >>= go
+    where
+      go 0 = frequency [(1,return TyEps), (3,return TyInt), (3,return TyBool)]
+      go n = frequency [
+        (1,return TyEps),
+        (3,return TyInt),
+        (3,return TyBool),
+        (3,TyCat <$> go (n `div` 2) <*> go (n `div` 2)),
+        (3,TyPar <$> go (n `div` 2) <*> go (n `div` 2)),
+        (3,TyPlus<$> go (n `div` 2) <*> go (n `div` 2)),
+        (2,TyStar <$> go (n `div` 2))
+        ]
+
 type OpenTy = TyF Var.TyVar
 
 instance (PrettyPrint v) => PrettyPrint (TyF v) where
@@ -144,7 +160,7 @@ instance TypeLike t => TypeLike (Ctx v t) where
 instance TypeLike t => TypeLike (M.Map v t) where
   isNull = all isNull
 
-data ValueLikeErr a t = IllTyped a t
+data ValueLikeErr a t = IllTyped a t deriving (Show)
 
 instance (PrettyPrint a, PrettyPrint t) => PrettyPrint (ValueLikeErr a t) where
   pp (IllTyped a t) = concat ["Value ", pp a, " does not have type ", pp t]
@@ -163,8 +179,8 @@ class TypeLike t => ValueLike a t where
   hasTypeB :: (Monad m) => a -> t -> m Bool
   hasTypeB v t = runExceptT (hasType v t) >>= either (const (return False)) (const (return True))
 
-  doDeriv :: (PrettyPrint a, PrettyPrint t, MonadIO m) => a -> t -> m t
-  doDeriv v t = runExceptT (deriv v t) >>= either (\(IllTyped v' t' ) -> error $ concat ["Tried to take the derivative of ", pp t', " with respect to ", pp v',". This is bug."]) return
+  doDeriv :: (Show a, Show t, MonadIO m) => a -> t -> m t
+  doDeriv v t = runExceptT (deriv v t) >>= either (\(IllTyped v' t' ) -> error $ concat ["Tried to take the derivative of ", show t', " with respect to ", show v',". This is bug."]) return
 
 
 instance ValueLike Prefix Ty where
@@ -388,6 +404,7 @@ genEnvOfCtx (SemicCtx g g') = frequency [(2,do {rho <- genEnvOfCtx g; rho' <- ge
 
 class ValueLike v t => GenValueLike v t where
   genOf :: t -> Gen v
+
 
 instance GenValueLike Prefix Ty where
   genOf = genPrefixOfTy
