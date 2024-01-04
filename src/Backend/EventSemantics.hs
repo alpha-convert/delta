@@ -23,6 +23,7 @@ import Control.Monad.Random (runRandT,runRand, MonadRandom, weighted)
 import Control.Monad.IO.Class (MonadIO)
 import qualified Data.Functor
 import qualified Debug.Trace as Debug
+import Data.List (intercalate)
 
 tagSubst :: Var -> Var -> TaggedEvent -> TaggedEvent
 tagSubst x y (TE z ev) | z == y = TE x ev
@@ -71,6 +72,67 @@ handleValueLikeErr (IllTyped evs t) = IllTypedEvents evs t
 handlePrefixSubstError :: (Var.Var,Ty,Values.MaximalPrefix, Term EventBuf) -> SemError
 handlePrefixSubstError (x,s,p,e) = MaximalPrefixSubstErr x s p e
 
+poke :: (MonadError SemError m, MonadShuffle m) => Term EventBuf -> m ([Event], Term EventBuf)
+poke TmEpsR = return ([], TmEpsR)
+poke (TmLitR v) = return ([LitEv v], TmEpsR)
+poke (TmVar x) = return ([], TmVar x)
+poke (TmCatL t x y z e) = do
+    (evs,e') <- poke e
+    return (evs, TmCatL t x y z e')
+poke e@(TmCatR s e1 e2) = do
+    !() <- Debug.trace ("**Poking: " ++ show e) (return ())
+    (evs,e1') <- poke e1
+    if Event.isMaximal s evs then do
+        (evs', e2') <- poke e2
+        return (fmap CatEvA evs ++ [CatPunc] ++ evs',e2')
+    else do
+        s' <- reThrow handleValueLikeErr (deriv evs s)
+        return (CatEvA <$> evs, TmCatR s' e1' e2)
+poke (TmParR e1 e2) = do
+    (evs1,e1') <- poke e1
+    (evs2,e2') <- poke e2
+    evs <- shuffleM (fmap ParEvA evs1) (fmap ParEvB evs2)
+    return (evs, TmParR e1' e2')
+poke (TmParL x y z e) = do
+    (evs,e') <- poke e
+    return (evs, TmParL x y z e')
+poke (TmInl e) = do
+    (evs,e') <- poke e
+    return (PlusPuncA : evs,e')
+poke (TmInr e) = do
+    (evs,e') <- poke e
+    return (PlusPuncB : evs,e')
+poke e@(TmPlusCase {}) = return ([], e)
+poke e@(TmIte {}) = return ([],e)
+poke TmNil = return ([PlusPuncA],TmEpsR)
+poke (TmCons s e1 e2) = do
+    (evs,e1') <- poke e1
+    if Event.isMaximal s evs then do
+        (evs', e2') <- poke e2
+        return (PlusPuncB : fmap CatEvA evs ++ [CatPunc] ++ evs',e2')
+    else do
+        !() <- Debug.trace ("**evs: " ++ show evs) (return ())
+        !() <- Debug.trace ("**s: " ++ show s) (return ())
+        s' <- reThrow handleValueLikeErr (deriv evs s)
+        return (PlusPuncB : fmap CatEvA evs, TmCatR s' e1' e2)
+poke e@(TmStarCase {}) = return ([],e)
+{- UHHHHHHHHHHHHHHH is this allowed -}
+poke e@(TmFix {}) = return([],e)
+poke (TmRec {}) = error "impossible"
+poke e@(TmWait {}) = return ([],e)
+poke (TmCut x e1 e2) = do
+    (evs,e1') <- poke e1
+    (evs',e2') <- evalMany e2 (tagWith x <$> evs)
+    return (evs', TmCut x e1' e2')
+poke (TmHistPgm s he) = do
+    evs <- reThrow (HistSemErr he) (Hist.eval he >>= Hist.valueToEventList s)
+    return (evs,TmEpsR)
+
+
+
+
+
+
 eval :: (MonadError SemError m, MonadShuffle m) => Term EventBuf -> TaggedEvent -> m ([Event], Term EventBuf)
 eval TmEpsR _ = return ([],TmEpsR)
 eval (TmLitR v) _ = return ([LitEv v],TmEpsR)
@@ -89,15 +151,14 @@ eval (TmCatL t x y z e) tev =
             return (evs,TmCatL t x y z e')
         Just CatPunc -> do
             let e' = substVar e z y
-            sink <- undefined
-            return ([], TmCut x sink e')
+            return ([], TmCut x TmEpsR e')
         Just ev -> throwError (NotCatEv z ev)
 
 
 eval e@(TmCatR s e1 e2) tev = do
     (evs,e1') <- eval e1 tev
     if Event.isMaximal s evs then
-        return (CatEvA <$> evs ++ [CatPunc],e2)
+        return (fmap CatEvA evs ++ [CatPunc],e2)
     else do
         s' <- reThrow handleValueLikeErr (deriv evs s)
         return (CatEvA <$> evs, TmCatR s' e1' e2)
@@ -151,10 +212,10 @@ eval TmNil _ = return ([PlusPuncA],TmEpsR)
 eval e@(TmCons s e1 e2) tev = do
     (evs,e1') <- eval e1 tev
     if Event.isMaximal s evs then
-        return (PlusPuncB : (CatEvA <$> evs ++ [CatPunc]),e2)
+        return (PlusPuncB : (fmap CatEvA evs ++ [CatPunc]),e2)
     else do
         s' <- reThrow handleValueLikeErr (deriv evs s)
-        return (PlusPuncB : (CatEvA <$> evs), TmCatR s' e1' e2)
+        return (PlusPuncB : fmap CatEvA evs, TmCatR s' e1' e2)
 
 eval (TmStarCase buf r s z e1 x xs e2) tev =
     case tev `isTaggedFor` z of
@@ -192,7 +253,7 @@ eval (TmHistPgm s he) _ = do
 
 
 evalMany :: (MonadError SemError m, MonadShuffle m) => Term EventBuf -> [TaggedEvent] -> m ([Event], Term EventBuf)
-evalMany e [] = return ([],e)
+evalMany e [] = poke e
 evalMany e (ev:evs_in) = do
     (evs_out,e') <- eval e ev
     (evs_out',e'') <- evalMany e' evs_in
@@ -236,9 +297,9 @@ catSwitch s m1 m2 = dSwitch (feedback s ((m1 *** returnA) >>> (maximalCheck &&& 
     where
         maximalCheck = arrM $ \(evs,s') ->
                 if Event.isMaximal s' evs then
-                    return (CatEvA <$> evs ++ [CatPunc], Just ())
+                    return (fmap CatEvA evs ++ [CatPunc], Just ())
                 else
-                    return (CatEvA <$> evs, Nothing)
+                    return (fmap CatEvA evs, Nothing)
 
 denote :: (MonadError SemError m, MonadShuffle m) => Term EventBuf -> MSF m TaggedEvent [Event]
 denote (TmLitR v) = arr (const [LitEv v]) `dThen` denote TmEpsR
