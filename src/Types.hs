@@ -141,7 +141,7 @@ instance (PrettyPrint a) => PrettyPrint (CtxStruct a) where
 class TypeLike t where
   isNull :: t -> Bool
 
-instance TypeLike Ty where
+instance TypeLike (TyF a) where
   isNull TyInt = False
   isNull TyBool = False
   isNull TyEps = True
@@ -149,7 +149,13 @@ instance TypeLike Ty where
   isNull (TyPlus _ _) = False
   isNull (TyStar _) = False
   isNull (TyPar s t) = isNull s && isNull t
-  isNull (TyVar x) = absurd x
+{-
+TODO: this (isNull (TyVar x) = False) is a hack for the moment to simplify the inertness analysis.
+Otherwise it'd have to happen after templating time, because you don't know if waiting on `x : TyVar s` is
+going to be inert or not. For now, we just require that you always instantiate polymorphic functions with non-nullable types
+(which isn't too strong of a restriction.)
+-}
+  isNull (TyVar x) = False
 
 instance TypeLike t => TypeLike (Ctx v t) where
   isNull EmpCtx = True

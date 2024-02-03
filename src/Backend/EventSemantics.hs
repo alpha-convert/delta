@@ -80,7 +80,6 @@ poke (TmCatL t x y z e) = do
     (evs,e') <- poke e
     return (evs, TmCatL t x y z e')
 poke e@(TmCatR s e1 e2) = do
-    !() <- Debug.trace ("**Poking: " ++ show e) (return ())
     (evs,e1') <- poke e1
     if Event.isMaximal s evs then do
         (evs', e2') <- poke e2
@@ -111,13 +110,14 @@ poke (TmCons s e1 e2) = do
         (evs', e2') <- poke e2
         return (PlusPuncB : fmap CatEvA evs ++ [CatPunc] ++ evs',e2')
     else do
-        !() <- Debug.trace ("**evs: " ++ show evs) (return ())
-        !() <- Debug.trace ("**s: " ++ show s) (return ())
         s' <- reThrow handleValueLikeErr (deriv evs s)
         return (PlusPuncB : fmap CatEvA evs, TmCatR s' e1' e2)
 poke e@(TmStarCase {}) = return ([],e)
 {- UHHHHHHHHHHHHHHH is this allowed -}
-poke e@(TmFix {}) = return([],e)
+poke (TmFix args g s e) = do
+    e' <- reThrow (uncurry NonMatchingArgs)  (cutArgs g args (fixSubst g s e e))
+    poke e'
+-- poke e@(TmFix {}) = return([],e)
 poke (TmRec {}) = error "impossible"
 poke e@(TmWait {}) = return ([],e)
 poke (TmCut x e1 e2) = do
@@ -127,10 +127,6 @@ poke (TmCut x e1 e2) = do
 poke (TmHistPgm s he) = do
     evs <- reThrow (HistSemErr he) (Hist.eval he >>= Hist.valueToEventList s)
     return (evs,TmEpsR)
-
-
-
-
 
 
 eval :: (MonadError SemError m, MonadShuffle m) => Term EventBuf -> TaggedEvent -> m ([Event], Term EventBuf)
@@ -180,11 +176,11 @@ eval (TmParR e1 e2) ev = do
 
 {-
 BUG!!! This isn't equivalent to the prefix semantics!  If e1 outputs nothing,
-then e2 doesn't get run, by the defn of evalMany.
+then e2 doesn't get run, by the defn of evalMany. The whole event semantics is irreperably broken.
 -}
-eval (TmCut x e1 e2) ev = do
-    (evs,e1') <- eval e1 ev
-    (evs_out,e2') <- evalMany e2 (tagWith x <$> evs)
+eval (TmCut x e1 e2) tev = do
+    (evs,e1') <- eval e1 tev
+    (evs_out,e2') <- evalMany e2 (tev : (tagWith x <$> evs))
     return (evs_out, TmCut x e1' e2')
 
 eval (TmInl e) ev = do
@@ -195,16 +191,11 @@ eval (TmInr e) ev = do
     (evs,e') <- eval e ev
     return (PlusPuncB : evs,e')
 
--- I'm not sure that the environment and event semantics agree: The environment
--- semantics is a bit more eager: Consider the case where the first thing we get
--- is (SumPA emp). In the environment semantics, this *runs* the first branch,
--- potentially emitting constants. In the event semantics, this just steps to
--- the first branch without running it (the buf is empty.)
 eval (TmPlusCase buf r z x e1 y e2) tev =
     case tev `isTaggedFor` z of
         Nothing -> return ([], TmPlusCase (buf ++ [tev]) r z x e1 y e2)
-        Just PlusPuncA -> evalMany (substVar e1 z x) buf -- ????
-        Just PlusPuncB -> evalMany (substVar e2 z y) buf -- ???
+        Just PlusPuncA -> evalMany (substVar e1 z x) buf
+        Just PlusPuncB -> evalMany (substVar e2 z y) buf
         Just ev -> throwError (NotPlusEv z ev)
 
 
@@ -233,6 +224,7 @@ eval (TmIte buf t z e1 e2) tev =
 
 eval (TmFix args g s e) tev = do
     e' <- reThrow (uncurry NonMatchingArgs)  (cutArgs g args (fixSubst g s e e))
+    !() <- Debug.trace ("**Running: " ++ show e' ++ " with tev: " ++ show tev) (return ())
     eval e' tev
 
 eval (TmRec {}) _ = error "Impossible."

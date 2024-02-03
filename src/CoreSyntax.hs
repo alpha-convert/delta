@@ -45,6 +45,7 @@ data Term buf =
     | TmRec (CtxStruct (Term buf))
     | TmWait buf Ty Ty Var (Term buf) -- first return type, then waiting type
     | TmCut Var (Term buf) (Term buf)
+    -- | TmArgsCut (Ctx Var (Ty, Term buf))  (Term buf)
     | TmHistPgm Ty Hist.Term
     deriving (Eq,Ord,Show)
 

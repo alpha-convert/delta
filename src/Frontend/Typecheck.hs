@@ -10,7 +10,7 @@ module Frontend.Typecheck(
 import qualified Frontend.ElabSyntax as Elab
 import qualified CoreSyntax as Core
 import Control.Monad.Except (MonadError (throwError), runExceptT, ExceptT, withExceptT, Except)
-import Types (Ctx, CtxStruct(..), TyF(..), Ty, ctxBindings, ctxVars, emptyPrefix, ctxAssoc, deriv, ValueLikeErr (IllTyped), ValueLike (hasType), ctxMap, CtxEntry (..), OpenTy, reparameterizeCtx, reparameterizeTy)
+import Types (Ctx, CtxStruct(..), TyF(..), Ty, ctxBindings, ctxVars, emptyPrefix, ctxAssoc, deriv, ValueLikeErr (IllTyped), ValueLike (hasType), ctxMap, CtxEntry (..), OpenTy, reparameterizeCtx, reparameterizeTy, isNull)
 import Control.Monad.Reader (MonadReader (ask, local), asks, ReaderT (runReaderT), withReaderT)
 import Var (Var (Var), TyVar, FunVar)
 import Values (Lit(..), Env, Prefix (..), emptyEnv, bindEnv, isMaximal, isEmpty, allEnv, unionDisjointEnv, singletonEnv)
@@ -33,6 +33,7 @@ import Backend.Template
 import Control.Monad (unless)
 import Data.List (intercalate)
 import Buffer
+import CoreSyntax
 
 data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
@@ -64,6 +65,8 @@ data TckErr t = VarNotFound Var t
             | HistTckErr t Hist.TckErr
             | FunRecordNotFound Var.FunVar
             | FunArgNotFound Var.FunVar
+            | NonInertCut Var.Var t t
+            | NonInertArg Var.Var t
 
 instance (PrettyPrint t) => PrettyPrint (TckErr t) where
     pp (VarNotFound x e) = concat ["Variable ",pp x," not found while checking term ", pp e]
@@ -98,11 +101,20 @@ instance (PrettyPrint t) => PrettyPrint (TckErr t) where
     pp (HistTckErr he err) = concat ["Error while checking historical program ", pp he, ": ", pp err]
     pp (FunRecordNotFound f) = concat ["Could not find (toplevel-bound) function ", pp f]
     pp (FunArgNotFound f) = concat ["Could not find (arg-bound) function ", pp f]
+    pp (NonInertCut x e e') = concat ["Let-binding ", pp "let ", pp x, " = ", pp e, " in ... is disallowed, because scrutinee is not inert." ]
+    pp (NonInertArg x e) = concat ["Passing term ", pp e, " as an argument is disallowed because it is not inert,"]
 
-data RecSig = Rec (Ctx Var OpenTy) OpenTy
+data Inertness = Inert | Jumpy deriving (Eq,Show)
+
+instance Ord Inertness where
+    Inert <= _ = True
+    Jumpy <= Jumpy = True
+    Jumpy <= Inert = False
+
+data RecSig = Rec (Ctx Var OpenTy) OpenTy Inertness
 
 data FunRecord buf =
-      PolyFun { funTyVars :: [Var.TyVar], funCtx :: Ctx Var OpenTy, funTy :: OpenTy, funMonoTerm :: Template (Core.Term buf) }
+      PolyFun { funTyVars :: [Var.TyVar], funCtx :: Ctx Var OpenTy, funTy :: OpenTy, funInert :: Inertness, funMonoTerm :: Template (Core.Term buf) }
     | SpecFun { specCtx :: Ctx Var Ty }
 
 type FileInfo buf = M.Map Var.FunVar (FunRecord buf)
@@ -179,10 +191,10 @@ withBindAll :: (TckM t buf m) => [(Var,OpenTy)] -> m a -> m a
 withBindAll xs = local $ \t -> TckCtx (fileInfo t) (foldr (\(x,s) -> (M.insert x s .)) id xs (argsTypes t)) (rs t) (histCtx t) (tyVars t) {-(funArgsTypes t)-}
 
 withUnbindAll :: (TckM t buf m) => [Var] -> m a -> m a
-withUnbindAll xs = local (\t -> TckCtx (fileInfo t) (foldr M.delete (argsTypes t) xs) (rs t) (histCtx t) (tyVars t) {-(funArgsTypes t)-}) 
+withUnbindAll xs = local (\t -> TckCtx (fileInfo t) (foldr M.delete (argsTypes t) xs) (rs t) (histCtx t) (tyVars t) {-(funArgsTypes t)-})
 
-withRecSig :: (TckM t buf m) => Ctx Var OpenTy -> OpenTy -> m a -> m a
-withRecSig g s = local $ \t -> TckCtx (fileInfo t) (argsTypes t) (Rec g s) (histCtx t) (tyVars t) {-(funArgsTypes t)-}
+withRecSig :: (TckM t buf m) => Ctx Var OpenTy -> OpenTy -> Inertness -> m a -> m a
+withRecSig g s i = local $ \t -> TckCtx (fileInfo t) (argsTypes t) (Rec g s i) (histCtx t) (tyVars t) {-(funArgsTypes t)-}
 
 withCtx :: (TckM t buf m) => M.Map Var OpenTy -> m a -> m a
 withCtx m = local (\(TckCtx fi _ rs hc tv {-fvs-}) -> TckCtx fi m rs hc tv {-fvs-})
@@ -216,11 +228,11 @@ handleImpossibleCut (x,e,e') = ImpossibleCut x e e'
 handleReparErr :: Var.TyVar -> TckErr t
 handleReparErr = undefined
 
-data InferElabResult buf = IR { ty :: OpenTy , iusages :: P.Partial Var, itm :: Template (Core.Term buf) }
-data CheckElabResult buf = CR { cusages :: P.Partial Var, ctm :: Template (Core.Term buf) }
+data InferElabResult buf = IR { ty :: OpenTy , iusages :: P.Partial Var, iinertness :: Inertness, itm :: Template (Core.Term buf )}
+data CheckElabResult buf = CR { cusages :: P.Partial Var, cinertness :: Inertness, ctm :: Template (Core.Term buf) }
 
 promoteResult :: OpenTy -> CheckElabResult buf -> InferElabResult buf
-promoteResult t (CR p e) = IR t p e
+promoteResult t (CR p e i) = IR t p e i
 
 liftHistCheck :: (TckM t buf m') => t -> ReaderT (M.Map Var OpenTy) (ExceptT Hist.TckErr Identity) a -> m' a
 liftHistCheck e m = do
@@ -230,71 +242,73 @@ liftHistCheck e m = do
         Right a -> return a
 
 checkElab :: (Buffer buf, TckM Elab.Term buf m) => OpenTy -> Elab.Term -> m (CheckElabResult buf)
-checkElab TyInt (Elab.TmLitR l@(LInt _)) = return $ CR P.empty (return (Core.TmLitR l))
-checkElab TyBool (Elab.TmLitR l@(LBool _)) = return $ CR P.empty (return (Core.TmLitR l))
+checkElab TyInt (Elab.TmLitR l@(LInt _)) = return $ CR P.empty Jumpy (return (Core.TmLitR l))
+checkElab TyBool (Elab.TmLitR l@(LBool _)) = return $ CR P.empty Jumpy (return (Core.TmLitR l))
 checkElab t (Elab.TmLitR l) = throwError (WrongTypeLit l t)
-checkElab TyEps Elab.TmEpsR = return $ CR P.empty (return Core.TmEpsR)
+checkElab TyEps Elab.TmEpsR = return $ CR P.empty Inert (return Core.TmEpsR)
 checkElab t Elab.TmEpsR = throwError (WrongTypeEpsR t)
 
 checkElab t e@(Elab.TmVar x) = do
     s <- lookupTy e x
     guard (s == t) (WrongTypeVar x t s)
-    return $ CR (P.singleton x) (return (Core.TmVar x))
+    return $ CR (P.singleton x) Inert (return (Core.TmVar x))
 
 checkElab r e@(Elab.TmCatL x y z e') = do
     (s,t) <- lookupTyCat e z
-    (CR p e'') <- withBindAll [(x,s),(y,t)] (checkElab r e')
+    (CR p i e'') <- withBindAll [(x,s),(y,t)] (checkElab r e')
     -- Ensure that x and y are used in order in e: y cannot be before x.
     guard (not $ P.lessThan p y x) (OutOfOrder x y e')
     -- Replace x and y with z in the output
     p' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
-    return $ CR p' $ do
+    return $ CR p' i $ do
         t' <- monomorphizeTy t
         Core.TmCatL t' x y z <$> e''
 
 checkElab (TyCat s t) (Elab.TmCatR e1 e2) = do
-    CR p1 e1' <- checkElab s e1
-    CR p2 e2' <- checkElab t e2
+    CR p1 i e1' <- checkElab s e1
+    CR p2 _ e2' <- checkElab t e2
     reThrow (handleReUse (Elab.TmCatR e1 e2)) (P.checkDisjoint p1 p2)
     p' <- reThrow (handleOrderErr (Elab.TmCatR e1 e2)) $ P.concat p1 p2
-    return $ CR p' (Core.TmCatR <$> monomorphizeTy s <*> e1' <*> e2')
+    let i' = if i == Inert && not (isNull s) then Inert else Jumpy
+    return $ CR p' i' (Core.TmCatR <$> monomorphizeTy s <*> e1' <*> e2')
 checkElab t (Elab.TmCatR e1 e2) = throwError (WrongTypeCatR e1 e2 t)
 
 checkElab r e@(Elab.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
-    (CR p e'') <- withBindAll [(x,s),(y,t)] (checkElab r e')
+    (CR p i e'') <- withBindAll [(x,s),(y,t)] (checkElab r e')
     reThrow (handleContUse e) (P.checkNotIn z p)
     when (P.comparable p y x) (throwError (SomeOrder x y e'))
     p' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
-    return $ CR p' (Core.TmParL x y z <$> e'')
+    return $ CR p' i (Core.TmParL x y z <$> e'')
 
 checkElab (TyPar s t) e@(Elab.TmParR e1 e2) = do
-    CR p1 e1' <- checkElab s e1
-    CR p2 e2' <- checkElab t e2
+    CR p1 i1 e1' <- checkElab s e1
+    CR p2 i2 e2' <- checkElab t e2
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
-    return $ CR p' (Core.TmParR <$> e1' <*> e2')
+    let i = if i1 == Inert && i2 == Inert then Inert else Jumpy
+    return $ CR p' i (Core.TmParR <$> e1' <*> e2')
 checkElab t (Elab.TmParR e1 e2) = throwError (WrongTypeParR e1 e2 t)
 
 checkElab (TyPlus s _) (Elab.TmInl e) = do
-    CR p e' <- checkElab s e
-    return $ CR p (Core.TmInl <$> e')
+    CR p _ e' <- checkElab s e
+    return $ CR p Jumpy (Core.TmInl <$> e')
 checkElab t (Elab.TmInl e) = throwError (WrongTypeInl e t)
 
 checkElab (TyPlus _ t) (Elab.TmInr e) = do
-    CR p e' <- checkElab t e
-    return $ CR p (Core.TmInr <$> e')
+    CR p _ e' <- checkElab t e
+    return $ CR p Jumpy (Core.TmInr <$> e')
 checkElab t (Elab.TmInr e) = throwError (WrongTypeInr e t)
 
 checkElab r e@(Elab.TmPlusCase z x e1 y e2) = do
     (s,t) <- lookupTyPlus e z
-    CR p1 e1' <- withBind x s (checkElab r e1)
-    CR p2 e2' <- withBind y t (checkElab r e2)
+    CR p1 _ e1' <- withBind x s (checkElab r e1)
+    CR p2 _ e2' <- withBind y t (checkElab r e2)
     reThrow (handleContUse e1) (P.checkNotIn z p1)
     reThrow (handleContUse e2) (P.checkNotIn z p2)
     p' <- reThrow (handleOrderErr e) (P.union p1 p2)
     p'' <- reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,y)])
     m_rho <- asks (emptyBufOfType . argsTypes)
-    return $ CR p'' $ do
+    return $ CR p'' Inert $ do
         r' <- monomorphizeTy r
         me1' <- e1'
         me2' <- e2'
@@ -303,39 +317,40 @@ checkElab r e@(Elab.TmPlusCase z x e1 y e2) = do
 
 checkElab r e@(Elab.TmIte z e1 e2) = do
     lookupTyBool e z
-    CR p1 e1' <- checkElab r e1
-    CR p2 e2' <- checkElab r e2
+    CR p1 _ e1' <- checkElab r e1
+    CR p2 _ e2' <- checkElab r e2
     p' <- reThrow (handleOrderErr e) (P.union p1 p2)
     m_rho <- asks (emptyBufOfType . argsTypes)
-    return $ CR p' $ do
+    return $ CR p' Inert $ do
         rho <- m_rho
         r' <- monomorphizeTy r
         Core.TmIte rho r' z <$> e1' <*> e2'
 
 
-checkElab (TyStar _) Elab.TmNil = return (CR P.empty (return Core.TmNil))
+checkElab (TyStar _) Elab.TmNil = return (CR P.empty Jumpy (return Core.TmNil))
 checkElab t Elab.TmNil = throwError (WrongTypeNil t)
 
 checkElab (TyStar s) (Elab.TmCons e1 e2) = do
-    CR p1 e1' <- checkElab s e1
-    CR p2 e2' <- checkElab (TyStar s) e2
+    CR p1 i e1' <- checkElab s e1
+    CR p2 _ e2' <- checkElab (TyStar s) e2
     reThrow (handleReUse (Elab.TmCons e1 e2)) (P.checkDisjoint p1 p2)
     p' <- reThrow (handleOrderErr (Elab.TmCatR e1 e2)) $ P.concat p1 p2
-    return $ CR p' (Core.TmCons <$> monomorphizeTy s <*> e1' <*> e2')
+    let i' = if i == Inert && not (isNull s) then Inert else Jumpy
+    return $ CR p' i' (Core.TmCons <$> monomorphizeTy s <*> e1' <*> e2')
 
 checkElab t (Elab.TmCons e1 e2) = throwError (WrongTypeCons e1 e2 t)
 
 checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
     s <- lookupTyStar e z
-    CR p1 e1' <- checkElab r e1
-    CR p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ checkElab r e2
+    CR p1 _ e1' <- checkElab r e1
+    CR p2 _ e2' <- withBindAll [(x,s),(xs,TyStar s)] $ checkElab r e2
     guard (not $ P.lessThan p2 xs x) (OutOfOrder x xs e2)
     reThrow (handleContUse e) (P.checkNotIn z p1)
     reThrow (handleContUse e) (P.checkNotIn z p2)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     p'' <- reThrow (handleOrderErr e) (P.substSingAll p' [(P.singleton z,x),(P.singleton z,xs)])
     m_rho <- asks (emptyBufOfType . argsTypes)
-    return $ CR p'' $ do
+    return $ CR p'' Inert $ do
         s' <- monomorphizeTy s
         r' <- monomorphizeTy r
         me1' <- e1'
@@ -344,39 +359,42 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
         return (Core.TmStarCase rho r' s' z me1' x xs me2')
 
 checkElab r e@(Elab.TmCut x e1 e2) = do
-    IR s p be1 <- inferElab e1
-    CR p' be2 <- withBind x s (checkElab r e2)
+    IR s p i be1 <- inferElab e1
+    guard (i == Inert) (NonInertCut x e1 e2)
+    CR p' i' be2 <- withBind x s (checkElab r e2)
     reThrow (handleReUse e) (P.checkDisjoint p p')
     p'' <- reThrow (handleOrderErr (Elab.TmCut x e1 e2)) $ P.substSing p' p x
-    return (CR p'' (Core.TmCut x <$> be1 <*> be2))
+    return (CR p'' i' (Core.TmCut x <$> be1 <*> be2))
 
 checkElab r e@(Elab.TmRec es) = do
-    Rec g r' <- asks rs
+    Rec g r' i <- asks rs
     when (r /= r') $ throwError (UnequalReturnTypes r r' e) -- ensure the return type is the proper one
     (p,args) <- elabRec g es
-    return (CR p (Core.TmRec <$> args))
+    return (CR p i (Core.TmRec <$> args))
 
 checkElab r e@(Elab.TmWait x e') = do
     m_rho <- asks (emptyBufOfType . argsTypes)
     s <- lookupTy e x
-    CR p e'' <- withBindHist x s (checkElab r e')
+    CR p _ e'' <- withBindHist x s (checkElab r e')
     reThrow (handleContUse e) (P.checkNotIn x p)
-    return $ CR p $ do
+    let i = if not (isNull s) then Inert else Jumpy
+    return $ CR (P.insert p x x) i $ do
         rho <- m_rho
         r' <- monomorphizeTy r
         s' <- monomorphizeTy s
         Core.TmWait rho r' s' x <$> e''
 
+
 checkElab r e@(Elab.TmHistPgm he) = do
     () <- liftHistCheck e (Hist.check he r)
-    return $ CR P.empty $ do
+    return $ CR P.empty Jumpy $ do
         r' <- monomorphizeTy r
         return (Core.TmHistPgm r' he)
 
 checkElab r e@(Elab.TmFunCall f ts {-fs-} es) = do
     fr <- lookupFunRecord f
     case fr of
-        PolyFun {funTyVars = tvs, funCtx = g, funTy = r', funMonoTerm = me} -> do
+        PolyFun {funTyVars = tvs, funCtx = g, funTy = r', funMonoTerm = me, funInert = i} -> do
             when (length ts /= length tvs) $ error "Unsaturated type args for function call" -- not saturated type arguments for recursive call.
             let repar_map = foldr (uncurry M.insert) M.empty (zip tvs ts)
             -- compute g'', r'': the  context and return types, after applying the type substitution (tvs |-> ts)
@@ -384,7 +402,7 @@ checkElab r e@(Elab.TmFunCall f ts {-fs-} es) = do
             r'' <- reThrow handleReparErr (reparameterizeTy repar_map r')
             when (r /= r'') $ throwError (UnequalReturnTypes r r'' e) -- ensure the return type is the proper one
             (p,margs) <- elabRec g' es
-            return $ CR p $ do
+            return $ CR p i $ do
                 g_mono <- monomorphizeCtx g'
                 r_mono <- monomorphizeTy r''
                 args <- margs
@@ -396,13 +414,17 @@ checkElab r e@(Elab.TmFunCall f ts {-fs-} es) = do
 
 -- checkElab r (Elab.TmFunArgCall f es) = undefined
 
+{-
+-}
 
 
 elabRec :: (Buffer buf, TckM Elab.Term buf m) => Ctx Var OpenTy -> CtxStruct Elab.Term -> m (P.Partial Var, Template (CtxStruct (Core.Term buf)))
 elabRec EmpCtx EmpCtx = return (P.empty,return EmpCtx)
 elabRec g@EmpCtx g' = throwError (UnsaturatedRecursiveCall g g')
-elabRec (SngCtx (CE _ s)) (SngCtx e) = do
-    CR p e' <- checkElab s e
+elabRec (SngCtx (CE x s)) (SngCtx e) = do
+    {- TODO: fixme. but for now, i think we need this... -}
+    CR p i e' <- checkElab s e
+    guard (i == Inert) (NonInertArg x e)
     return (p,SngCtx <$> e')
 elabRec g@(SngCtx {}) g' = throwError (UnsaturatedRecursiveCall g g')
 elabRec (SemicCtx g1 g2) (SemicCtx args1 args2) = do
@@ -421,63 +443,65 @@ elabRec g@(CommaCtx {}) g' = throwError (UnsaturatedRecursiveCall g g')
 
 
 inferElab :: (Buffer buf, TckM Elab.Term buf m) => Elab.Term -> m (InferElabResult buf)
-inferElab (Elab.TmLitR (LInt n)) = return $ IR TyInt P.empty (return (Core.TmLitR (LInt n)))
-inferElab (Elab.TmLitR (LBool b)) = return $ IR TyBool P.empty (return (Core.TmLitR (LBool b)))
-inferElab Elab.TmEpsR = return $ IR TyEps P.empty (return Core.TmEpsR)
+inferElab (Elab.TmLitR (LInt n)) = return $ IR TyInt P.empty Jumpy (return (Core.TmLitR (LInt n)))
+inferElab (Elab.TmLitR (LBool b)) = return $ IR TyBool P.empty Jumpy (return (Core.TmLitR (LBool b)))
+inferElab Elab.TmEpsR = return $ IR TyEps P.empty Inert (return Core.TmEpsR)
 
 inferElab e@(Elab.TmVar x) = do
     s <- lookupTy e x
-    return $ IR s (P.singleton x) (return (Core.TmVar x))
+    return $ IR s (P.singleton x) Inert (return (Core.TmVar x))
 
 inferElab e@(Elab.TmCatL x y z e') = do
     -- Find the type for x and y
     (s,t) <- lookupTyCat e z
     -- Bind x:s,y:t, unbind z, and recursively check 
-    (IR r p e'') <- withBindAll [(x,s),(y,t)] (inferElab e')
+    (IR r p i e'') <- withBindAll [(x,s),(y,t)] (inferElab e')
     -- Ensure that x and y are used in order in e: y cannot be before x.
     guard (not $ P.lessThan p y x) (OutOfOrder x y e')
     -- Ensure that the destructed variable z is not used in e'
     reThrow (handleContUse e) (P.checkNotIn z p)
     -- Replace x and y with z in the output
     p' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
-    return $ IR r p' $ do
+    return $ IR r p' i $ do
         t' <- monomorphizeTy t
         Core.TmCatL t' x y z <$> e''
 
 inferElab e@(Elab.TmCatR e1 e2) = do
-    IR s p1 e1' <- inferElab e1
-    IR t p2 e2' <- inferElab e2
+    IR s p1 i e1' <- inferElab e1
+    IR t p2 _ e2' <- inferElab e2
     p' <- reThrow (handleOrderErr e) $ P.concat p1 p2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
-    return $ IR (TyCat s t) p' (Core.TmCatR <$> monomorphizeTy s <*> e1' <*> e2')
+    let i' = if i == Inert && not (isNull s) then Inert else Jumpy
+    return $ IR (TyCat s t) p' i' (Core.TmCatR <$> monomorphizeTy s <*> e1' <*> e2')
 
 inferElab e@(Elab.TmParL x y z e') = do
     (s,t) <- lookupTyPar e z
-    (IR r p e'') <- withBindAll [(x,s),(y,t)] (inferElab e')
+    (IR r p i e'') <- withBindAll [(x,s),(y,t)] (inferElab e')
     when (P.comparable p y x) (throwError (SomeOrder x y e'))
     reThrow (handleContUse e) (P.checkNotIn z p)
     p' <- reThrow (handleOrderErr e') $ P.substSingAll p [(P.singleton z,x),(P.singleton z,y)]
-    return $ IR r p' (Core.TmParL x y z <$> e'')
+    return $ IR r p' i (Core.TmParL x y z <$> e'')
 
 inferElab e@(Elab.TmParR e1 e2) = do
-    IR s p1 e1' <- inferElab e1
-    IR t p2 e2' <- inferElab e2
+    IR s p1 i1 e1' <- inferElab e1
+    IR t p2 i2 e2' <- inferElab e2
+    let i = if i1 == Inert && i2 == Inert then Inert else Jumpy
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
-    return $ IR (TyPar s t) p' (Core.TmParR <$> e1' <*> e2')
+    return $ IR (TyPar s t) p' i (Core.TmParR <$> e1' <*> e2')
 
 inferElab e@(Elab.TmInl {}) = throwError (CheckTermInferPos e)
 inferElab e@(Elab.TmInr {}) = throwError (CheckTermInferPos e)
 
 inferElab e@(Elab.TmPlusCase z x e1 y e2) = do
     (s,t) <- lookupTyPlus e z
-    IR r1 p1 e1' <- withBind x s $ inferElab e1
-    IR r2 p2 e2' <- withBind y t $ inferElab e2
+    IR r1 p1 _ e1' <- withBind x s $ inferElab e1
+    IR r2 p2 _ e2' <- withBind y t $ inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     reThrow (handleContUse e1) (P.checkNotIn z p1)
     reThrow (handleContUse e2) (P.checkNotIn z p2)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     m_rho <- asks (emptyBufOfType . argsTypes)
-    return $ IR r1 p' $ do
+    return $ IR r1 p' Inert $ do
         r1' <- monomorphizeTy r1
         me1' <- e1'
         me2' <- e2'
@@ -486,12 +510,12 @@ inferElab e@(Elab.TmPlusCase z x e1 y e2) = do
 
 inferElab e@(Elab.TmIte z e1 e2) = do
     lookupTyBool e z
-    IR r1 p1 e1' <- inferElab e1
-    IR r2 p2 e2' <- inferElab e2
+    IR r1 p1 _ e1' <- inferElab e1
+    IR r2 p2 _ e2' <- inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     m_rho <- asks (emptyBufOfType . argsTypes)
-    return $ IR r1 p' $ do
+    return $ IR r1 p' Inert $ do
         rho <- m_rho
         r <- monomorphizeTy r1
         Core.TmIte rho r z <$> e1' <*> e2'
@@ -499,22 +523,23 @@ inferElab e@(Elab.TmIte z e1 e2) = do
 inferElab e@Elab.TmNil = throwError (CheckTermInferPos e)
 
 inferElab e@(Elab.TmCons e1 e2) = do
-    IR s p1 e1' <- inferElab e1
-    CR p2 e2' <- checkElab (TyStar s) e2
+    IR s p1 i e1' <- inferElab e1
+    CR p2 _ e2' <- checkElab (TyStar s) e2
     reThrow (handleReUse e) (P.checkDisjoint p1 p2)
     p' <- reThrow (handleOrderErr e) $ P.concat p1 p2
-    return $ IR (TyStar s) p' (Core.TmCons <$> monomorphizeTy s <*> e1' <*> e2')
+    let i' = if i == Inert && not (isNull s) then Inert else Jumpy
+    return $ IR (TyStar s) p' i' (Core.TmCons <$> monomorphizeTy s <*> e1' <*> e2')
 
 inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
     s <- lookupTyStar e z
-    IR r1 p1 e1' <- inferElab e1
-    IR r2 p2 e2' <- withBindAll [(x,s),(xs,TyStar s)] $ inferElab e2
+    IR r1 p1 _ e1' <- inferElab e1
+    IR r2 p2 _ e2' <- withBindAll [(x,s),(xs,TyStar s)] $ inferElab e2
     reThrow (handleContUse e) (P.checkNotIn z p1)
     reThrow (handleContUse e) (P.checkNotIn z p2)
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
     m_rho <- asks (emptyBufOfType . argsTypes)
-    return $ IR r1 p' $ do
+    return $ IR r1 p' Inert $ do
         mr <- monomorphizeTy r1
         ms <- monomorphizeTy s
         me1' <- e1'
@@ -523,24 +548,26 @@ inferElab e@(Elab.TmStarCase z e1 x xs e2) = do
         return (Core.TmStarCase rho mr ms z me1' x xs me2')
 
 inferElab e@(Elab.TmCut x e1 e2) = do
-    IR s p e1' <- inferElab e1
-    IR t p' e2' <- withBind x s $ inferElab e2
+    IR s p i e1' <- inferElab e1
+    IR t p' i' e2' <- withBind x s $ inferElab e2
+    guard (i == Inert) (NonInertCut x e1 e2)
     reThrow (handleReUse e) (P.checkDisjoint p p') {- this should be guaranteed by the fact that we unbind all the vars in p -}
     p'' <- reThrow (handleOrderErr (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     -- e' <- reThrow handleImpossibleCut (Core.cut x e1' e2')
-    return (IR t p'' (Core.TmCut x <$> e1' <*> e2'))
+    return (IR t p'' i' (Core.TmCut x <$> e1' <*> e2'))
 
 inferElab e@(Elab.TmRec es) = do
-    Rec g r <- asks rs
+    Rec g r i <- asks rs
     (p,args) <- elabRec g es
-    return (IR r p (Core.TmRec <$> args))
+    return (IR r p i (Core.TmRec <$> args))
 
 inferElab e@(Elab.TmWait x e') = do
     m_rho <- asks (emptyBufOfType . argsTypes)
     s <- lookupTy e x
-    IR t p e'' <- withBindHist x s $ inferElab e'
+    IR t p _ e'' <- withBindHist x s $ inferElab e'
     reThrow (handleContUse e) (P.checkNotIn x p)
-    return $ IR t p $ do
+    let i = if not (isNull s) then Inert else Jumpy
+    return $ IR t (P.insert p x x) i $ do
         t' <- monomorphizeTy t
         s' <- monomorphizeTy s
         rho <- m_rho
@@ -548,21 +575,21 @@ inferElab e@(Elab.TmWait x e') = do
 
 inferElab e@(Elab.TmHistPgm he) = do
     r <- liftHistCheck e (Hist.infer he)
-    return $ IR r P.empty $ do
+    return $ IR r P.empty Jumpy $ do
         r' <- monomorphizeTy r
         return (Core.TmHistPgm r' he)
 
 inferElab e@(Elab.TmFunCall f ts {-fs-} es) = do
     fr <- lookupFunRecord f
     case fr of
-        PolyFun {funTyVars = tvs, funCtx = g, funTy = r, funMonoTerm = me} -> do
+        PolyFun {funTyVars = tvs, funCtx = g, funTy = r, funMonoTerm = me, funInert = i} -> do
             when (length ts /= length tvs) $ error "unsatured function call type arguments" -- not saturated type arguments for recursive call.
             let repar_map = foldr (uncurry M.insert) M.empty (zip tvs ts)
             -- compute g'', r'': the  context and return types, after applying the type substitution (tvs |-> ts)
             g' <- reThrow handleReparErr (reparameterizeCtx repar_map g)
             r' <- reThrow handleReparErr (reparameterizeTy repar_map r)
             (p,margs) <- elabRec g' es
-            return $ IR r' p $ do
+            return $ IR r' p i $ do
                 g_mono <- monomorphizeCtx g'
                 r_mono <- monomorphizeTy r'
                 args <- margs
@@ -901,12 +928,12 @@ checkUntypedPrefixCtx g@(CommaCtx {}) g' = throwError (WrongArgShape g g')
 
 
 -- Doublecheck argument typechecks the resulting term, again.
-doCheckElabTm :: (Buffer buf, MonadIO m) => FileInfo buf -> [Var.TyVar] -> {-[Surf.FunArg]->-}  Ctx Var OpenTy -> OpenTy -> Elab.Term -> m (Template (Core.Term buf))
-doCheckElabTm fi tvs {-fargs-} g t e = do
-    let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e) (TckCtx fi (ctxBindings g) (Rec g t) M.empty (S.fromList tvs) {-(foldr undefined M.empty fargs)-})
+doCheckElabTm :: (Buffer buf, MonadIO m) => FileInfo buf -> [Var.TyVar] -> {-[Surf.FunArg]->-}  Ctx Var OpenTy -> OpenTy -> Inertness -> Elab.Term -> m (Template (Core.Term buf))
+doCheckElabTm fi tvs {-fargs-} g t i e = do
+    let ck = runIdentity $ runExceptT $ runReaderT (checkElab t e) (TckCtx fi (ctxBindings g) (Rec g t i) M.empty (S.fromList tvs) {-(foldr undefined M.empty fargs)-})
     case ck of
         Left err -> error (pp err)
-        Right (CR usages m_tm) -> do
+        Right (CR usages i' m_tm) -> do
             (usageConsist :: Either (TckErr Elab.Term) ()) <- runExceptT (withExceptT (handleOrderErr e) $ P.consistentWith usages (_fst <$> g))
             case usageConsist of
                 Left err -> error (pp err)
@@ -934,15 +961,16 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
             unless (wfTy tvs t) $ error $ "Type " ++ pp t ++ " ill-formed with type variables " ++ (intercalate "," $ pp <$> tvs)
             -- Typecheck the function
             fi <- get
-            e' <- lift $ doCheckElabTm fi tvs {-fs-} g t e
+            e' <- lift $ doCheckElabTm fi tvs {-fs-} g t Inert e
             liftIO $ putStrLn $ "Function " ++ pp f ++ " typechecked OK."
-            put (M.insert f (PolyFun {funTyVars = tvs, funCtx = g, funTy = t, funMonoTerm = e'}) fi)
+            put (M.insert f (PolyFun {funTyVars = tvs, funCtx = g, funTy = t, funMonoTerm = e', funInert = Inert}) fi)
             return (Core.FunDef f tvs (monomorphizeCtx g) (monomorphizeTy t) e')
         go (Elab.SpecializeCommand f ts _) = do
             fr <- gets (M.lookup f) >>= maybe (error $ "Can not specialize unbound function " ++ pp f) return
             case fr of
-                PolyFun tvs og _ _ -> do
+                PolyFun tvs og _ _ _ -> do
                     when (length ts /= length tvs) $ error ("Unsaturated type parameters when specializing " ++ pp f)
+                    when (any isNull ts) $ error ("Cannot specialize with nullable type. ")
                     let monomap = foldr (uncurry M.insert) M.empty (zip tvs ts)
                     case runTemplate (monomorphizeCtx og) monomap of
                         Left err -> error (pp err)
@@ -965,7 +993,7 @@ doCheckElabPgm xs = fst <$> runStateT (mapM go xs) M.empty
             case fr of
                 SpecFun g -> do
                     mrho <- lift (runExceptT (checkUntypedPrefixCtx g p))
-                    case mrho of 
+                    case mrho of
                         Left err -> error (show err)
                         Right rho -> do
                             -- Update the input type of f to the derivative
