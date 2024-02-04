@@ -221,7 +221,7 @@ sinkTm (CatPB _ p) = sinkTm p
 sinkTm (ParP p1 p2) = do
   e1 <- sinkTm p1
   e2 <- sinkTm p2
-  return (undefined e1 e2)
+  return (TmParR e1 e2)
 sinkTm p@SumPEmp = throwError p
 sinkTm (SumPA p) = sinkTm p
 sinkTm (SumPB p) = sinkTm p

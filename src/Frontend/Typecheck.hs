@@ -66,7 +66,6 @@ data TckErr t = VarNotFound Var t
             | FunRecordNotFound Var.FunVar
             | FunArgNotFound Var.FunVar
             | NonInertCut Var.Var t t
-            | NonInertArg Var.Var t
 
 instance (PrettyPrint t) => PrettyPrint (TckErr t) where
     pp (VarNotFound x e) = concat ["Variable ",pp x," not found while checking term ", pp e]
@@ -102,7 +101,6 @@ instance (PrettyPrint t) => PrettyPrint (TckErr t) where
     pp (FunRecordNotFound f) = concat ["Could not find (toplevel-bound) function ", pp f]
     pp (FunArgNotFound f) = concat ["Could not find (arg-bound) function ", pp f]
     pp (NonInertCut x e e') = concat ["Let-binding ", pp "let ", pp x, " = ", pp e, " in ... is disallowed, because scrutinee is not inert." ]
-    pp (NonInertArg x e) = concat ["Passing term ", pp e, " as an argument is disallowed because it is not inert,"]
 
 data Inertness = Inert | Jumpy deriving (Eq,Show)
 
@@ -422,9 +420,7 @@ elabRec :: (Buffer buf, TckM Elab.Term buf m) => Ctx Var OpenTy -> CtxStruct Ela
 elabRec EmpCtx EmpCtx = return (P.empty,return EmpCtx)
 elabRec g@EmpCtx g' = throwError (UnsaturatedRecursiveCall g g')
 elabRec (SngCtx (CE x s)) (SngCtx e) = do
-    {- TODO: fixme. but for now, i think we need this... -}
-    CR p i e' <- checkElab s e
-    guard (i == Inert) (NonInertArg x e)
+    CR p _ e' <- checkElab s e
     return (p,SngCtx <$> e')
 elabRec g@(SngCtx {}) g' = throwError (UnsaturatedRecursiveCall g g')
 elabRec (SemicCtx g1 g2) (SemicCtx args1 args2) = do
