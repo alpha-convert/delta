@@ -45,7 +45,7 @@ data Term buf =
     | TmRec (CtxStruct (Term buf))
     | TmWait buf Ty Ty Var (Term buf) -- first return type, then waiting type
     | TmCut Var (Term buf) (Term buf)
-    -- | TmArgsCut (Ctx Var (Ty, Term buf))  (Term buf)
+    | TmArgsCut (Ctx Var Ty) (CtxStruct (Term buf))  (Term buf)
     | TmHistPgm Ty Hist.Term
     deriving (Eq,Ord,Show)
 
@@ -81,6 +81,7 @@ instance PrettyPrint buf => PrettyPrint (Term buf) where
             go _ (TmStarCase rho _ _ z e1 x xs e2) = concat ["case_",pp rho," ",pp z," of nil => ",go True e1," | ",pp x,"::",pp xs," => ",go True e2]
             go False (TmWait rho _ _ x e) = concat ["wait_",pp rho," ", pp x," do ", go True e]
             go _ (TmCut x e e') = concat ["let ",pp x," = ", go True e, " in ", go True e']
+            go _ (TmArgsCut g e e') = concat ["let ", pp g, " = ", pp e, " in ", pp e']
 
 rebind :: Ord k => M.Map k a -> k -> k -> M.Map k a
 rebind m x z = case M.lookup z m of
@@ -132,6 +133,7 @@ substVar (TmWait rho t s u e) x y = if x == u then TmWait rho' t s y (substVar e
 substVar (TmCut x' e1 e2) x y | x' == y = error "UH OH"
 substVar (TmCut x' e1 e2) x y = TmCut x' (substVar e1 x y) (substVar e2 x y)
 substVar (TmHistPgm t he) x y = TmHistPgm t (Hist.substVar he x y)
+substVar (TmArgsCut g args e) x y = TmArgsCut g ((\e' -> substVar e' x y) <$> args) e
 
 cut :: (Buffer buf, MonadError (Var,Term buf,Term buf) m) => Var -> Term buf -> Term buf -> m (Term buf)
 cut x (TmVar y) e' = return (substVar e' y x)
@@ -333,6 +335,10 @@ maximalPrefixSubst s p x (TmHistPgm t he) = TmHistPgm t <$> withExceptT liftErr 
   where
     liftErr (x,p,e) = (x,s,p,TmHistPgm t e)
 
+maximalPrefixSubst s p x (TmArgsCut g args e) = do
+  args' <- mapM (maximalPrefixSubst s p x) args
+  return (TmArgsCut g args' e)
+
 fixSubst :: CtxStruct (CtxEntry Var Ty) -> Ty -> Term buf -> Term buf -> Term buf
 fixSubst g s e = go
     where
@@ -355,6 +361,7 @@ fixSubst g s e = go
         go (TmWait rho r s x e') = TmWait rho r s x (go e')
         go (TmCut x e1 e2) = TmCut x (go e1) (go e2)
         go (TmHistPgm t he) = TmHistPgm t he
+        go (TmArgsCut g args e) = TmArgsCut g (go <$> args) e
 
 bufMap :: (buf -> buf') -> Term buf -> Term buf'
 bufMap _ (TmLitR l) = TmLitR l
@@ -377,3 +384,4 @@ bufMap f (TmRec args) = TmRec (bufMap f <$> args)
 bufMap f (TmWait buf r t z e) = TmWait (f buf) r t z (bufMap f e)
 bufMap f (TmCut x e1 e2) = TmCut x (bufMap f e1) (bufMap f e2)
 bufMap _ (TmHistPgm s hp) = TmHistPgm s hp
+bufMap f (TmArgsCut g args e) = TmArgsCut g (bufMap f <$> args) (bufMap f e)

@@ -128,6 +128,8 @@ poke (TmHistPgm s he) = do
     evs <- reThrow (HistSemErr he) (Hist.eval he >>= Hist.valueToEventList s)
     return (evs,TmEpsR)
 
+poke (TmArgsCut {}) = undefined
+
 
 eval :: (MonadError SemError m, MonadShuffle m) => Term EventBuf -> TaggedEvent -> m ([Event], Term EventBuf)
 eval TmEpsR _ = return ([],TmEpsR)
@@ -243,6 +245,7 @@ eval (TmHistPgm s he) _ = do
     evs <- reThrow (HistSemErr he) (Hist.eval he >>= Hist.valueToEventList s)
     return (evs,TmEpsR) -- This isn't type safe, but it's semantically typesafe... TmEpsR never emits anything.
 
+eval (TmArgsCut {}) _ = error "unimplemented"
 
 evalMany :: (MonadError SemError m, MonadShuffle m) => Term EventBuf -> [TaggedEvent] -> m ([Event], Term EventBuf)
 evalMany e [] = poke e
@@ -380,6 +383,8 @@ denote (TmWait buf r s x e) = bufferUntil mLift undefined
 
 denote (TmFix _ _ _ _) = undefined
 denote (TmRec _) = undefined
+
+denote (TmArgsCut {}) = undefined
 
 -- denote (TmStar)
 

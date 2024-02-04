@@ -9,7 +9,7 @@ import Control.Monad.Reader
 import Control.Monad.Identity (Identity (runIdentity))
 import Control.Monad.Except ( ExceptT, runExceptT, MonadError(throwError) )
 import Prelude
-import Types (emptyPrefix, TyF (..), Ty, CtxStruct(..), Ctx, ValueLike (..), CtxEntry (..), genSequenceOf, genOf)
+import Types (emptyPrefix, TyF (..), Ty, CtxStruct(..), Ctx, ValueLike (..), CtxEntry (..), genSequenceOf, genOf, ValueLikeErr (IllTyped))
 import Values (Prefix (..), Env, isMaximal, bindAllEnv, bindEnv, bindAllEnv, lookupEnv, prefixConcat, concatEnv, emptyEnv, Lit (..), maximalLift, MaximalPrefix, maximalDemote, unbindEnv, sinkPrefix, unionDisjointEnv, singletonEnv, rebindEnv)
 import Data.Map (Map, unionWith)
 import Control.Applicative (Applicative(liftA2))
@@ -41,6 +41,7 @@ import Test.QuickCheck.Monadic
 import Data.List (intercalate)
 import qualified Backend.EventSemantics as EventSem
 import Event (envToEvents, eventsToPrefix, eventToPrefix)
+import Data.Maybe (isJust)
 
 type EnvBuf = Env Var.Var Prefix
 
@@ -64,7 +65,9 @@ data SemError =
     | HistSemErr Hist.SemErr Hist.Term
     | NonMatchingArgs (Ctx Var.Var Ty) (CtxStruct (Term EnvBuf))
     | UnionEnvError Var.Var Prefix Prefix
+    | IllTypedPrefix Prefix Ty
     deriving (Eq, Ord, Show)
+
 
 instance PrettyPrint SemError where
     pp (VarLookupFailed (Var.Var x)) = concat ["Variable ",x," is unbound. This is a compiler bug."]
@@ -81,6 +84,7 @@ instance PrettyPrint SemError where
     pp (HistSemErr err he) = concat ["Encountered error while evaluating historical term ", pp he, ": ", pp err]
     pp (NonMatchingArgs g g') = concat ["Arguments ", pp g', " do not match ", pp g]
     pp (UnionEnvError x p p') = concat ["Variable ", pp x, " has two different bindings: ", pp p, " and ", pp p']
+    pp (IllTypedPrefix p t) = concat ["Prefix ", pp p, " does not have type ", pp t]
 
 handleConcatError :: Term EnvBuf -> (Var.Var,Prefix, Prefix) -> SemError
 handleConcatError e (x,p,p') = ConcatError e x p p'
@@ -93,6 +97,9 @@ handlePrefixSubstError (x,s,p,e) = MaximalPrefixSubstErr x s p e
 
 handleHistEvalErr :: Hist.Term -> Hist.SemErr -> SemError
 handleHistEvalErr e err = HistSemErr err e
+
+handleValueLikeErr :: ValueLikeErr Prefix Ty -> SemError
+handleValueLikeErr (IllTyped p t) = IllTypedPrefix p t
 
 
 class (MonadReader EnvBuf m, MonadError SemError m) => EvalM m where
@@ -280,6 +287,49 @@ eval (TmHistPgm s he) = do
         return (maximalDemote mp)
     e <- reThrow SinkError (sinkTm p)
     return (p,e)
+
+eval (TmArgsCut g args e) = do
+    (eta,g',args') <- evalArgs g args
+    (p,e') <- withEnv (const eta) (eval e)
+    return (p,TmArgsCut g' args' e')
+
+{-
+This is not the only way or the most efficient way to do this, it's just the way that was
+easiest with the machinery we have right now. You really don't have to compute derivatives at runtime,
+you should just check for maximality once, and then mark the term to not run it again.
+-}
+evalArgs :: (EvalM m) => Ctx Var.Var Ty -> CtxStruct (Term EnvBuf) -> m (Env Var.Var Prefix,Ctx Var.Var Ty, CtxStruct (Term EnvBuf))
+evalArgs EmpCtx EmpCtx = return (emptyEnv,EmpCtx,EmpCtx)
+evalArgs _ EmpCtx = undefined
+evalArgs (SngCtx (CE x s)) (SngCtx e) = do
+    (p,e') <- eval e
+    s' <- reThrow handleValueLikeErr (deriv p s)
+    return (singletonEnv x p,SngCtx (CE x s'), SngCtx e')
+evalArgs _ (SngCtx {}) = undefined
+evalArgs (CommaCtx g1 g2) (CommaCtx e1 e2) = do
+    (env1,g1',e1') <- evalArgs g1 e1
+    (env2,g2',e2') <- evalArgs g2 e2
+    env <- reThrow (\(x,p,p') -> UnionEnvError x p p') (unionDisjointEnv env1 env2)
+    return (env, CommaCtx g1' g2', CommaCtx e1' e2')
+evalArgs _ (CommaCtx {}) = undefined
+evalArgs (SemicCtx g1 g2) (SemicCtx e1 e2) = do
+    (env1,g1',e1') <- evalArgs g1 e1
+    if env1 `maximalOn` g1 then do
+        (env2,g2',e2') <- evalArgs g2 e2
+        env <- reThrow (\(x,p,p') -> UnionEnvError x p p') (unionDisjointEnv env1 env2)
+        return (env,SemicCtx g1' g2', SemicCtx e1' e2')
+    else do
+        let env2 = emptyEnvFor g2
+        env <- reThrow (\(x,p,p') -> UnionEnvError x p p') (unionDisjointEnv env1 env2)
+        return (env,SemicCtx g1' g2, SemicCtx e1' e2)
+        where
+            env `maximalOn` g = all (\(CE x _) -> isJust (lookupEnv x env >>= Values.maximalLift)) g
+            emptyEnvFor g = foldr (\(CE x s) rho -> bindEnv x (emptyPrefix s) rho) emptyEnv g
+evalArgs _ (SemicCtx {}) = undefined
+
+
+
+-- eval (TmArgsCut {}) = error "unimplemented"
 
 -- A function can be in one of two states. It can have been defined (and not yet specialized), or specialized.
 -- An unspecialized function is a monomorphizer, accepting type varibles matching its required type arguments.
@@ -591,6 +641,8 @@ denote (TmHistPgm s he) = dSwitch emit sink
 denote (TmRec _) = error "imposible"
 
 denote (TmFix args g t e) = denoteArgs args g >>> denote (fixSubst g t e e)
+
+denote (TmArgsCut {}) = error "unimplemented"
 
 denoteArgs EmpCtx EmpCtx = arr id
 denoteArgs (SngCtx e) (SngCtx (CE x _)) = denote e >>> arrM (return . singletonEnv x)
