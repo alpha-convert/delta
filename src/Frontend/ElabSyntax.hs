@@ -62,7 +62,7 @@ data Term =
     | TmInl Term
     | TmInr Term
     | TmPlusCase Var Var Term Var Term
-    | TmIte Var Term Term
+    | TmIte Hist.Term Term Term
     | TmNil
     | TmCons Term Term
     | TmStarCase Var Term Var Var Term
@@ -194,12 +194,10 @@ lowerSurf (Surf.TmParR e1 e2) = do
     return (TmParR e1' e2')
 lowerSurf (Surf.TmInl e) = TmInl <$> lowerSurf e
 lowerSurf (Surf.TmInr e) = TmInr <$> lowerSurf e
-lowerSurf (Surf.TmIte e e1 e2) = do
-    e' <- lowerSurf e
+lowerSurf (Surf.TmIte m e1 e2) = do
     e1' <- lowerSurf e1
     e2' <- lowerSurf e2
-    z <- freshCutVar
-    return $ TmCut z e' (TmIte z e1' e2')
+    return $ TmIte m e1' e2'
 lowerSurf (Surf.TmPlusCase e mx e1 my e2) = do
     e' <- lowerSurf e
     x <- lowerPattern mx
@@ -301,11 +299,11 @@ unshadowTerm (TmParR e1 e2) = do
     return (TmParR e1' e2')
 unshadowTerm (TmInl e) = TmInl <$> unshadowTerm e
 unshadowTerm (TmInr e) = TmInr <$> unshadowTerm e
-unshadowTerm (TmIte z e1 e2) = do
-    z' <- unshadowVar z
+unshadowTerm (TmIte m e1 e2) = do
     e1' <- unshadowTerm e1
     e2' <- unshadowTerm e2
-    return (TmIte z' e1' e2')
+    m' <- unshadowHist m
+    return (TmIte m' e1' e2')
 unshadowTerm (TmPlusCase z x e1 y e2) = do
     z' <- unshadowVar z
     (e1',x') <- withUnshadow x $ unshadowTerm e1

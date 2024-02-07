@@ -21,7 +21,7 @@ data Term =
     | TmParR Term Term
     | TmInl Term
     | TmInr Term
-    | TmIte Term Term Term
+    | TmIte Hist.Term Term Term
     | TmPlusCase Term (Maybe Var.Var) Term (Maybe Var.Var) Term
     | TmNil
     | TmCons Term Term

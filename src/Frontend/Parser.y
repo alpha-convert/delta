@@ -86,7 +86,7 @@ Exp   : let '(' WildVar ';' WildVar ')' '=' Exp in Exp             { TmCatL $3 $
       | case Exp of inl WildVar '=>' Exp '|' inr WildVar '=>' Exp  { TmPlusCase $2 $5 $7 $10 $12}
       | case Exp of nil '=>' Exp '|' WildVar '::' WildVar '=>' Exp { TmStarCase $2 $6 $8 $10 $12}
       | wait VarList do Exp end                                    { TmWait $2 $4 }
-      | if Exp1 then Exp else Exp                                  { TmIte $2 $4 $6 }
+      | if '{' HistPgm '}' then Exp else Exp                       { TmIte $3 $6 $8 }
       | Exp1 '::' Exp                                              { TmCons $1 $3 }
       | Exp1                                                       { $1 }
 
@@ -177,21 +177,21 @@ VarCtx1     : Var ':' Ty                                          { SngCtx (CE $
             | '(' VarCtx ')'                                      { $2 }
           
 FunArgListParend  : {[]}
--- FunArgListParend  : {-empty-}                                     { [] }
---                   | '(' FunArgList ')'                            { $2 }
+FunArgListParend  : {-empty-}                                     { [] }
+                  | '(' FunArgList ')'                            { $2 }
 
 -- FunArg : FunVar ':' '(' FunArgCtx ')' '-' '>' Ty                     { FA $1 $4 $8 }
 
--- FunArgList  : {-empty-}                                           { [] }
---             | FunArg                                              { [$1] }
---             | FunArg ',' FunArgList                               { $1 : $3 }
+FunArgList  : {-empty-}                                           { [] }
+            -- | FunArg                                              { [$1] }
+            -- | FunArg ',' kunArgList                               { $1 : $3 }
 
 -- FunArgCtx   : FunArgCtx1 ',' FunArgCtx                               { CommaCtx $1 $3 } 
---             | FunArgCtx1 ';' FunArgCtx                                  { SemicCtx $1 $3 }
---             | FunArgCtx1                                             { $1 } 
+            -- | FunArgCtx1 ';' FunArgCtx                                  { SemicCtx $1 $3 }
+            -- | FunArgCtx1                                             { $1 } 
 
--- FunArgCtx1     : Ty                                                { SngCtx $1 }
---             | '(' FunArgCtx ')'                                      { $2 }
+-- FunArgCtx1     : '[' Ty ']'                                                { SngCtx $1 }
+            -- | '(' FunArgCtx ')'                                      { $2 }
  
 
 Pfx   : '(' Pfx ';' ')'                                           { CatPA $2 }

@@ -37,7 +37,7 @@ data Term buf =
     | TmInl (Term buf)
     | TmInr (Term buf)
     | TmPlusCase buf Ty Var Var (Term buf) Var (Term buf)
-    | TmIte  buf Ty Var (Term buf) (Term buf)
+    | TmIte Hist.Term (Term buf) (Term buf)
     | TmNil
     | TmCons Ty (Term buf) (Term buf) -- type of the first component
     | TmStarCase buf Ty Ty Var (Term buf) Var Var (Term buf) {- first return type, then star type -}
@@ -76,7 +76,7 @@ instance PrettyPrint buf => PrettyPrint (Term buf) where
             go _ (TmInl e) = "inl " ++ go True e
             go _ (TmInr e) = "inr " ++ go True e
             go _ (TmPlusCase rho _ z x e1 y e2) = concat ["case_",pp rho," ",pp z," of inl ",pp x," => ",go True e1," | inr",pp y," => ",go True e2]
-            go _ (TmIte rho _ z e1 e2) = concat ["if_", pp rho," ", pp z," then ", go True e1," else ", go True e2]
+            go _ (TmIte m e1 e2) = concat ["if", pp m," then ", go True e1," else ", go True e2]
             go _ (TmCons _ e1 e2) = concat [go True e1," :: ",go True e2]
             go _ (TmStarCase rho _ _ z e1 x xs e2) = concat ["case_",pp rho," ",pp z," of nil => ",go True e1," | ",pp x,"::",pp xs," => ",go True e2]
             go False (TmWait rho _ _ x e) = concat ["wait_",pp rho," ", pp x," do ", go True e]
@@ -108,13 +108,7 @@ substVar (TmPlusCase rho r z x' e1 y' e2) x y | y == z = TmPlusCase rho' r x x' 
 substVar (TmPlusCase rho r z x' e1 y' e2) x y = TmPlusCase rho' r z x' (substVar e1 x y) y' (substVar e2 x y)
   where
     rho' = rebindBuf rho x y
-substVar (TmIte rho r z e1 e2) x y | y == z = TmIte rho' r x (substVar e1 x y) (substVar e2 x y)
-  where
-    rho' = rebindBuf rho x y
-substVar (TmIte rho r z e1 e2) x y = TmIte rho' r z (substVar e1 x y) (substVar e2 x y)
-  where
-    rho' = rebindBuf rho x y
-
+substVar (TmIte m e1 e2) x y = TmIte m (substVar e1 x y) (substVar e2 x y)
 substVar TmNil _ _ = TmNil
 substVar (TmCons s e1 e2) x y = TmCons s (substVar e1 x y) (substVar e2 x y)
 substVar (TmStarCase rho r s z e1 x' xs' e2) x y | y == z = TmStarCase rho' r s z (substVar e1 x y) x' xs' (substVar e2 x y)
@@ -293,13 +287,13 @@ maximalPrefixSubst (TyPlus s _) (SumMPA p) _ (TmPlusCase _ _ _ x' e1 _ _) = maxi
 maximalPrefixSubst (TyPlus _ t) (SumMPB p) _ (TmPlusCase _ _ _ _ _ y' e2) = maximalPrefixSubst t p y' e2
 maximalPrefixSubst s p x e@(TmPlusCase {}) = throwError (x,s,p,e)
 
-maximalPrefixSubst s p x (TmIte rho t z e1 e2) | x /= z = do
+maximalPrefixSubst s p x (TmIte m e1 e2) = do
   e1' <- maximalPrefixSubst s p x e1
   e2' <- maximalPrefixSubst s p x e2
-  return (TmIte (unbindBuf x rho) t z e1' e2')
-maximalPrefixSubst TyBool (LitMP (LBool True)) _ (TmIte _ _ _ e1 _) = return e1
-maximalPrefixSubst TyBool (LitMP (LBool False)) _ (TmIte _ _ _ _ e2) = return e2
-maximalPrefixSubst s p x e@(TmIte {}) = throwError (x,s,p,e)
+  m' <- withExceptT liftErr (Hist.maximalPrefixSubst p x m)
+  return (TmIte m' e1' e2')
+    where
+      liftErr (x,p,e) = (x,s,p,TmIte m e1 e2)
 
 maximalPrefixSubst s p x (TmStarCase rho t r z e1 y' ys' e2) | x /= z = do
   e1' <- maximalPrefixSubst s p x e1
@@ -352,7 +346,7 @@ fixSubst g s e = go
         go (TmInl e') = TmInl (go e')
         go (TmInr e') = TmInr (go e')
         go (TmPlusCase rho r z x e1 y e2) = TmPlusCase rho r z x (go e1) y (go e2)
-        go (TmIte rho r z e1 e2) = TmIte rho r z (go e1) (go e2)
+        go (TmIte m e1 e2) = TmIte m (go e1) (go e2)
         go TmNil = TmNil
         go (TmCons s e1 e2) = TmCons s (go e1) (go e2)
         go (TmStarCase rho r t z e1 y ys e2) = TmStarCase rho r t z (go e1) y ys (go e2)
@@ -374,7 +368,7 @@ bufMap f (TmParR e1 e2) = TmParR (bufMap f e1) (bufMap f e2)
 bufMap f (TmInl e) = TmInl (bufMap f e)
 bufMap f (TmInr e) = TmInr (bufMap f e)
 bufMap f (TmPlusCase buf r z x e1 y e2) = TmPlusCase (f buf) r z x (bufMap f e1) y (bufMap f e2)
-bufMap f (TmIte buf t z e1 e2) = TmIte (f buf) t z (bufMap f e1) (bufMap f e2)
+bufMap f (TmIte m e1 e2) = TmIte m (bufMap f e1) (bufMap f e2)
 bufMap _ TmNil = TmNil
 bufMap f (TmCons t e1 e2) = TmCons t (bufMap f e1) (bufMap f e2)
         -- go (TmStarCase rho r t z e1 y ys e2) = TmStarCase rho r t z (go e1) y ys (go e2)

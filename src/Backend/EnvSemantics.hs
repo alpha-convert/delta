@@ -39,7 +39,6 @@ import Util.ErrUtil (reThrow, reThrowIO)
 import Util.MSFUtil
 import Test.QuickCheck.Monadic
 import Data.List (intercalate)
-import qualified Backend.EventSemantics as EventSem
 import Event (envToEvents, eventsToPrefix, eventToPrefix)
 import Data.Maybe (isJust)
 
@@ -210,22 +209,19 @@ eval e@(TmPlusCase rho' r z x e1 y e2) = do
                 return (p'', substVar e2' z y)
             _ -> throwError (NotPlusPrefix z p))
 
-eval e@(TmIte rho' r z e1 e2) = do
-    withEnvM (concatEnvM e rho') $ do
-        p <- lookupVar z
-        case p of
-            LitPEmp -> do
-                rho'' <- ask
-                return (emptyPrefix r, TmIte rho'' r z e1 e2)
-            (LitPFull (LBool True)) -> do
-             (p',e1') <- eval e1
-            --  e1'' <- reThrow handleRuntimeCutError (cut z TmEpsR e1')
-             return (p', TmCut z TmEpsR e1')
-            (LitPFull (LBool False)) -> do
-                (p',e2') <- eval e2
-                -- e2'' <- reThrow handleRuntimeCutError (cut z TmEpsR e2')
-                return (p', TmCut z TmEpsR e2')
-            _ -> throwError (NotBoolPrefix z p)
+-- eval (TmHistPgm s he) = do
+--     p 
+--     e <- reThrow SinkError (sinkTm p)
+--     return (p,e)
+
+
+eval e@(TmIte m e1 e2) = do
+    b <- reThrow (handleHistEvalErr m) $ do
+        v <- Hist.eval m
+        case v of
+            Hist.VBool b -> return b
+            _ -> error ""
+    if b then eval e1 else eval e2
 
 eval TmNil = return (StpDone,TmEpsR)
 
@@ -391,30 +387,31 @@ doRunPgm p = do
                             modify (M.insert f (SpecTerm e' g' s'))
                         Left err -> error $ "Runtime Error: " ++ pp err
 
-        go (QuickCheckCommand f) = do
-            lift (putStrLn "\n")
-            fs <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to QuickCheck unbound function " ++ pp f)) return
-            case fs of
-                PolymorphicDefn {} -> error ("Cannot run un-specialized function " ++ pp f)
-                SpecTerm e g t -> lift $ do
-                    putStrLn $ "Quickchecking: " ++ pp e
-                    putStrLn $ "Input context: " ++ pp g
-                    verboseCheck (testSem e g t)
+        go (QuickCheckCommand f) = error "Not currently implemented."
+            -- do
+            -- lift (putStrLn "\n")
+            -- fs <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to QuickCheck unbound function " ++ pp f)) return
+            -- case fs of
+            --     PolymorphicDefn {} -> error ("Cannot run un-specialized function " ++ pp f)
+            --     SpecTerm e g t -> lift $ do
+            --         putStrLn $ "Quickchecking: " ++ pp e
+            --         putStrLn $ "Input context: " ++ pp g
+            --         verboseCheck (testSem e g t)
 
-testSem e g t = forAll (genOf g) $ \rho -> monadicIO $ do
-    tevs <- lift (reThrowIO (envToEvents g rho))
-    !()<- trace ("Events in: [" ++ intercalate "," (map show tevs) ++ "]") (return ())
-    let e' = (bufMap (const emptyBuf) e :: Term EventSem.EventBuf)
-    evs <- lift (EventSem.doEvalMany e' tevs)
-    !() <- trace ("Events out: " ++ intercalate "," (map show evs)) (return ())
-    case doEval (eval e) rho of
-        Left e -> lift (error (pp e))
-        Right (p,_) -> do
-            !()<- trace ("Env in: " ++ pp rho) (return ())
-            !() <- trace ("Prefix out: " ++ show p) (return ())
-            p' <- lift $ reThrowIO (eventsToPrefix t evs) 
-            !() <- trace ("Events, converted to prefix out: " ++ show p') (return ())
-            return (p === p')
+-- testSem e g t = forAll (genOf g) $ \rho -> monadicIO $ do
+--     tevs <- lift (reThrowIO (envToEvents g rho))
+--     !()<- trace ("Events in: [" ++ intercalate "," (map show tevs) ++ "]") (return ())
+--     let e' = (bufMap (const emptyBuf) e :: Term EventSem.EventBuf)
+--     evs <- lift (EventSem.doEvalMany e' tevs)
+--     !() <- trace ("Events out: " ++ intercalate "," (map show evs)) (return ())
+--     case doEval (eval e) rho of
+--         Left e -> lift (error (pp e))
+--         Right (p,_) -> do
+--             !()<- trace ("Env in: " ++ pp rho) (return ())
+--             !() <- trace ("Prefix out: " ++ show p) (return ())
+--             p' <- lift $ reThrowIO (eventsToPrefix t evs) 
+--             !() <- trace ("Events, converted to prefix out: " ++ show p') (return ())
+--             return (p === p')
 
 
 
@@ -505,149 +502,130 @@ msfUnionEnv = arrM $ \(rho,rho') -> reThrow r (unionDisjointEnv rho rho')
     where
         r (x,p,p') = UnionEnvError x p p'
 
-denote :: (MonadError SemError m) => Term EnvBuf -> MSF m (Env Var.Var Prefix) Prefix
-denote (TmLitR v) = arr (const (LitPFull v)) `dThen` denote TmEpsR
-denote TmEpsR = arr (const EpsP)
-denote (TmVar x) = msfLookupEnv x
-denote (TmCatR _ e1 e2) = switch (denote e1 >>^ maximalPass) (\p -> applyToFirst id (CatPB p) (denote e2))
-    where
-        maximalPass p = (CatPA p,if isMaximal p then Just p else Nothing)
+-- denote :: (MonadError SemError m) => Term EnvBuf -> MSF m (Env Var.Var Prefix) Prefix
+-- denote (TmLitR v) = arr (const (LitPFull v)) `dThen` denote TmEpsR
+-- denote TmEpsR = arr (const EpsP)
+-- denote (TmVar x) = msfLookupEnv x
+-- denote (TmCatR _ e1 e2) = switch (denote e1 >>^ maximalPass) (\p -> applyToFirst id (CatPB p) (denote e2))
+--     where
+--         maximalPass p = (CatPA p,if isMaximal p then Just p else Nothing)
 
-denote (TmCatL t x y z e) = switch bindX (\(p,p') -> dSwitch (bindXY p p') closeXRebindY) >>> denote e
-    where
-        -- First, we just bind p to x and emp(t) to y.
-        -- Once we get a CatPB, we immediately switch to running with x |-> p, y |-> p'
-        bindX = arrM $ \rho ->
-            case lookupEnv z rho of
-                Just (CatPA p) -> return (bindAllEnv [(x,p),(y,emptyPrefix t)] rho, Nothing)
-                Just (CatPB p p') -> return (rho,Just (p,p'))
-                Just p -> throwError (NotCatPrefix z p)
-                Nothing -> throwError (VarLookupFailed z)
-        bindXY p p' = arrM $ \rho ->
-            case maximalLift p of
-                Just mp -> return (bindAllEnv [(x,p),(y,p')] rho, Just (sinkPrefix mp))
-                _ -> throwError (MaximalPrefixError p)
-        -- Once we've done that once, we continue by running with x |-> sink(p'), y |-> rho(z)
-        closeXRebindY xBind = arrM $ \rho ->
-            case lookupEnv z rho of
-                Just p -> return $ bindAllEnv [(x,xBind),(y,p)] rho
-                Nothing -> throwError (VarLookupFailed z)
-
-
-denote (TmParR e1 e2) = denote e1 &|& denote e2 >>^ uncurry ParP
-denote (TmParL x y z e) = msfLookupEnv z &&& arr id >>> arrM rebind >>> denote e
-    where
-        rebind (ParP p1 p2,rho) = return (bindAllEnv [(x,p1),(y,p2)] rho)
-        rebind (p,_) = throwError (NotParPrefix z p)
-
-denote (TmCut x e1 e2) = (denote e1 &&& arr id >>^ uncurry (bindEnv x)) >>> denote e2
-denote (TmInl e) = applyToFirst id SumPA (denote e)
-denote (TmInr e) = applyToFirst id SumPB (denote e)
-denote e@(TmIte rho' t z e1 e2) = bufferUntil (concatEnvM e) boolLit rho' (emptyPrefix t) go
-    where
-        boolLit rho =
-            case lookupEnv z rho of
-                Just LitPEmp -> return Nothing
-                Just (LitPFull (LBool True)) -> return (Just True)
-                Just (LitPFull (LBool False)) -> return (Just False)
-                Just p -> throwError (NotBoolPrefix z p)
-                _ -> throwError (VarLookupFailed z)
-        go True = denote e1
-        go False = denote e2
-
-denote e@(TmPlusCase rho' t z x e1 y e2) = bufferUntil (concatEnvM e) nonEmptyPlus rho' (emptyPrefix t) go
-    where
-        nonEmptyPlus rho =
-            case lookupEnv z rho of
-                Just SumPEmp -> return Nothing
-                Just (SumPA p) -> return (Just (Left p))
-                Just (SumPB p) -> return (Just (Right p))
-                Just p -> throwError (NotPlusPrefix z p)
-                Nothing -> throwError (VarLookupFailed z)
-
-        go :: (MonadError SemError m) => Either Prefix Prefix -> MSF m (Env Var.Var Prefix) Prefix
-        go (Left p) = (msfBindEnv x p `dThen` rebind x z) >>> denote e1
-        go (Right p) = (msfBindEnv y p `dThen` rebind y z) >>> denote e2
-
-        rebind x z = arrM $ \rho ->
-            case lookupEnv z rho of
-                Just p -> return (unbindEnv z (bindEnv x p rho))
-                Nothing -> throwError (VarLookupFailed z)
-
-denote TmNil = arr (const StpDone) `dThen` denote TmEpsR
-denote (TmCons _ e1 e2) = switch (denote e1 >>^ maximalPass) (\p -> applyToFirst id (StpB p) (denote e2))
-    where
-        maximalPass p = (StpA p,if isMaximal p then Just p else Nothing)
-
--- eval e@(TmStarCase rho' r s z e1 x xs e2) = do
---     withEnvM (concatEnvM e rho') $ do
---         p <- lookupVar z
---         (case p of
---             StpEmp -> do
---                 rho'' <- ask
---                 return (emptyPrefix r, TmStarCase rho'' r s z e1 x xs e2)
---             StpDone -> eval e1
---             StpA p' -> do
---                 (p'',e2') <- withEnv (bindAllEnv [(x,p'),(xs,StpEmp)] . unbindEnv z) (eval e2)
---                 return (p'', TmCatL (TyStar s) x xs z e2')
---             StpB p1 p2 -> do
---                 (p'',e2') <- withEnv (bindAllEnv [(x,p1),(xs,p2)] . unbindEnv z) (eval e2)
---                 sink <- reThrow SinkError (sinkTm p1)
---                 -- e'' <- reThrow handleRuntimeCutError (cut x sink e2')
---                 return (p'', substVar (TmCut x sink e2') z xs)
---             _ -> throwError (NotStarPrefix z p))
+-- denote (TmCatL t x y z e) = switch bindX (\(p,p') -> dSwitch (bindXY p p') closeXRebindY) >>> denote e
+--     where
+--         -- First, we just bind p to x and emp(t) to y.
+--         -- Once we get a CatPB, we immediately switch to running with x |-> p, y |-> p'
+--         bindX = arrM $ \rho ->
+--             case lookupEnv z rho of
+--                 Just (CatPA p) -> return (bindAllEnv [(x,p),(y,emptyPrefix t)] rho, Nothing)
+--                 Just (CatPB p p') -> return (rho,Just (p,p'))
+--                 Just p -> throwError (NotCatPrefix z p)
+--                 Nothing -> throwError (VarLookupFailed z)
+--         bindXY p p' = arrM $ \rho ->
+--             case maximalLift p of
+--                 Just mp -> return (bindAllEnv [(x,p),(y,p')] rho, Just (sinkPrefix mp))
+--                 _ -> throwError (MaximalPrefixError p)
+--         -- Once we've done that once, we continue by running with x |-> sink(p'), y |-> rho(z)
+--         closeXRebindY xBind = arrM $ \rho ->
+--             case lookupEnv z rho of
+--                 Just p -> return $ bindAllEnv [(x,xBind),(y,p)] rho
+--                 Nothing -> throwError (VarLookupFailed z)
 
 
-denote e@(TmStarCase rho' r s z e1 x xs e2) = bufferUntil (concatEnvM e) nonEmptyStar rho' (emptyPrefix r) go
-    where
-        nonEmptyStar rho =
-            case lookupEnv z rho of
-                Just StpEmp -> return Nothing
-                Just StpDone -> return (Just (Left ()))
-                Just (StpA p) -> return (Just (Right (Left p)))
-                Just (StpB p p') -> return (Just (Right (Right (p,p'))))
-                Just p -> throwError (NotStarPrefix z p)
-                Nothing -> throwError (VarLookupFailed z)
+-- denote (TmParR e1 e2) = denote e1 &|& denote e2 >>^ uncurry ParP
+-- denote (TmParL x y z e) = msfLookupEnv z &&& arr id >>> arrM rebind >>> denote e
+--     where
+--         rebind (ParP p1 p2,rho) = return (bindAllEnv [(x,p1),(y,p2)] rho)
+--         rebind (p,_) = throwError (NotParPrefix z p)
 
-        go (Left ()) = denote e1
-        go (Right (Left p)) = (msfBindAllEnv [(x,p),(xs,StpEmp)] `dThen` rebind xs z {- WRONG!! -}) >>> denote e2
-        go (Right (Right (p,p'))) = (msfBindAllEnv [(x,p),(xs,p')] `dThen` rebind xs z) >>> denote e2
+-- denote (TmCut x e1 e2) = (denote e1 &&& arr id >>^ uncurry (bindEnv x)) >>> denote e2
+-- denote (TmInl e) = applyToFirst id SumPA (denote e)
+-- denote (TmInr e) = applyToFirst id SumPB (denote e)
+-- denote e@(TmIte rho' t z e1 e2) = bufferUntil (concatEnvM e) boolLit rho' (emptyPrefix t) go
+--     where
+--         boolLit rho =
+--             case lookupEnv z rho of
+--                 Just LitPEmp -> return Nothing
+--                 Just (LitPFull (LBool True)) -> return (Just True)
+--                 Just (LitPFull (LBool False)) -> return (Just False)
+--                 Just p -> throwError (NotBoolPrefix z p)
+--                 _ -> throwError (VarLookupFailed z)
+--         go True = denote e1
+--         go False = denote e2
 
-        rebind x z = arrM $ \rho ->
-            case lookupEnv z rho of
-                Just p -> return (unbindEnv z (bindEnv x p rho))
-                Nothing -> throwError (VarLookupFailed z)
+-- denote e@(TmPlusCase rho' t z x e1 y e2) = bufferUntil (concatEnvM e) nonEmptyPlus rho' (emptyPrefix t) go
+--     where
+--         nonEmptyPlus rho =
+--             case lookupEnv z rho of
+--                 Just SumPEmp -> return Nothing
+--                 Just (SumPA p) -> return (Just (Left p))
+--                 Just (SumPB p) -> return (Just (Right p))
+--                 Just p -> throwError (NotPlusPrefix z p)
+--                 Nothing -> throwError (VarLookupFailed z)
 
-denote (TmWait rho' t s x e) = bufferUntil (concatEnvM e) (maximalOn x) rho' (emptyPrefix t) go
-    where
-        maximalOn x rho =
-            case lookupEnv x rho of
-                Just p -> return (maximalLift p)
-                Nothing -> throwError (VarLookupFailed x)
-        go mp = case runIdentity (runExceptT (maximalPrefixSubst s mp x e)) of
-                  Left (x,s,p,e) -> arrM (const (throwError (MaximalPrefixSubstErr x s p e)))
-                  Right e' -> denote e'
+--         go :: (MonadError SemError m) => Either Prefix Prefix -> MSF m (Env Var.Var Prefix) Prefix
+--         go (Left p) = (msfBindEnv x p `dThen` rebind x z) >>> denote e1
+--         go (Right p) = (msfBindEnv y p `dThen` rebind y z) >>> denote e2
 
-denote (TmHistPgm s he) = dSwitch emit sink
-    where
-        emit = arrM $ \_ -> do
-            mp <- reThrow (handleHistEvalErr he) $ do
-                v <- Hist.eval he
-                Hist.valueToMaximalPrefix s v
-            return (maximalDemote mp, Just mp)
-        sink mp = arr (const (sinkPrefix mp))
+--         rebind x z = arrM $ \rho ->
+--             case lookupEnv z rho of
+--                 Just p -> return (unbindEnv z (bindEnv x p rho))
+--                 Nothing -> throwError (VarLookupFailed z)
+
+-- denote TmNil = arr (const StpDone) `dThen` denote TmEpsR
+-- denote (TmCons _ e1 e2) = switch (denote e1 >>^ maximalPass) (\p -> applyToFirst id (StpB p) (denote e2))
+--     where
+--         maximalPass p = (StpA p,if isMaximal p then Just p else Nothing)
+
+-- denote e@(TmStarCase rho' r s z e1 x xs e2) = bufferUntil (concatEnvM e) nonEmptyStar rho' (emptyPrefix r) go
+--     where
+--         nonEmptyStar rho =
+--             case lookupEnv z rho of
+--                 Just StpEmp -> return Nothing
+--                 Just StpDone -> return (Just (Left ()))
+--                 Just (StpA p) -> return (Just (Right (Left p)))
+--                 Just (StpB p p') -> return (Just (Right (Right (p,p'))))
+--                 Just p -> throwError (NotStarPrefix z p)
+--                 Nothing -> throwError (VarLookupFailed z)
+
+--         go (Left ()) = denote e1
+--         go (Right (Left p)) = (msfBindAllEnv [(x,p),(xs,StpEmp)] `dThen` rebind xs z {- WRONG!! -}) >>> denote e2
+--         go (Right (Right (p,p'))) = (msfBindAllEnv [(x,p),(xs,p')] `dThen` rebind xs z) >>> denote e2
+
+--         rebind x z = arrM $ \rho ->
+--             case lookupEnv z rho of
+--                 Just p -> return (unbindEnv z (bindEnv x p rho))
+--                 Nothing -> throwError (VarLookupFailed z)
+
+-- denote (TmWait rho' t s x e) = bufferUntil (concatEnvM e) (maximalOn x) rho' (emptyPrefix t) go
+--     where
+--         maximalOn x rho =
+--             case lookupEnv x rho of
+--                 Just p -> return (maximalLift p)
+--                 Nothing -> throwError (VarLookupFailed x)
+--         go mp = case runIdentity (runExceptT (maximalPrefixSubst s mp x e)) of
+--                   Left (x,s,p,e) -> arrM (const (throwError (MaximalPrefixSubstErr x s p e)))
+--                   Right e' -> denote e'
+
+-- denote (TmHistPgm s he) = dSwitch emit sink
+--     where
+--         emit = arrM $ \_ -> do
+--             mp <- reThrow (handleHistEvalErr he) $ do
+--                 v <- Hist.eval he
+--                 Hist.valueToMaximalPrefix s v
+--             return (maximalDemote mp, Just mp)
+--         sink mp = arr (const (sinkPrefix mp))
 
 
-denote (TmRec _) = error "imposible"
+-- denote (TmRec _) = error "imposible"
 
-denote (TmFix args g t e) = denoteArgs args g >>> denote (fixSubst g t e e)
+-- denote (TmFix args g t e) = denoteArgs args g >>> denote (fixSubst g t e e)
 
-denote (TmArgsCut {}) = error "unimplemented"
+-- denote (TmArgsCut {}) = error "unimplemented"
 
-denoteArgs EmpCtx EmpCtx = arr id
-denoteArgs (SngCtx e) (SngCtx (CE x _)) = denote e >>> arrM (return . singletonEnv x)
-denoteArgs (CommaCtx g1 g2) (CommaCtx g1' g2') = denoteArgs g1 g1' &&& denoteArgs g2 g2' >>> msfUnionEnv
-denoteArgs (SemicCtx g1 g2) (SemicCtx g1' g2') = denoteArgs g1 g1' &&& denoteArgs g2 g2' >>> msfUnionEnv
-denoteArgs g g' = arrM (const (throwError (NonMatchingArgs g' g)))
+-- denoteArgs EmpCtx EmpCtx = arr id
+-- denoteArgs (SngCtx e) (SngCtx (CE x _)) = denote e >>> arrM (return . singletonEnv x)
+-- denoteArgs (CommaCtx g1 g2) (CommaCtx g1' g2') = denoteArgs g1 g1' &&& denoteArgs g2 g2' >>> msfUnionEnv
+-- denoteArgs (SemicCtx g1 g2) (SemicCtx g1' g2') = denoteArgs g1 g1' &&& denoteArgs g2 g2' >>> msfUnionEnv
+-- denoteArgs g g' = arrM (const (throwError (NonMatchingArgs g' g)))
 
 

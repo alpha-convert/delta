@@ -313,16 +313,13 @@ checkElab r e@(Elab.TmPlusCase z x e1 y e2) = do
         rho <- m_rho
         return (Core.TmPlusCase rho r' z x me1' y me2')
 
-checkElab r e@(Elab.TmIte z e1 e2) = do
-    lookupTyBool e z
+checkElab r e@(Elab.TmIte m e1 e2) = do
+    () <- liftHistCheck e (Hist.check m TyBool)
     CR p1 _ e1' <- checkElab r e1
     CR p2 _ e2' <- checkElab r e2
     p' <- reThrow (handleOrderErr e) (P.union p1 p2)
-    m_rho <- asks (emptyBufOfType . argsTypes)
     return $ CR p' Inert $ do
-        rho <- m_rho
-        r' <- monomorphizeTy r
-        Core.TmIte rho r' z <$> e1' <*> e2'
+        Core.TmIte m <$> e1' <*> e2'
 
 
 checkElab (TyStar _) Elab.TmNil = return (CR P.empty Jumpy (return Core.TmNil))
@@ -504,17 +501,16 @@ inferElab e@(Elab.TmPlusCase z x e1 y e2) = do
         rho <- m_rho
         return (Core.TmPlusCase rho r1' z x me1' y me2')
 
-inferElab e@(Elab.TmIte z e1 e2) = do
-    lookupTyBool e z
+inferElab e@(Elab.TmIte m e1 e2) = do
+    () <- liftHistCheck e (Hist.check m TyBool)
     IR r1 p1 _ e1' <- inferElab e1
     IR r2 p2 _ e2' <- inferElab e2
     guard (r1 == r2) (UnequalReturnTypes r1 r2 e)
     p' <- reThrow (handleOrderErr e) $ P.union p1 p2
-    m_rho <- asks (emptyBufOfType . argsTypes)
     return $ IR r1 p' Inert $ do
-        rho <- m_rho
         r <- monomorphizeTy r1
-        Core.TmIte rho r z <$> e1' <*> e2'
+        Core.TmIte m <$> e1' <*> e2'
+    
 
 inferElab e@Elab.TmNil = throwError (CheckTermInferPos e)
 
