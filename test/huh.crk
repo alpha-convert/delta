@@ -1,0 +1,5 @@
+fun foo(x : Int ; y : Bool) : Int . Int =
+    let u = 3 in (x;u)
+
+specialize foo[]
+exec foo(x = emp; y = emp)

@@ -1,0 +1,4 @@
+fun map[s,t](f : (x : s) -> t)(xs : s*) : t* =
+    case xs of
+      nil => nil
+    | y::ys => f(y) :: map(ys)

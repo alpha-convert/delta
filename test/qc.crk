@@ -1,0 +1,5 @@
+fun id (x : Int ; y : Int) : Int . Int =
+    (x;y)
+
+specialize id[]
+quickcheck id

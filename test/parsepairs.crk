@@ -6,5 +6,4 @@ fun parsepairs[s](xs : s*) : (s . s)* =
                  | z :: zs => (y;z) :: parsepairs(zs)
 
 specialize parsepairs[Int]
-exec step parsepairs(xs = [2))
-exec parsepairs(xs = (emp;emp))
+exec parsepairs(xs = [2;3;4;5))

@@ -1,11 +1,12 @@
-fun foo(xs : Int*, y : Int) : Int* =
+fun foo(xs : Bool + Int, y : Int) : Eps =
     case xs of
-      nil => nil
-    | x'::xs' => wait y do
-                   {y} :: foo(xs',{y})
+      inl _ => sink
+    | inr x' => wait y do
+                   foo(inr x',0)
                  end
 
 specialize foo[]
 
-exec step foo(xs =[1],y = emp)
+exec step foo(xs = inr(3),y = emp)
 exec foo(xs=emp,y=5)
+

@@ -1,9 +1,11 @@
-fun foo(xs : Int*, y : Int) : Int* =
+fun bar(xs : Int + Int, y : Int) : Int =
     case xs of
-      nil => nil
-    | x'::xs' => xs' 
+      inl _ => 1
+    | inr x' => wait y do
+                   x' 
+                 end
 
-specialize foo[]
+specialize bar[]                 
 
-exec step foo(xs =[1],y = emp)
-exec foo(xs=emp,y=5)
+exec step bar(xs = inr(3),y = emp)
+exec bar(xs=emp,y=5)

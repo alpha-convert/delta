@@ -51,16 +51,9 @@ fun parseLL(t : Int; xs : Int*) : (Int . Int*)* =
                    parseLL({t};ys)
                end
 
-
 fun threshAverage(t : Int; xs : Int*) : Int* =
   averageRuns(parseLL(t;xs))
 
-specialize parseLL[]
-specialize averageRuns[]
 specialize threshAverage[]
 
-exec parseLL(t = 3; xs = [1;2;3;4;5;0))
-
-exec averageRuns(xs = [(3;[4;5]);emp))
-
-exec threshAverage(t = 3; xs = [1;2;3;4;5;0))
+exec step threshAverage(t = 2; xs = [1;2;3;4;5;6;1;2;6;0))
