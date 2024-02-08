@@ -21,6 +21,7 @@ import qualified Data.Functor
 import Data.Functor ((<&>))
 import qualified HistPgm as Hist
 import Debug.Trace (trace)
+import Data.Maybe (isNothing)
 
 {-
 
@@ -71,7 +72,8 @@ data Term =
     | TmHistPgm Hist.Term
     | TmFunCall Var.FunVar [TyF Var.TyVar] {-[FunCallFunArg]-} (CtxStruct Term)
     | TmRec (CtxStruct Term)
-    -- | TmFunArgCall Var.FunVar (CtxStruct Term)
+    | TmMacroParamUse Var.FunVar (CtxStruct Term)
+    | TmMacroUse Var.FunVar [TyF Var.TyVar] Var.FunVar (CtxStruct Term)
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint Term where
@@ -95,13 +97,15 @@ instance PrettyPrint Term where
             go False (TmCons e1 e2) = concat [go True e1," :: ", go True e2]
             go False (TmStarCase (Var z) e1 (Var x) (Var xs) e2) = concat ["case ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
             go False (TmRec es) = concat ["rec (", pp (go False <$> es), ")"]
-            go False (TmFunCall f [] {-fs-} es) = concat [pp f,"(", pp (go False <$> es), ")"]
-            go False (TmFunCall f ts {-fs-} es) = concat [pp f,"[",intercalate "," (map pp ts),"]"," (", pp (go False <$> es), ")"]
-            -- go False (TmFunArgCall f es) = concat [pp f,"(", pp (go False <$> es), ")"]
+            go False (TmFunCall f []  es) = concat [pp f,"(", pp (go False <$> es), ")"]
+            go False (TmFunCall f ts es) = concat [pp f,"[",intercalate "," (map pp ts),"]"," (", pp (go False <$> es), ")"]
+            go False (TmMacroParamUse f es) = concat [pp f,"(", pp (go False <$> es), ")"]
             go False (TmWait x e) = concat ["wait ", pp x," do ", go True e]
+            go False (TmMacroUse f ts mac_f es) = concat [pp f,"[",intercalate "," (map pp ts),"]", "<", pp mac_f, ">", "(", pp (go False <$> es), ")"]
 
 data Cmd =
-      FunDef Var.FunVar [Var.TyVar] {- [Surf.FunArg]-} (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
+      FunDef Var.FunVar [Var.TyVar] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
+    | MacroDef Var.FunVar [Var.TyVar] Surf.MacroParam (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
     | SpecializeCommand Var.FunVar [Ty] [Var.FunVar]
     | RunCommand Var.FunVar (Ctx Var Surf.UntypedPrefix)
     | RunStepCommand Var.FunVar (Ctx Var Surf.UntypedPrefix)
@@ -158,7 +162,7 @@ sameBinder Nothing _ = Nothing
 sameBinder _ Nothing = Nothing
 sameBinder (Just x) (Just y) = if x == y then Just x else Nothing
 
-data LowerInp = LI { lowerfunName :: Var.FunVar, {-funArgNames :: [Var.FunVar],-} topLevelFunNames :: [Var.FunVar]}
+data LowerInp = LI { lowerfunName :: Var.FunVar, macParamName :: Maybe Var.FunVar, topLevelFunNames :: [Var.FunVar], topLevelMacroNames :: [Var.FunVar]}
 
 lowerSurf :: (MonadState Int m, MonadReader LowerInp m, MonadError ElabErr m) => Surf.Term -> m Term
 lowerSurf (Surf.TmLitR l) = return (TmLitR l)
@@ -226,21 +230,21 @@ lowerSurf (Surf.TmCut x e1 e2) = do
     e1' <- lowerSurf e1
     e2' <- lowerSurf e2
     return (TmCut x e1' e2')
-lowerSurf (Surf.TmFunCall f ts {-fs-} es) = do
+lowerSurf (Surf.TmFunCall f ts mf_macro_arg es) = do
     curF <- asks lowerfunName
-    -- argFs <- asks funArgNames
+    macP <- asks macParamName
+    macFs <- asks topLevelMacroNames
+    tlFs <- asks topLevelFunNames
     if f == curF then 
-        if not (null ts) then throwError (PolymorphicRec f) else TmRec <$> mapM lowerSurf es
-    -- else if f `elem` argFs then
-    --     if not (null ts) then throwError (PolymorphicFunArgCall f) else TmFunArgCall f <$> mapM lowerSurf es
-    else TmFunCall f ts <$> {-mapM dispatch fs <*>-} mapM lowerSurf es
-        -- where
-            -- dispatch f = do
-            --     -- argFs <- asks funArgNames
-            --     tlFs <- asks topLevelFunNames
-            --     -- if f `elem` argFs then return (BoundFunArg f)
-            --     if f `elem` tlFs then return (TopLevelFun f)
-            --     else throwError (UnboundFunVar f)
+        if not (null ts && isNothing mf_macro_arg) then error "here!" else TmRec <$> mapM lowerSurf es
+    else if f `elem` macP then
+        if not (null ts && isNothing mf_macro_arg) then error "here2!!!" else TmMacroParamUse f <$> mapM lowerSurf es
+    else if f `elem` macFs then
+        case mf_macro_arg of
+            Nothing -> error "macro call needs macro arg"
+            Just f_macro_arg ->
+                if (not (f_macro_arg `elem` tlFs)) then (error "macro call needs top level fun arg.") else TmMacroUse f ts f_macro_arg <$> mapM lowerSurf es
+    else TmFunCall f ts <$> mapM lowerSurf es
 
 freshUnshadowVar :: (UnshadowM m) => m Var
 freshUnshadowVar = freshVar "u"
@@ -316,16 +320,19 @@ unshadowTerm (TmStarCase z e1 x xs e2) = do
     e1' <- unshadowTerm e1
     ((e2',xs'),x') <- withUnshadow x $ withUnshadow xs $ unshadowTerm e2
     return (TmStarCase z' e1' x' xs' e2')
-unshadowTerm (TmFunCall f ts {-fs-} es) = do
+unshadowTerm (TmFunCall f ts es) = do
     es' <- mapM unshadowTerm es
-    return (TmFunCall f ts {-fs-} es')
+    return (TmFunCall f ts es')
 unshadowTerm (TmWait x e) = TmWait <$> unshadowVar x <*> unshadowTerm e
 unshadowTerm (TmCut x e1 e2) = do
     e1' <- unshadowTerm e1
     (e2',x') <- withUnshadow x (unshadowTerm e2)
     return (TmCut x' e1' e2')
 unshadowTerm (TmRec e) = TmRec <$> mapM unshadowTerm e
--- unshadowTerm (TmFunArgCall f es) = TmFunArgCall f <$> mapM unshadowTerm es
+unshadowTerm (TmMacroParamUse f es) = TmMacroParamUse f <$> mapM unshadowTerm es
+unshadowTerm (TmMacroUse f ts f_macro_arg args) = do
+    args' <- mapM unshadowTerm args
+    return (TmMacroUse f ts f_macro_arg args')
 
 unshadowHist :: (UnshadowM m) => Hist.Term -> m Hist.Term
 unshadowHist (Hist.TmVar x) = Hist.TmVar <$> unshadowVar x
@@ -346,24 +353,32 @@ unshadowHist (Hist.TmIte e e1 e2) = Hist.TmIte <$> unshadowHist e <*> unshadowHi
 instance UnshadowM (StateT Int (ReaderT UnshadowInput (Either ElabErr))) where
 
 
---                           funargs         top level functions
-elabSingle :: Var.FunVar -> {- [Var.FunVar] -> -} [Var.FunVar] -> Surf.Term -> S.Set Var -> Either ElabErr Term
-elabSingle f {-fs-} tlfs e s = do
-    lowered_e <- runReaderT (evalStateT (lowerSurf e) 0) (LI f {-fs-} tlfs)
+--                           macro parameter      top level functions     top level macros
+elabSingle :: Var.FunVar -> (Maybe Var.FunVar) -> [Var.FunVar] ->         [Var.FunVar] -> Surf.Term -> S.Set Var -> Either ElabErr Term
+elabSingle f mfa tlfs tlms e s = do
+    lowered_e <- runReaderT (evalStateT (lowerSurf e) 0) (LI f mfa tlfs tlms)
     unshadowed_e <- runReaderT (evalStateT (unshadowTerm lowered_e) 0) initUnshadowMap
     return unshadowed_e
     where
         initUnshadowMap = EI (S.fold (\x -> M.insert x x) M.empty s) f
 
 doElab :: Surf.Program -> IO Program
-doElab xs = flip evalStateT [] $ flip mapM xs $ \case
-                    (Surf.FunDef f tvs {-fs-} g s e) -> do
-                        fBound <- get
-                        case elabSingle f {- (map (\(Surf.FA fa _ _) -> fa) fs)-} fBound e (M.keysSet $ ctxBindings g) of
+doElab xs = flip evalStateT ([],[]) $ flip mapM xs $ \case
+                    (Surf.FunDef f tvs g s e) -> do
+                        (funsBound,macsBound) <- get
+                        case elabSingle f Nothing funsBound macsBound e (M.keysSet $ ctxBindings g) of
                             Right e' -> do
                                 lift (putStrLn $ "Function " ++ pp f ++ " elaborated OK. Elab term: " ++ pp e' ++ "\n")
-                                put (f:fBound)
-                                return (FunDef f tvs {-fs-} g s e')
+                                put (f:funsBound, macsBound)
+                                return (FunDef f tvs g s e')
+                            Left err -> error (pp err)
+                    (Surf.MacroDef f tvs ma@(Surf.MP f_macparam _ _) g s e) -> do
+                        (fBound,macsBound) <- get
+                        case elabSingle f (Just f_macparam) fBound macsBound e (M.keysSet $ ctxBindings g) of
+                            Right e' -> do
+                                lift (putStrLn $ "Function " ++ pp f ++ " elaborated OK. Elab term: " ++ pp e' ++ "\n")
+                                put (fBound,f:macsBound)
+                                return (MacroDef f tvs ma g s e')
                             Left err -> error (pp err)
                     (Surf.SpecializeCommand f ts fs) -> case mapM closeTy ts of
                                                        Left x -> error $ "Tried to specialize function " ++ pp f ++ ", but provided type with type variable " ++ pp x

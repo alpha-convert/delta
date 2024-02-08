@@ -4,6 +4,7 @@ module CoreSyntax (
   Term(..),
   Program,
   Cmd(..),
+  MacroParam(..),
   substVar,
   sinkTm,
   cut,
@@ -25,6 +26,7 @@ import Debug.Trace (trace)
 import Backend.Template (Template)
 import Buffer
 import Util.ErrUtil
+import Data.Void (Void)
 
 data Term buf =
       TmLitR Lit
@@ -49,8 +51,11 @@ data Term buf =
     | TmHistPgm Ty Hist.Term
     deriving (Eq,Ord,Show)
 
+data MacroParam buf = MP Var.FunVar (Template Void (CtxStruct Ty)) (Template Void Ty)
+
 data Cmd buf =
-    FunDef Var.FunVar [Var.TyVar] (Template (Ctx Var.Var Ty)) (Template Ty) (Template (Term buf))
+    FunDef Var.FunVar [Var.TyVar] (Template (Term buf) (Ctx Var.Var Ty)) (Template (Term buf) Ty) (Template (Term buf) (Term buf))
+  -- | MacroDef Var.FunVar [Var.TyVar] (MacroParam buf) (Template (Term buf) (Ctx Var.Var Ty)) (Template (Term buf) Ty) (Template (Term buf) (Term buf))
   | SpecializeCommand Var.FunVar [Ty]
   | RunCommand Var.FunVar  (Env Var Prefix)
   | RunStepCommand Var.FunVar (Env Var Prefix)

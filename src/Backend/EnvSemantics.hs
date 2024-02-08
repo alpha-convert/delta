@@ -330,7 +330,7 @@ evalArgs _ (SemicCtx {}) = undefined
 -- A function can be in one of two states. It can have been defined (and not yet specialized), or specialized.
 -- An unspecialized function is a monomorphizer, accepting type varibles matching its required type arguments.
 data FunState =
-      PolymorphicDefn [Var.TyVar] (Template (Term EnvBuf)) (Template (Ctx Var.Var Ty)) (Template Ty)
+      PolymorphicDefn [Var.TyVar] (Template (Term EnvBuf) (Term EnvBuf)) (Template (Term EnvBuf) (Ctx Var.Var Ty)) (Template (Term EnvBuf) Ty)
     | SpecTerm (Term EnvBuf) (Ctx Var.Var Ty) Ty
 
 type TopLevel = M.Map Var.FunVar FunState
@@ -353,7 +353,7 @@ doRunPgm p = do
                     let monomap = foldr (uncurry M.insert) M.empty (zip tvs ts)
                     let monoAll = do {e <- me; g <- mg; s <- ms; return (e,g,s)}
                     -- Monomorphize everything, then insert it as a specialized term into the file info.
-                    case runTemplate monoAll monomap of
+                    case runTemplate monoAll monomap Nothing of
                         Left err -> error (pp err)
                         Right (e,g,s) -> modify' (M.insert f (SpecTerm e g s))
         go (RunCommand f rho) = do
@@ -369,7 +369,6 @@ doRunPgm p = do
                             () <- hasTypeB p' t >>= (\b -> if b then return () else error ("Output: " ++ pp p' ++ " does not have type "++ pp t))
                             return ()
                         Left err -> error $ ("\nRuntime Error: " ++ pp err)
-
         go (RunStepCommand f rho) = do
             lift (putStrLn "\n")
             fs <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to execute unbound function " ++ pp f)) return

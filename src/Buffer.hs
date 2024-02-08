@@ -9,4 +9,4 @@ class Buffer buf where
   rebindBuf :: buf -> Var -> Var -> buf
   unbindBuf :: Var -> buf -> buf
   emptyBuf :: buf
-  emptyBufOfType :: Map Var OpenTy -> Template buf
+  emptyBufOfType :: Map Var OpenTy -> Template t buf
