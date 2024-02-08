@@ -1,6 +1,6 @@
 {
 module Frontend.Parser(parseSurfaceSyntax, parseProgram, lexer) where
-import Frontend.SurfaceSyntax(Term(..), Cmd(..), UntypedPrefix(..), MacroParam(..))
+import Frontend.SurfaceSyntax(Term(..), Cmd(..), UntypedPrefix(..), {-FunArg(..)-})
 import Values ( Lit(..))
 import Var
 import Types
@@ -97,6 +97,8 @@ Exp1  : int                                                       { TmLitR (LInt
       | Var                                                       { TmVar $1 }
       | FunVar '(' Args ')'                                       { TmFunCall $1 [] Nothing $3 }
       | FunVar '[' TyList ']' '(' Args ')'                        { TmFunCall $1 $3 Nothing $6 }
+      | FunVar '[' TyList ']' '<' FunVar '>' '(' Args ')'         { TmFunCall $1 $3 (Just $6) $9 }
+      | FunVar '<' FunVar '>' '(' Args ')'                        { TmFunCall $1 [] (Just $3) $6 }
       | '(' Exp ';' Exp ')'                                       { TmCatR $2 $4 }
       | '(' Exp ',' Exp ')'                                       { TmParR $2 $4 }
       | '(' Exp ')'                                               { $2 }
@@ -176,22 +178,22 @@ VarCtx      : VarCtx1 ',' VarCtx                                  { CommaCtx $1 
 VarCtx1     : Var ':' Ty                                          { SngCtx (CE $1 $3) }
             | '(' VarCtx ')'                                      { $2 }
           
--- FunArgListParend  : {[]}
--- FunArgListParend  : {-empty-}                                     { [] }
-                  -- | '<' FunArgList '>'                            { $2 }
+FunArgListParend  : {[]}
+FunArgListParend  : {-empty-}                                     { [] }
+                  | '(' FunArgList ')'                            { $2 }
 
--- FunArg : FunVar ':' '(' FunArgCtx ')' Ty                         { MP $1 $4 $6 }
+-- FunArg : FunVar ':' '(' FunArgCtx ')' '-' '>' Ty                     { FA $1 $4 $8 }
 
--- FunArgList  : {-empty-}                                           { [] }
+FunArgList  : {-empty-}                                           { [] }
             -- | FunArg                                              { [$1] }
-            -- | FunArg ',' funArgList                               { $1 : $3 }
+            -- | FunArg ',' kunArgList                               { $1 : $3 }
 
-FunArgCtx   : FunArgCtx1 ',' FunArgCtx1                               { CommaCtx $1 $3 } 
-            | FunArgCtx1 ';' FunArgCtx1                               { SemicCtx $1 $3 }
-            | FunArgCtx1                                             { $1 } 
+-- FunArgCtx   : FunArgCtx1 ',' FunArgCtx                               { CommaCtx $1 $3 } 
+            -- | FunArgCtx1 ';' FunArgCtx                                  { SemicCtx $1 $3 }
+            -- | FunArgCtx1                                             { $1 } 
 
-FunArgCtx1     : '[' Ty ']'                                                { SngCtx $1 }
-            | '(' FunArgCtx ')'                                      { $2 }
+-- FunArgCtx1     : '[' Ty ']'                                                { SngCtx $1 }
+            -- | '(' FunArgCtx ')'                                      { $2 }
  
 
 Pfx   : '(' Pfx ';' ')'                                           { CatPA $2 }
@@ -217,8 +219,7 @@ PfxArgs1    : Var '=' Pfx                                          { SngCtx (CE 
             | '(' PfxArgs ')'                                      { $2 }
 
 
-Cmd   : fun FunVar TyVarListBracketed '(' VarCtx ')' ':' Ty '=' Exp                       { FunDef $2 $3 $5 $8 $10 }
-      -- | fun FunVar TyVarListBracketed '<' FunArg '>' '(' VarCtx ')' ':' Ty '=' Exp        { MacroDef $2 $3 $4 $6 $9 $11 }
+Cmd   : fun FunVar TyVarListBracketed {-FunArgListParend-} '(' VarCtx ')' ':' Ty '=' Exp   { FunDef $2 $3 $5 $8 $10 }
       | specialize FunVar '[' TyList ']'                                                  { SpecializeCommand $2 $4 [] }
       | exec FunVar '(' PfxArgs ')'                                                       { RunCommand $2 $4 }
       | exec step FunVar '(' PfxArgs ')'                                                  { RunStepCommand $3 $5 }
