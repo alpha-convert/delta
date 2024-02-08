@@ -1,6 +1,6 @@
 {
 module Frontend.Parser(parseSurfaceSyntax, parseProgram, lexer) where
-import Frontend.SurfaceSyntax(Term(..), Cmd(..), UntypedPrefix(..), {-FunArg(..)-})
+import Frontend.SurfaceSyntax(Term(..), Cmd(..), UntypedPrefix(..), MacroParam(..))
 import Values ( Lit(..))
 import Var
 import Types
@@ -26,6 +26,7 @@ import qualified HistPgm as Hist
       inl             { TokenInl }
       inr             { TokenInr }
       fun             { TokenFun }
+      mac             { TokenMac }
       end             { TokenEnd }
       bool            { TokenBool $$ }
       int             { TokenInt $$ }
@@ -178,22 +179,19 @@ VarCtx      : VarCtx1 ',' VarCtx                                  { CommaCtx $1 
 VarCtx1     : Var ':' Ty                                          { SngCtx (CE $1 $3) }
             | '(' VarCtx ')'                                      { $2 }
           
-FunArgListParend  : {[]}
-FunArgListParend  : {-empty-}                                     { [] }
-                  | '(' FunArgList ')'                            { $2 }
 
--- FunArg : FunVar ':' '(' FunArgCtx ')' '-' '>' Ty                     { FA $1 $4 $8 }
+MacroParam : FunVar ':' '(' Ty ')' '-' '>' Ty                     { MP $1 (SngCtx $4) $8 }
 
-FunArgList  : {-empty-}                                           { [] }
-            -- | FunArg                                              { [$1] }
-            -- | FunArg ',' kunArgList                               { $1 : $3 }
+-- MacroParamList  : {-empty-}                                           { [] }
+            -- | MacroParam                                              { [$1] }
+            -- | MacroParam ',' kunArgList                               { $1 : $3 }
 
--- FunArgCtx   : FunArgCtx1 ',' FunArgCtx                               { CommaCtx $1 $3 } 
-            -- | FunArgCtx1 ';' FunArgCtx                                  { SemicCtx $1 $3 }
-            -- | FunArgCtx1                                             { $1 } 
+-- MacroParamCtx   : MacroParamCtx1 ',' MacroParamCtx                               { CommaCtx $1 $3 } 
+            -- | MacroParamCtx1 ';' MacroParamCtx                                  { SemicCtx $1 $3 }
+            -- | MacroParamCtx1                                             { $1 } 
 
--- FunArgCtx1     : '[' Ty ']'                                                { SngCtx $1 }
-            -- | '(' FunArgCtx ')'                                      { $2 }
+-- MacroParamCtx1     : '[' Ty ']'                                                { SngCtx $1 }
+            -- | '(' MacroParamCtx ')'                                      { $2 }
  
 
 Pfx   : '(' Pfx ';' ')'                                           { CatPA $2 }
@@ -219,7 +217,8 @@ PfxArgs1    : Var '=' Pfx                                          { SngCtx (CE 
             | '(' PfxArgs ')'                                      { $2 }
 
 
-Cmd   : fun FunVar TyVarListBracketed {-FunArgListParend-} '(' VarCtx ')' ':' Ty '=' Exp   { FunDef $2 $3 $5 $8 $10 }
+Cmd   : fun FunVar TyVarListBracketed '(' VarCtx ')' ':' Ty '=' Exp                       { FunDef $2 $3 $5 $8 $10 }
+      | mac FunVar TyVarListBracketed '<' MacroParam '>' '(' VarCtx ')' ':' Ty '=' Exp    { MacroDef $2 $3 $5 $8 $11 $13 }
       | specialize FunVar '[' TyList ']'                                                  { SpecializeCommand $2 $4 [] }
       | exec FunVar '(' PfxArgs ')'                                                       { RunCommand $2 $4 }
       | exec step FunVar '(' PfxArgs ')'                                                  { RunStepCommand $3 $5 }
@@ -247,6 +246,7 @@ data Token
       | TokenInr
       | TokenNil
       | TokenFun
+      | TokenMac
       | TokenInt Int
       | TokenBool Bool
       | TokenVar Var.Var
@@ -337,6 +337,7 @@ lexVar cs =
       ("inr",rest)  -> TokenInr : lexer rest
       ("nil",rest)  -> TokenNil : lexer rest
       ("fun",rest)  -> TokenFun : lexer rest
+      ("mac",rest)  -> TokenMac : lexer rest
       ("emp",rest)  -> TokenEmp : lexer rest
       ("end",rest)  -> TokenEnd : lexer rest
       ("wait",rest)  -> TokenWait : lexer rest

@@ -34,6 +34,7 @@ import Control.Monad (unless)
 import Data.List (intercalate)
 import Buffer
 import CoreSyntax
+import GHC.IO (unsafePerformIO)
 
 data TckErr t = VarNotFound Var t
             | OutOfOrder Var Var t
@@ -429,14 +430,19 @@ checkElab s' (Elab.TmMacroParamUse f' args) = do
                     _ -> error "replacement is not a term with top level fix..."
         _ -> error "Typechecking a place where a macro parameter use occurs"
 
-checkElab _ (Elab.TmMacroUse macName ts f args) = do
+checkElab t (Elab.TmMacroUse macName ts f args) = do
+    let !() = unsafePerformIO (print $ "HEre!! calling" ++ pp macName)
+    let !() = unsafePerformIO (print $ "with fun arg " ++ pp f)
+    let !() = unsafePerformIO (print $ "and args " ++ pp args)
+    let !() = unsafePerformIO (print $ "checking against type " ++ pp t)
     mr <- lookupFunMacRecord macName
     mf <- lookupFunMacRecord f
     case mr of
         PolyMac {macTyVars = m_tvs, macCtx = m_g, macTy = m_r, macMonoTerm = mac_me, macInert = i_mac, macParam = MP _ mp_g mp_r} ->
             (case mf of
                 PolyFun {funTyVars = tvs, funCtx = g, funTy = r', funMonoTerm = me, funInert = i_fun} -> do
-                    (p,margs) <- elabRec (dropVarsCtx g) args
+                    let !() = unsafePerformIO (print $ "g context is: " ++ pp g)
+                    (p,margs) <- elabRec (dropVarsCtx m_g) args
                     --TODO:JWC TYPECHECKING, figure out type variables!! need to reparameterize everything in the right way.
                     return $ CR p i_mac $ do
                         args <- margs
@@ -665,7 +671,7 @@ inferElab (Elab.TmMacroUse macName ts f args) = do
         PolyMac {macTyVars = m_tvs, macCtx = m_g, macTy = m_r, macMonoTerm = mac_me, macInert = i_mac} ->
             (case mf of
                 PolyFun {funTyVars = tvs, funCtx = g, funTy = r', funMonoTerm = me, funInert = i_fun} -> do
-                    (p,margs) <- elabRec (dropVarsCtx g) args
+                    (p,margs) <- elabRec (dropVarsCtx m_g) args
                     --TODO:JWC TYPECHECKING, figure out type variables!! need to reparameterize everything in the right way.
                     return $ IR m_r p i_mac $ do
                         args <- margs
