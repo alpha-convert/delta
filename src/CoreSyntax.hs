@@ -4,7 +4,7 @@ module CoreSyntax (
   Term(..),
   Program,
   Cmd(..),
-  MacroParam(..),
+  -- MacroParam(..),
   substVar,
   sinkTm,
   cut,
@@ -27,6 +27,7 @@ import Backend.Template (Template)
 import Buffer
 import Util.ErrUtil
 import Data.Void (Void)
+import Data.List (intercalate)
 
 data Term buf =
       TmLitR Lit
@@ -43,15 +44,15 @@ data Term buf =
     | TmNil
     | TmCons Ty (Term buf) (Term buf) -- type of the first component
     | TmStarCase buf Ty Ty Var (Term buf) Var Var (Term buf) {- first return type, then star type -}
-    | TmFix (CtxStruct (Term buf)) (Ctx Var Ty) Ty (Term buf)
-    | TmRec (CtxStruct (Term buf))
+    | TmFix [Hist.Term] [(Var,Ty)] (CtxStruct (Term buf)) (Ctx Var Ty) Ty (Term buf)
+    | TmRec [Hist.Term] (CtxStruct (Term buf))
     | TmWait buf Ty Ty Var (Term buf) -- first return type, then waiting type
     | TmCut Var (Term buf) (Term buf)
     | TmArgsCut (Ctx Var Ty) (CtxStruct (Term buf))  (Term buf)
     | TmHistPgm Ty Hist.Term
     deriving (Eq,Ord,Show)
 
-data MacroParam buf = MP Var.FunVar (Template Void (CtxStruct Ty)) (Template Void Ty)
+-- data MacroParam buf = MP Var.FunVar (Template Void (CtxStruct Ty)) (Template Void Ty)
 
 data Cmd buf =
     FunDef Var.FunVar [Var.TyVar] (Template (Term buf) (Ctx Var.Var Ty)) (Template (Term buf) Ty) (Template (Term buf) (Term buf))
@@ -72,10 +73,10 @@ instance PrettyPrint buf => PrettyPrint (Term buf) where
             go _ (TmCatR _ e1 e2) = concat ["(",go False e1,";",go False e2,")"]
             go _ (TmParR e1 e2) = concat ["(",go False e1,",",go False e2,")"]
             go _ TmNil = "nil"
-            go _ (TmRec args) = "rec(" ++ pp args ++ ")"
+            go _ (TmRec ms args) = "rec{" ++ intercalate "," (map pp ms) ++ "}(" ++ pp args ++ ")"
             go _ (TmHistPgm _ he) = concat ["{", pp he, "}"]
             go True e = concat ["(", go False e, ")"]
-            go _ (TmFix args _ _ e) = concat ["fix(",go False e,")[",pp args,"]"]
+            go _ (TmFix ms _ args _ _ e) = concat ["fix{",intercalate "," (map pp ms),"}(",go False e,")[",pp args,"]"]
             go _ (TmCatL t x y z e) = concat ["let_{",pp t,"} (",pp x,";",pp y,") = ",pp z," in ",go False e]
             go _ (TmParL x y z e) = concat ["let (",pp x,",",pp y,") = ",pp z," in ",go False e]
             go _ (TmInl e) = "inl " ++ go True e
@@ -122,9 +123,8 @@ substVar (TmStarCase rho r s z e1 x' xs' e2) x y | y == z = TmStarCase rho' r s 
 substVar (TmStarCase rho r s z e1 x' xs' e2) x y = TmStarCase rho' r s z (substVar e1 x y) x' xs' (substVar e2 x y)
   where
     rho' = rebindBuf rho x y
--- TODO: are these correct?
-substVar (TmRec args) x y = TmRec $ (\e -> substVar e x y) <$> args
-substVar (TmFix args g s e) x y = TmFix ((\e' -> substVar e' x y) <$> args) g s e
+substVar (TmRec ms args) x y = TmRec ((\he -> Hist.substVar he x y) <$> ms) ((\e -> substVar e x y) <$> args)
+substVar (TmFix ms mg args g s e) x y = TmFix ms mg ((\e' -> substVar e' x y) <$> args) g s e
 substVar (TmWait rho t s u e) x y = if x == u then TmWait rho' t s y (substVar e x y) else TmWait rho' t s u (substVar e x y)
   where
     rho' = rebindBuf rho y x
@@ -147,7 +147,7 @@ cut x e (TmCatR s e1 e2) = TmCatR s <$> cut x e e1 <*> cut x e e2
 -- cut x e (TmFix args g s e') = do
 --   args' <- mapM (\(CE u e'') -> (CE u) <$> cut x e e'') args
 --   return (TmFix args' g s e')
-cut x e (TmRec args) = TmRec <$> mapM (cut x e) args
+-- cut x e (TmRec args) = TmRec <$> mapM (cut x e) args
 
 cut x e e' = return (TmCut x e e')
 
@@ -237,7 +237,7 @@ maximalPrefixToTerm t p@(LitMP (LInt _)) = throwError (t,p)
 maximalPrefixToTerm TyBool (LitMP l@(LBool _)) = return (TmLitR l)
 maximalPrefixToTerm t p@(LitMP (LBool _)) = throwError (t,p)
 {- That s in TmCatR is the only reason this substitution nees to be typed. -}
-maximalPrefixToTerm (TyCat s t) (CatMP p1 p2) = TmCatR s <$> maximalPrefixToTerm s p1 <*> maximalPrefixToTerm t p2 
+maximalPrefixToTerm (TyCat s t) (CatMP p1 p2) = TmCatR s <$> maximalPrefixToTerm s p1 <*> maximalPrefixToTerm t p2
 maximalPrefixToTerm t p@(CatMP _ _) = throwError (t,p)
 maximalPrefixToTerm (TyPar s t) (ParMP p1 p2) = TmParR <$> maximalPrefixToTerm s p1 <*> maximalPrefixToTerm t p2
 maximalPrefixToTerm t p@(ParMP _ _) = throwError (t,p)
@@ -319,11 +319,19 @@ maximalPrefixSubst s p x (TmCons s' e1 e2) = do
 maximalPrefixSubst s' p x (TmWait rho t s z e') | x /= z = TmWait (unbindBuf x rho) t s z <$> maximalPrefixSubst s' p x e'
 maximalPrefixSubst s p _ (TmWait _ _ _ x e') = maximalPrefixSubst s p x e'
 
-maximalPrefixSubst s' p x (TmFix args g s e') = do
+maximalPrefixSubst s' p x e@(TmFix ms mg args g s e') = do
+  ms' <- mapM (withExceptT liftErr . Hist.maximalPrefixSubst p x) ms
   args' <- mapM (maximalPrefixSubst s' p x) args
-  return (TmFix args' g s e')
+  return (TmFix ms' mg args' g s e')
+    where
+      liftErr (x,p,_) = (x,s,p,e)
 
-maximalPrefixSubst s p x (TmRec args) = TmRec <$> mapM (maximalPrefixSubst s p x) args
+maximalPrefixSubst s p x e@(TmRec ms args) = do
+  ms' <- mapM (withExceptT liftErr . Hist.maximalPrefixSubst p x) ms
+  args' <- mapM (maximalPrefixSubst s p x) args
+  return (TmRec ms' args')
+    where
+      liftErr (x,p,_) = (x,s,p,e)
 
 maximalPrefixSubst s p x (TmCut y e1 e2) = do
   e1' <- maximalPrefixSubst s p x e1
@@ -338,8 +346,8 @@ maximalPrefixSubst s p x (TmArgsCut g args e) = do
   args' <- mapM (maximalPrefixSubst s p x) args
   return (TmArgsCut g args' e)
 
-fixSubst :: CtxStruct (CtxEntry Var Ty) -> Ty -> Term buf -> Term buf -> Term buf
-fixSubst g s e = go
+fixSubst :: [(Var,Ty)] -> CtxStruct (CtxEntry Var Ty) -> Ty -> Term buf -> Term buf -> Term buf
+fixSubst mg g s e = go
     where
         go TmEpsR = TmEpsR
         go (TmLitR l) = TmLitR l
@@ -355,8 +363,8 @@ fixSubst g s e = go
         go TmNil = TmNil
         go (TmCons s e1 e2) = TmCons s (go e1) (go e2)
         go (TmStarCase rho r t z e1 y ys e2) = TmStarCase rho r t z (go e1) y ys (go e2)
-        go (TmFix args g' s' e') = TmFix (fmap go args) g' s' e'
-        go (TmRec args) = TmFix args g s e
+        go (TmFix ms mg args g' s' e') = TmFix ms mg (fmap go args) g' s' e'
+        go (TmRec ms args) = TmFix ms mg args g s e
         go (TmWait rho r s x e') = TmWait rho r s x (go e')
         go (TmCut x e1 e2) = TmCut x (go e1) (go e2)
         go (TmHistPgm t he) = TmHistPgm t he
@@ -378,8 +386,8 @@ bufMap _ TmNil = TmNil
 bufMap f (TmCons t e1 e2) = TmCons t (bufMap f e1) (bufMap f e2)
         -- go (TmStarCase rho r t z e1 y ys e2) = TmStarCase rho r t z (go e1) y ys (go e2)
 bufMap f (TmStarCase buf r t z e1 y ys e2) = TmStarCase (f buf) r t z (bufMap f e1) y ys (bufMap f e2)
-bufMap f (TmFix args g t e) = TmFix (bufMap f <$> args) g t (bufMap f e)
-bufMap f (TmRec args) = TmRec (bufMap f <$> args)
+bufMap f (TmFix ms mg args g t e) = TmFix ms mg (bufMap f <$> args) g t (bufMap f e)
+bufMap f (TmRec ms args) = TmRec ms (bufMap f <$> args)
 bufMap f (TmWait buf r t z e) = TmWait (f buf) r t z (bufMap f e)
 bufMap f (TmCut x e1 e2) = TmCut x (bufMap f e1) (bufMap f e2)
 bufMap _ (TmHistPgm s hp) = TmHistPgm s hp
