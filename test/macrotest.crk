@@ -1,0 +1,21 @@
+fun addOne(x : Int) : Int =
+    wait x do
+        {x + 1}
+    end
+
+fun double(x : Int) : Int =
+    wait x do
+        {x + x}
+    end
+
+mac map <f : (Int) -> Int> (z : Int*) : Int* =
+    case z of
+      nil => nil
+    | x::xs => (f(x))::(map(xs))
+
+fun twoNPlusOne(xs : Int*) : Int* =
+    map<addOne>(map<double>(xs))
+
+specialize twoNPlusOne[]
+
+exec twoNPlusOne(xs = [1;2;3;4])
