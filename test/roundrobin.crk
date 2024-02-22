@@ -1,16 +1,11 @@
-fun not(b : Bool) : Bool =
-  wait b do if {b} then false else true end
-
-fun roundRobin[s](b : Bool;xs : s*) : s* || s* =
+fun roundRobin[s]{b : Bool}(xs : s*) : s* || s* =
   wait b do
     case xs of
       nil => (nil,nil)
     | y::ys =>
-        let (zs,ws) = roundRobin(not({b});ys) in
+        let (zs,ws) = roundRobin{!b}(ys) in
         if {b} then (y::zs,ws) else (zs,y::ws)
   end
 
-specialize not[]
-exec not(b = true)
 specialize roundRobin[Int]
 exec roundRobin(b=true;xs=[3;4;5;6;7])

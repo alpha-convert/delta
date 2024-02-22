@@ -1,0 +1,15 @@
+fun foo {x : Int} (y : Eps) : Int = { x }
+
+specialize foo[]
+exec foo { 3 } (y=emp)
+
+fun runningSum{t : Int}(xs : Int*) : Int* =
+    case xs of
+      nil => nil
+    | y::ys => wait y do
+                 {t+y}::runningSum{t+y}(ys)
+               end
+
+specialize runningSum[]               
+exec step runningSum {0}(xs = [1;2;3))
+exec runningSum(xs = (emp;[4)))

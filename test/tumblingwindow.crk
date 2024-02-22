@@ -1,16 +1,11 @@
-fun firstN[s](n : Int; xs : s*) : s* . s* =
-   wait n do
-     case xs of
-       nil => (nil;nil)
-      | y::ys => if {n > 0} then
-                   let (predN;rest) = firstN({n - 1};ys) in
-                   (y::predN;rest)
-                 else (nil;y::ys)
-   end
+fun firstN[s]{n : Int}(xs : s*) : s* . s* =
+  case xs of
+    nil => (nil;nil)
+   | y::ys => if {n > 0} then
+                let (predN;rest) = firstN{n-1}(ys) in
+                (y::predN;rest)
+              else (nil;y::ys)
 
-fun tumble[s](k : Int; xs : s*) : s** =
-   wait k do
-     let (first;rest) = firstN[s]({k};xs) in
-     first :: tumble({k};rest)
-   end
+fun tumble[s]{k : Int}(xs : s*) : s** =
+  let (first;rest) = firstN[s]{k}(xs) in first :: tumble{k}(rest)
 

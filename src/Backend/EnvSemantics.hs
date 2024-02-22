@@ -2,7 +2,7 @@
 module Backend.EnvSemantics where
 
 import CoreSyntax
-    ( Term(..), Program, Cmd(..), substVar, sinkTm, maximalPrefixSubst, fixSubst, cutArgs, bufMap)
+    ( Term(..), Program, Cmd(..), substVar, sinkTm, maximalPrefixSubst, fixSubst, bufMap)
 import qualified Data.Map as M
 import Control.Monad.Reader
     ( Monad(return), sequence, MonadReader(ask, local), ReaderT (runReaderT), guard, asks )
@@ -41,6 +41,8 @@ import Test.QuickCheck.Monadic
 import Data.List (intercalate)
 import Event (envToEvents, eventsToPrefix, eventToPrefix)
 import Data.Maybe (isJust)
+import Control.Monad (foldM)
+import GHC.IO (unsafePerformIO)
 
 type EnvBuf = Env Var.Var Prefix
 
@@ -202,10 +204,11 @@ eval e@(TmPlusCase rho' r z x e1 y e2) = do
                 rho'' <- ask
                 return (emptyPrefix r, TmPlusCase rho'' r z x e1 y e2)
             SumPA p' -> do
-                (p'',e1') <- withEnv (bindEnv x p' . unbindEnv z) (eval e1)
+                (p'',e1') <- withEnv (bindEnv x p') (eval e1)
                 return (p'', substVar e1' z x)
             SumPB p' -> do
-                (p'',e2') <- withEnv (bindEnv y p' . unbindEnv z) (eval e2)
+                rho <- ask
+                (p'',e2') <- withEnv (bindEnv y p') (eval e2)
                 return (p'', substVar e2' z y)
             _ -> throwError (NotPlusPrefix z p))
 
@@ -260,10 +263,18 @@ eval (TmCut x e1 e2) = do
         return (p',TmCut x e1' e2')
         -- return (p',e')
 
-eval (TmFix args g s e) = reThrow (uncurry NonMatchingArgs) (cutArgs g args (fixSubst g s e e)) >>= eval
+eval (TmFix ms mg args g s e) = do
+    let msmg = zip ms mg
+    mps <- mapM (\(he,(x,t)) -> reThrow (handleHistEvalErr he) $ do
+                        v <- Hist.eval he
+                        mp <- Hist.valueToMaximalPrefix t v
+                        return (t,mp,x)
+                    ) msmg
+    let e' = fixSubst mg g s e e
+    e'' <- foldM (\e0 (t,mp,x) -> reThrow handlePrefixSubstError $ maximalPrefixSubst t mp x e0) e' mps
+    eval (TmArgsCut g args e'')
 
-
-eval (TmRec _) = error "Impossible."
+eval (TmRec {}) = error "Impossible."
 
 eval e@(TmWait rho' r s x e') = do
     withEnvM (concatEnvM e rho') $ do
@@ -330,8 +341,8 @@ evalArgs _ (SemicCtx {}) = undefined
 -- A function can be in one of two states. It can have been defined (and not yet specialized), or specialized.
 -- An unspecialized function is a monomorphizer, accepting type varibles matching its required type arguments.
 data FunState =
-      PolymorphicDefn [Var.TyVar] (Template (Term EnvBuf) (Term EnvBuf)) (Template (Term EnvBuf) (Ctx Var.Var Ty)) (Template (Term EnvBuf) Ty)
-    | SpecTerm (Term EnvBuf) (Ctx Var.Var Ty) Ty
+      PolymorphicDefn [Var.TyVar] (Template (Term EnvBuf) (Term EnvBuf)) (Template (Term EnvBuf) [(Var.Var,Ty)]) (Template (Term EnvBuf) (Ctx Var.Var Ty)) (Template (Term EnvBuf) Ty)
+    | SpecTerm (Term EnvBuf) [(Var.Var,Ty)] (Ctx Var.Var Ty) Ty
 
 type TopLevel = M.Map Var.FunVar FunState
 
@@ -341,49 +352,53 @@ doRunPgm p = do
     return ()
     where
         go :: Cmd EnvBuf -> StateT TopLevel IO ()
-        go (FunDef f tvs g s e) = modify' (M.insert f (PolymorphicDefn tvs e g s))
+        go (FunDef f tvs hg g s e) = modify' (M.insert f (PolymorphicDefn tvs e hg g s))
         go (SpecializeCommand f ts) = do
             lift (putStrLn "\n")
             fs <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to execute unbound function " ++ pp f)) return
             case fs of
                 SpecTerm {} -> error ("Cannot re-specialize function " ++ pp f)
-                PolymorphicDefn tvs me mg ms -> do
+                PolymorphicDefn tvs me mhg mg ms -> do
                     when (length ts /= length tvs) $ error ("Unsaturated type arguments when specializing " ++ pp f)
                     -- Build the map from type variables to closed types being applied
                     let monomap = foldr (uncurry M.insert) M.empty (zip tvs ts)
-                    let monoAll = do {e <- me; g <- mg; s <- ms; return (e,g,s)}
+                    let monoAll = do {e <- me; g <- mg; hg <- mhg; s <- ms; return (e,hg,g,s)}
                     -- Monomorphize everything, then insert it as a specialized term into the file info.
                     case runTemplate monoAll monomap Nothing of
                         Left err -> error (pp err)
-                        Right (e,g,s) -> modify' (M.insert f (SpecTerm e g s))
-        go (RunCommand f rho) = do
+                        Right (e,hg,g,s) -> modify' (M.insert f (SpecTerm e hg g s))
+        go (RunCommand f vs rho) = do
             lift (putStrLn "\n")
             fs <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to execute unbound function " ++ pp f)) return
             case fs of
                 PolymorphicDefn {} -> error ("Cannot run un-specialized function " ++ pp f)
-                SpecTerm e _ t -> do
-                    lift $ putStrLn $ "Core term: " ++ pp e ++ " for running function " ++ pp f ++ " on " ++ pp rho
-                    case doEval (eval e) rho of
+                SpecTerm e hg _ t -> do
+                    when (length hg /= length hg) $ error ("Runtime error: unsaturated historical arguments for function " ++ pp f ++ ". This is probably a compiler bug.")
+                    e' <- foldM (\e0 (mp,(x,t)) -> reThrow (error "") $ maximalPrefixSubst t mp x e0) e (zip vs hg)
+                    -- lift $ putStrLn $ "Core term: " ++ pp e ++ " for running function " ++ pp f ++ " on " ++ pp rho
+                    case doEval (eval e') rho of
                         Right (p',_) -> do
                             lift (putStrLn $ "Result of executing " ++ pp f ++ " on " ++ pp rho ++ ": " ++ pp p')
                             () <- hasTypeB p' t >>= (\b -> if b then return () else error ("Output: " ++ pp p' ++ " does not have type "++ pp t))
                             return ()
                         Left err -> error $ ("\nRuntime Error: " ++ pp err)
-        go (RunStepCommand f rho) = do
+        go (RunStepCommand f vs rho) = do
             lift (putStrLn "\n")
             fs <- gets (M.lookup f) >>= maybe (error ("Runtime Error: Tried to execute unbound function " ++ pp f)) return
             case fs of
-                PolymorphicDefn {} -> error ("Cannot run un-specialized function " ++ pp f)
-                SpecTerm e g s -> do
-                    lift $ putStrLn $ "Core term: " ++ pp e ++ " for step-running functon " ++ pp f ++ " on " ++ pp rho
-                    case doEval (eval e) rho of
-                        Right (p',e') -> do
+                PolymorphicDefn {} -> error ("Runtime error: Cannot run un-specialized function " ++ pp f)
+                SpecTerm e hg g s -> do
+                    when (length hg /= length hg) $ error ("Runtime error: unsaturated historical arguments for function " ++ pp f ++ ". This is probably a compiler bug.")
+                    e' <- foldM (\e0 (mp,(x,t)) -> reThrow (error $ "Failed to prefix substitute " ++ pp mp ++ " for " ++ pp x ++ " into " ++ pp e0) $ maximalPrefixSubst t mp x e0) e (zip vs hg)
+                    -- lift $ putStrLn $ "Core term: " ++ pp e ++ " for step-running functon " ++ pp f ++ " on " ++ pp rho ++ ", and histargs: " ++ (intercalate "," (map pp vs))
+                    case doEval (eval e') rho of
+                        Right (p',e'') -> do
                             lift (putStrLn $ "Result of executing " ++ pp f ++ " on " ++ pp rho ++ ": " ++ pp p')
-                            lift (putStrLn $ "Final core term (stepping): " ++  pp e')
+                            -- lift (putStrLn $ "Final core term (stepping): " ++  pp e'')
                             () <- runExceptT (hasType p' s) >>= either (error . pp) return
                             g' <- doDeriv rho g
                             s' <- doDeriv p' s
-                            modify (M.insert f (SpecTerm e' g' s'))
+                            modify (M.insert f (SpecTerm e'' [] g' s'))
                         Left err -> error $ "Runtime Error: " ++ pp err
 
         go (QuickCheckCommand f) = error "Not currently implemented."

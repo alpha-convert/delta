@@ -22,6 +22,7 @@ import Data.Functor ((<&>))
 import qualified HistPgm as Hist
 import Debug.Trace (trace)
 import Data.Maybe (isNothing)
+import Control.Monad
 
 {-
 
@@ -32,7 +33,7 @@ don't require any type information.
 The pass includes:
 
 
-1. Resolving function calls as either (a) recursive calls, or (b) calls to functions defined earlier in the file.
+1. Resolving function calls as either (a) recursive calls, (b) calls to functions defined earlier in the file, or (c), calls to macros, passing an explicit function parameter.
 2. Precomposing elimination forms with cuts to go from the natural deduction surface syntax to the sequent calculus of the elaborated syntax.
 For example, we translate (let (a;b) = e1 in e2) to (let z = e1 in (let (a;b) = z in e2)), for fresh z.
 3. Renaming variables to eliminate shadowing. This just requires generating fresh a fresh name when we see that a shadow is happening,
@@ -40,17 +41,6 @@ and then replacing the shadowed name with the fresh name in the body.
 
 -}
 
--- Function argument to a funciton call. Can either be passing a function that
--- is bound in the current funciton being called, or a top level function (not a
--- name bound by the current function).
-data FunCallFunArg =
-    --   BoundFunArg Var.FunVar
-    {-|-} TopLevelFun Var.FunVar
-    deriving (Eq,Ord,Show)
-
-instance PrettyPrint FunCallFunArg where
-    -- pp (BoundFunArg f) = pp f
-    pp (TopLevelFun f) = pp f
 
 data Term =
       TmLitR Lit
@@ -70,10 +60,10 @@ data Term =
     | TmCut Var Term Term
     | TmWait Var Term
     | TmHistPgm Hist.Term
-    | TmFunCall Var.FunVar [TyF Var.TyVar] {-[FunCallFunArg]-} (CtxStruct Term)
-    | TmRec (CtxStruct Term)
-    | TmMacroParamUse Var.FunVar (CtxStruct Term)
-    | TmMacroUse Var.FunVar [TyF Var.TyVar] Var.FunVar (CtxStruct Term)
+    | TmFunCall Var.FunVar [TyF Var.TyVar] [Hist.Term] (CtxStruct Term)
+    | TmRec [Hist.Term] (CtxStruct Term)
+    | TmMacroParamUse Var.FunVar [Hist.Term] (CtxStruct Term)
+    | TmMacroUse Var.FunVar [TyF Var.TyVar] Var.FunVar [Hist.Term] (CtxStruct Term)
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint Term where
@@ -96,19 +86,18 @@ instance PrettyPrint Term where
             go False (TmCut (Var x) e1 e2) = concat ["let ",x," = ",go True e1," in ",go True e2]
             go False (TmCons e1 e2) = concat [go True e1," :: ", go True e2]
             go False (TmStarCase (Var z) e1 (Var x) (Var xs) e2) = concat ["case ",z," of nil => ",go True e1," | ",x,"::",xs," => ",go True e2]
-            go False (TmRec es) = concat ["rec (", pp (go False <$> es), ")"]
-            go False (TmFunCall f []  es) = concat [pp f,"(", pp (go False <$> es), ")"]
-            go False (TmFunCall f ts es) = concat [pp f,"[",intercalate "," (map pp ts),"]"," (", pp (go False <$> es), ")"]
-            go False (TmMacroParamUse f es) = concat [pp f,"(", pp (go False <$> es), ")"]
+            go False (TmRec ms es) = concat ["rec (", pp (go False <$> es), ")"]
+            go False (TmFunCall f ts ms es) = concat [pp f,"[",intercalate "," (map pp ts),"]","{",intercalate "," (map pp ms) ,"}"," (", pp (go False <$> es), ")"]
+            go False (TmMacroParamUse f ms es) = concat [pp f,"{",intercalate "," (map pp ms),"}(", pp (go False <$> es), ")"]
             go False (TmWait x e) = concat ["wait ", pp x," do ", go True e]
-            go False (TmMacroUse f ts mac_f es) = concat [pp f,"[",intercalate "," (map pp ts),"]", "<", pp mac_f, ">", "(", pp (go False <$> es), ")"]
+            go False (TmMacroUse f ts mac_f ms es) = concat [pp f,"[",intercalate "," (map pp ts),"]", "<", pp mac_f, ">", "(", pp (go False <$> es), ")"]
 
 data Cmd =
-      FunDef Var.FunVar [Var.TyVar] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
+      FunDef Var.FunVar [Var.TyVar] [(Var,OpenTy)] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
     | MacroDef Var.FunVar [Var.TyVar] Surf.MacroParam (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
     | SpecializeCommand Var.FunVar [Ty] [Var.FunVar]
-    | RunCommand Var.FunVar (Ctx Var Surf.UntypedPrefix)
-    | RunStepCommand Var.FunVar (Ctx Var Surf.UntypedPrefix)
+    | RunCommand Var.FunVar [Surf.UntypedPrefix] (Ctx Var Surf.UntypedPrefix)
+    | RunStepCommand Var.FunVar [Surf.UntypedPrefix] (Ctx Var Surf.UntypedPrefix)
     | QuickCheckCommand Var.FunVar
     deriving (Eq,Ord,Show)
 
@@ -230,21 +219,24 @@ lowerSurf (Surf.TmCut x e1 e2) = do
     e1' <- lowerSurf e1
     e2' <- lowerSurf e2
     return (TmCut x e1' e2')
-lowerSurf (Surf.TmFunCall f ts mf_macro_arg es) = do
+{-fix to prop histargs -}
+lowerSurf (Surf.TmFunCall f ts ms mf_macro_arg es) = do
     curF <- asks lowerfunName
     macP <- asks macParamName
     macFs <- asks topLevelMacroNames
     tlFs <- asks topLevelFunNames
-    if f == curF then 
-        if not (null ts && isNothing mf_macro_arg) then error "here!" else TmRec <$> mapM lowerSurf es
+    if f == curF then
+        if not (null ts && isNothing mf_macro_arg)
+        then error "here!"
+        else TmRec ms <$> mapM lowerSurf es
     else if f `elem` macP then
-        if not (null ts && isNothing mf_macro_arg) then error "here2!!!" else TmMacroParamUse f <$> mapM lowerSurf es
+        if not (null ts) then error "Macro parameter cannot be called with type parameters --- its types are bound in the macro header" else TmMacroParamUse f ms <$> mapM lowerSurf es
     else if f `elem` macFs then
         case mf_macro_arg of
-            Nothing -> error "macro call needs macro arg"
+            Nothing -> error $ "macro call to " ++ pp f ++ " needs macro arg"
             Just f_macro_arg ->
-                if (not (f_macro_arg `elem` tlFs)) then (error "macro call needs top level fun arg.") else TmMacroUse f ts f_macro_arg <$> mapM lowerSurf es
-    else TmFunCall f ts <$> mapM lowerSurf es
+                if (not (f_macro_arg `elem` tlFs)) then (error "macro call needs top level fun arg.") else TmMacroUse f ts f_macro_arg ms <$> mapM lowerSurf es
+    else TmFunCall f ts ms <$> mapM lowerSurf es
 
 freshUnshadowVar :: (UnshadowM m) => m Var
 freshUnshadowVar = freshVar "u"
@@ -320,19 +312,21 @@ unshadowTerm (TmStarCase z e1 x xs e2) = do
     e1' <- unshadowTerm e1
     ((e2',xs'),x') <- withUnshadow x $ withUnshadow xs $ unshadowTerm e2
     return (TmStarCase z' e1' x' xs' e2')
-unshadowTerm (TmFunCall f ts es) = do
+unshadowTerm (TmFunCall f ts ms es) = do
     es' <- mapM unshadowTerm es
-    return (TmFunCall f ts es')
+    ms' <- mapM unshadowHist ms
+    return (TmFunCall f ts ms' es')
 unshadowTerm (TmWait x e) = TmWait <$> unshadowVar x <*> unshadowTerm e
 unshadowTerm (TmCut x e1 e2) = do
     e1' <- unshadowTerm e1
     (e2',x') <- withUnshadow x (unshadowTerm e2)
     return (TmCut x' e1' e2')
-unshadowTerm (TmRec e) = TmRec <$> mapM unshadowTerm e
-unshadowTerm (TmMacroParamUse f es) = TmMacroParamUse f <$> mapM unshadowTerm es
-unshadowTerm (TmMacroUse f ts f_macro_arg args) = do
+unshadowTerm (TmRec ms e) = TmRec <$> mapM unshadowHist ms <*> mapM unshadowTerm e
+unshadowTerm (TmMacroParamUse f ms es) = TmMacroParamUse f <$> mapM unshadowHist ms <*> mapM unshadowTerm es
+unshadowTerm (TmMacroUse f ts f_macro_arg ms args) = do
     args' <- mapM unshadowTerm args
-    return (TmMacroUse f ts f_macro_arg args')
+    ms' <- mapM unshadowHist ms
+    return (TmMacroUse f ts f_macro_arg ms' args')
 
 unshadowHist :: (UnshadowM m) => Hist.Term -> m Hist.Term
 unshadowHist (Hist.TmVar x) = Hist.TmVar <$> unshadowVar x
@@ -364,13 +358,16 @@ elabSingle f mfa tlfs tlms e s = do
 
 doElab :: Surf.Program -> IO Program
 doElab xs = flip evalStateT ([],[]) $ flip mapM xs $ \case
-                    (Surf.FunDef f tvs g s e) -> do
+                    (Surf.FunDef f tvs hg g s e) -> do
+                        let streamArgVars = M.keysSet $ ctxBindings g
+                        let histArgVars = S.fromList (fst <$> hg)
+                        () <- unless (S.disjoint streamArgVars histArgVars) $ error ("Function " ++ pp f ++ "has non-disjoint sets of stream and historical arguments, " ++ show streamArgVars ++ " and " ++ show histArgVars)
                         (funsBound,macsBound) <- get
-                        case elabSingle f Nothing funsBound macsBound e (M.keysSet $ ctxBindings g) of
+                        case elabSingle f Nothing funsBound macsBound e (S.union streamArgVars histArgVars) of
                             Right e' -> do
                                 lift (putStrLn $ "Function " ++ pp f ++ " elaborated OK. Elab term: " ++ pp e' ++ "\n")
                                 put (f:funsBound, macsBound)
-                                return (FunDef f tvs g s e')
+                                return (FunDef f tvs hg g s e')
                             Left err -> error (pp err)
                     (Surf.MacroDef f tvs ma@(Surf.MP f_macparam _ _) g s e) -> do
                         (fBound,macsBound) <- get
@@ -383,8 +380,8 @@ doElab xs = flip evalStateT ([],[]) $ flip mapM xs $ \case
                     (Surf.SpecializeCommand f ts fs) -> case mapM closeTy ts of
                                                        Left x -> error $ "Tried to specialize function " ++ pp f ++ ", but provided type with type variable " ++ pp x
                                                        Right ts' -> return (SpecializeCommand f ts' fs)
-                    (Surf.RunCommand s xs) -> return (RunCommand s xs)
-                    (Surf.RunStepCommand s xs) -> return (RunStepCommand s xs)
+                    (Surf.RunCommand s ps args) -> return (RunCommand s ps args)
+                    (Surf.RunStepCommand s ps args) -> return (RunStepCommand s ps args)
                     (Surf.QuickCheckCommand f) -> return (QuickCheckCommand f)
 
 -- >>> elabSingle (Surf.TmCatL Nothing Nothing (Surf.TmCatR (Surf.TmLitR (LInt 4)) (Surf.TmLitR (LInt 4))) Surf.TmEpsR) (S.fromList [])

@@ -55,11 +55,10 @@ data Term buf =
 -- data MacroParam buf = MP Var.FunVar (Template Void (CtxStruct Ty)) (Template Void Ty)
 
 data Cmd buf =
-    FunDef Var.FunVar [Var.TyVar] (Template (Term buf) (Ctx Var.Var Ty)) (Template (Term buf) Ty) (Template (Term buf) (Term buf))
-  -- | MacroDef Var.FunVar [Var.TyVar] (MacroParam buf) (Template (Term buf) (Ctx Var.Var Ty)) (Template (Term buf) Ty) (Template (Term buf) (Term buf))
+    FunDef Var.FunVar [Var.TyVar] (Template (Term buf) [(Var.Var, Ty)]) (Template (Term buf) (Ctx Var.Var Ty)) (Template (Term buf) Ty) (Template (Term buf) (Term buf))
   | SpecializeCommand Var.FunVar [Ty]
-  | RunCommand Var.FunVar  (Env Var Prefix)
-  | RunStepCommand Var.FunVar (Env Var Prefix)
+  | RunCommand Var.FunVar [MaximalPrefix] (Env Var Prefix)
+  | RunStepCommand Var.FunVar [MaximalPrefix] (Env Var Prefix)
   | QuickCheckCommand Var.FunVar
 
 type Program buf = [Cmd buf]
@@ -127,7 +126,7 @@ substVar (TmRec ms args) x y = TmRec ((\he -> Hist.substVar he x y) <$> ms) ((\e
 substVar (TmFix ms mg args g s e) x y = TmFix ms mg ((\e' -> substVar e' x y) <$> args) g s e
 substVar (TmWait rho t s u e) x y = if x == u then TmWait rho' t s y (substVar e x y) else TmWait rho' t s u (substVar e x y)
   where
-    rho' = rebindBuf rho y x
+    rho' = rebindBuf rho x y
 
 substVar (TmCut x' e1 e2) x y | x' == y = error "UH OH"
 substVar (TmCut x' e1 e2) x y = TmCut x' (substVar e1 x y) (substVar e2 x y)

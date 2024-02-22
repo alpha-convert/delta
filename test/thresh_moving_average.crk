@@ -1,0 +1,76 @@
+fun zip[s,t](xs : s*, ys : t*) : (s || t)* =
+    case xs of
+      nil => nil
+    | x'::xs' => case ys of
+                   nil => nil
+                 | y'::ys' => wait x',y' do
+                                {(x',y')} :: zip(xs',ys')
+                              end
+
+mac map <f : (Int || Int) -> Int>(xs : (Int || Int)*) : Int* =
+    case xs of
+      nil => nil
+    | y::ys => f(y) :: map(ys)
+
+fun div(u : (Int||Int)) : Int =
+    let (num,den) = u in
+    wait num, den do
+        {num / den}
+    end
+
+fun runningSum(t : Int ; xs : Int*) : Int* =
+    case xs of
+      nil => nil
+    | y::ys => wait y,t do
+                 {t+y}::runningSum({t+y};ys)
+               end
+
+fun runningLen(n : Int ; xs : Int*) : Int* =
+    case xs of
+      nil => nil
+    | y::ys => wait n do
+                 {n+1}::runningLen({n+1};ys)
+               end
+
+fun runningAverage(xs : Int*) : Int* =
+    map<div>(zip[Int,Int](runningSum(0;xs),runningLen(0;xs)))
+
+fun takeWhileGeq(t : Int;xs : Int*) : Int* . Int* =
+  case xs of
+    nil => (nil;nil)
+  | y :: ys => wait y,t do
+                if {y > t} then
+                  let (zs;rest) = takeWhileGeq({t};ys) in
+                  ({y}::zs;rest)
+                else
+                  (nil;{y}::ys)
+               end
+               
+fun threshWindow(t : Int; xs : Int*) : Int** =
+  case xs of
+    nil => nil
+  | y :: ys => wait y,t do
+                 if {y > t} then
+                   let (run;rest) = takeWhileGeq({t};ys) in
+                   ({y}::run) :: threshWindow({t};rest)
+                 else
+                   threshWindow({t};ys)
+               end
+               
+fun concat(xs : Int*; ys : Int*) : Int* =
+  case xs of
+    nil => ys
+  | x::zs => x :: concat(zs;ys)
+
+mac concatMap <f : (Int*) -> Int*> (z : Int**) : Int* =
+    case z of
+      nil => nil
+    | x::xs => concat(f(x);(concatMap(xs)))
+
+
+fun threshMovingAverage(t : Int; xs : Int*) : Int* =
+  concatMap<runningAverage>(threshWindow(t;xs))
+
+specialize threshMovingAverage[]
+
+exec threshMovingAverage(t = 3; xs = [1;2;3;5;7;6;2;1;5))

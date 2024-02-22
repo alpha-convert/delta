@@ -1,0 +1,1 @@
+mac once [s] <f : (s) -> s> (x : s) : s = f(x)

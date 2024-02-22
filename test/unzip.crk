@@ -2,7 +2,7 @@ fun unzip[s,t](xs : (s + t)*) : s* || t* =
     case xs of
         nil => (nil,nil)
       | y::ys =>
-            let (a,b) = rec(ys) in
+            let (a,b) = unzip(ys) in
             case y of
                 inl x => (x::a,b)
               | inr x => (a,x::b)

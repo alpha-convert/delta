@@ -6,54 +6,57 @@ fun length(xs : Int*) : Int =
                     {1 + n}
                  end
 
-fun sumGo(acc : Int; xs : Int*) : Int =
-    case xs of
-      nil => acc
-    | x :: xs => wait x, acc do
-                    sumGo({x + acc}; xs)
-                 end
-
-fun sum(xs : Int*) : Int = sumGo(0;xs)
+fun sum{acc : Int}(xs : Int*) : Int =
+  case xs of
+    nil => { acc }
+  | x::xs => wait x do
+              sum{x + acc}(xs)
+             end
 
 fun averageRun(w : Int . Int*) : Int =
   let (x;xs) = w in
-  let (k,n) = (sum(xs), length(xs)) in
+  let (k,n) = (sum{0}(xs), length(xs)) in
   wait x,k,n do
     {(k + x) / (n + 1)}
   end
 
-fun averageRuns(xs : (Int . Int*)*) : Int* =
-  case xs of
-    nil => nil
-  | y::ys => averageRun(y)::averageRuns(ys)
+mac map <f : (Int . Int*) -> Int> (z : (Int.Int*)*) : Int* =
+    case z of
+      nil => nil
+    | x::xs => (f(x))::(map(xs))
 
 
-fun takeWhileGeq(t : Int;xs : Int*) : Int* . Int* =
+
+fun takeWhileGeq{t : Int}(xs : Int*) : Int* . Int* =
   case xs of
     nil => (nil;nil)
-  | y :: ys => wait y,t do
+  | y :: ys => wait y do
                 if {y > t} then
-                  let (zs;rest) = takeWhileGeq({t};ys) in
+                  let (zs;rest) = takeWhileGeq{t}(ys) in
                   ({y}::zs;rest)
                 else
                   (nil;{y}::ys)
                end
                
 
-fun parseLL(t : Int; xs : Int*) : (Int . Int*)* =
+fun parseLL{t : Int}(xs : Int*) : (Int . Int*)* =
   case xs of
     nil => nil
-  | y :: ys => wait y,t do
+  | y :: ys => wait y do
                  if {y > t} then
-                   let (run;rest) = takeWhileGeq({t};ys) in
-                   ({y};run) :: parseLL({t};rest)
+                   let (run;rest) = takeWhileGeq{t}(ys) in
+                   ({y};run) :: parseLL{t}(rest)
                  else
-                   parseLL({t};ys)
+                   parseLL{t}(ys)
                end
+               
 
-fun threshAverage(t : Int; xs : Int*) : Int* =
-  averageRuns(parseLL(t;xs))
+fun threshAverage{t : Int}(xs : Int*) : Int* =
+  map<averageRun>(parseLL{t}(xs))
 
 specialize threshAverage[]
 
-exec step threshAverage(t = 2; xs = [1;2;3;4;5;6;1;2;6;0))
+exec step threshAverage{2}(xs = [1;2;3;4;5;6;1;2;6;0))
+
+fun threshMovingAverage{t : Int}(xs : Int*) : Int* =
+  map<averageRun>(parseLL{t}(xs))

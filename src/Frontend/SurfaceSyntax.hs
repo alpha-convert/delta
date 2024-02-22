@@ -29,7 +29,7 @@ data Term =
     | TmWait [Var.Var] Term
     | TmHistPgm Hist.Term
     | TmCut Var.Var Term Term
-    | TmFunCall Var.FunVar [TyF Var.TyVar] (Maybe Var.FunVar) (CtxStruct Term)
+    | TmFunCall Var.FunVar [TyF Var.TyVar] [Hist.Term] (Maybe Var.FunVar) (CtxStruct Term)
     deriving (Eq,Ord,Show)
   
   
@@ -50,11 +50,11 @@ data MacroParam = MP Var.FunVar (CtxStruct OpenTy) OpenTy
   deriving (Eq,Ord,Show)
 
 data Cmd =
-    FunDef Var.FunVar [Var.TyVar] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
+    FunDef Var.FunVar [Var.TyVar] [(Var.Var,OpenTy)] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
   | MacroDef Var.FunVar [Var.TyVar] MacroParam (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
   | SpecializeCommand Var.FunVar [TyF Var.TyVar] [Var.FunVar]
-  | RunCommand Var.FunVar (Ctx Var.Var UntypedPrefix)
-  | RunStepCommand Var.FunVar (Ctx Var.Var UntypedPrefix)
+  | RunCommand Var.FunVar [UntypedPrefix] (Ctx Var.Var UntypedPrefix)
+  | RunStepCommand Var.FunVar [UntypedPrefix] (Ctx Var.Var UntypedPrefix)
   | QuickCheckCommand Var.FunVar
  deriving (Eq,Ord,Show)
 

@@ -1,0 +1,6 @@
+mac mapMaybe[s,t]<f : (s) -> t + Eps>(xs : s*) : t* =
+    case xs of
+      nil => nil
+    | y::ys => case f(y) of
+                 inl t => t::mapMaybe(ys)
+               | inr _ => mapMaybe(ys)

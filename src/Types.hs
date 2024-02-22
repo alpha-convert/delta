@@ -157,11 +157,16 @@ going to be inert or not. For now, we just require that you always instantiate p
 -}
   isNull (TyVar x) = False
 
-instance TypeLike t => TypeLike (Ctx v t) where
+instance TypeLike t => TypeLike (CtxEntry v t) where
+  isNull (CE _ t) = isNull t
+
+instance TypeLike t => TypeLike (CtxStruct t) where
   isNull EmpCtx = True
-  isNull (SngCtx (CE _ s)) = isNull s
+  isNull (SngCtx s) = isNull s
   isNull (SemicCtx g g') = isNull g && isNull g'
   isNull (CommaCtx g g') = isNull g && isNull g'
+
+
 
 instance TypeLike t => TypeLike (M.Map v t) where
   isNull = all isNull

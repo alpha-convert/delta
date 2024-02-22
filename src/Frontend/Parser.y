@@ -96,10 +96,14 @@ Exp1  : int                                                       { TmLitR (LInt
       | sink                                                      { TmEpsR }
       | nil                                                       { TmNil }
       | Var                                                       { TmVar $1 }
-      | FunVar '(' Args ')'                                       { TmFunCall $1 [] Nothing $3 }
-      | FunVar '[' TyList ']' '(' Args ')'                        { TmFunCall $1 $3 Nothing $6 }
-      | FunVar '[' TyList ']' '<' FunVar '>' '(' Args ')'         { TmFunCall $1 $3 (Just $6) $9 }
-      | FunVar '<' FunVar '>' '(' Args ')'                        { TmFunCall $1 [] (Just $3) $6 }
+      | FunVar '(' Args ')'                                       { TmFunCall $1 [] [] Nothing $3 }
+      | FunVar '{' HistArgs '}' '(' Args ')'                      { TmFunCall $1 [] $3 Nothing $6 }
+      | FunVar '[' TyList ']' '(' Args ')'                        { TmFunCall $1 $3 [] Nothing $6 }
+      | FunVar '[' TyList ']' '{' HistArgs '}' '(' Args ')'       { TmFunCall $1 $3 $6 Nothing $9 }
+      | FunVar '<' FunVar '>' '(' Args ')'                        { TmFunCall $1 [] [] (Just $3) $6 }
+      | FunVar '{' HistArgs'}' '<' FunVar '>' '(' Args ')'        { TmFunCall $1 [] $3 (Just $6) $9 }
+      | FunVar '[' TyList ']' '<' FunVar '>' '(' Args ')'         { TmFunCall $1 $3 [] (Just $6) $9 }
+      | FunVar '[' TyList ']' '{' HistArgs '}' '<' FunVar '>' '(' Args ')' { TmFunCall $1 $3 $6 (Just $9) $12 }
       | '(' Exp ';' Exp ')'                                       { TmCatR $2 $4 }
       | '(' Exp ',' Exp ')'                                       { TmParR $2 $4 }
       | '(' Exp ')'                                               { $2 }
@@ -130,6 +134,13 @@ HP3         : int                                                 { Hist.TmValue
             | Var                                                 { Hist.TmVar $1 }
             | '(' HistPgm ')'                                     { $2 }
             | '(' HistPgm ',' HistPgm ')'                         { Hist.TmPair $2 $4 }
+
+HistArgs : {-empty-}                                              { [] }
+         | HistPgm                                                { [$1] }
+         | HistPgm ',' HistArgs1                                   { $1 : $3 }
+
+HistArgs1 : {-empty-}                                             { [] }
+          | HistPgm ',' HistArgs1                                 { $1 : $3 }
 
 Args  : {- empty -}                                               { EmpCtx }
       | Args1 ',' Args                                           { CommaCtx $1 $3 }
@@ -172,6 +183,15 @@ TyList : {-empty-}                                               { [] }
         | Ty                                                     { [$1] }
         | Ty ',' TyList                                         { $1 : $3 }
 
+HistVarCtx : {--}                                                 { [] }
+            | '{' HistVarCtx1 '}'                                 { $2 }
+
+HistVarCtx1 : Var ':' Ty                                          { [($1,$3)] }
+            | Var ':' Ty ',' HistVarCtx2                          { ($1,$3) : $5 }
+
+HistVarCtx2 : {-empty-}                                           { [] }
+            | Var ':' Ty ',' HistVarCtx2                          { ($1,$3) : $5 }
+
 VarCtx      : VarCtx1 ',' VarCtx                                  { CommaCtx $1 $3 } 
             | VarCtx1 ';' VarCtx                                  { SemicCtx $1 $3 }
             | VarCtx1                                             { $1 } 
@@ -180,18 +200,18 @@ VarCtx1     : Var ':' Ty                                          { SngCtx (CE $
             | '(' VarCtx ')'                                      { $2 }
           
 
-MacroParam : FunVar ':' '(' Ty ')' '-' '>' Ty                     { MP $1 (SngCtx $4) $8 }
+MacroParam : FunVar ':' '(' MacroParamCtx ')' '-' '>' Ty                     { MP $1 $4 $8 }
 
 -- MacroParamList  : {-empty-}                                           { [] }
             -- | MacroParam                                              { [$1] }
             -- | MacroParam ',' kunArgList                               { $1 : $3 }
 
--- MacroParamCtx   : MacroParamCtx1 ',' MacroParamCtx                               { CommaCtx $1 $3 } 
-            -- | MacroParamCtx1 ';' MacroParamCtx                                  { SemicCtx $1 $3 }
-            -- | MacroParamCtx1                                             { $1 } 
+MacroParamCtx   : MacroParamCtx1 ',' MacroParamCtx                               { CommaCtx $1 $3 } 
+            | MacroParamCtx1 ';' MacroParamCtx                                  { SemicCtx $1 $3 }
+            | MacroParamCtx1                                             { $1 } 
 
--- MacroParamCtx1     : '[' Ty ']'                                                { SngCtx $1 }
-            -- | '(' MacroParamCtx ')'                                      { $2 }
+MacroParamCtx1     : Ty                                                 { SngCtx $1 }
+            | '(' MacroParamCtx ')'                                      { $2 }
  
 
 Pfx   : '(' Pfx ';' ')'                                           { CatPA $2 }
@@ -209,19 +229,28 @@ Stp   : ']'                                                       { StpDone }
       | Pfx ']'                                                   { StpB $1 StpDone }
       | Pfx ';' Stp                                               { StpB $1 $3 }
 
-PfxArgs     : PfxArgs1 ',' PfxArgs                                 { CommaCtx $1 $3 } 
-            | PfxArgs1 ';' PfxArgs                                 { SemicCtx $1 $3 }
-            | PfxArgs1                                             { $1 } 
+PfxLitArgs     : PfxLitArgs1 ',' PfxLitArgs                                 { CommaCtx $1 $3 } 
+            | PfxLitArgs1 ';' PfxLitArgs                                 { SemicCtx $1 $3 }
+            | PfxLitArgs1                                             { $1 } 
 
-PfxArgs1    : Var '=' Pfx                                          { SngCtx (CE $1 $3) }
-            | '(' PfxArgs ')'                                      { $2 }
+PfxLitArgs1    : Var '=' Pfx                                          { SngCtx (CE $1 $3) }
+            | '(' PfxLitArgs ')'                                      { $2 }
+
+HistLitArgs : {-empty-}                                                 { []   }
+            | Pfx                                                       { [$1] }
+            | Pfx ',' HistLitArgs1                                      { $1 : $3 }
+
+HistLitArgs1 : {-empty-}                                                { [] }
+             | Pfx ',' HistLitArgs1                                     { $1 : $3 }
 
 
-Cmd   : fun FunVar TyVarListBracketed '(' VarCtx ')' ':' Ty '=' Exp                       { FunDef $2 $3 $5 $8 $10 }
+Cmd   : fun FunVar TyVarListBracketed HistVarCtx '(' VarCtx ')' ':' Ty '=' Exp            { FunDef $2 $3 $4 $6 $9 $11 }
       | mac FunVar TyVarListBracketed '<' MacroParam '>' '(' VarCtx ')' ':' Ty '=' Exp    { MacroDef $2 $3 $5 $8 $11 $13 }
       | specialize FunVar '[' TyList ']'                                                  { SpecializeCommand $2 $4 [] }
-      | exec FunVar '(' PfxArgs ')'                                                       { RunCommand $2 $4 }
-      | exec step FunVar '(' PfxArgs ')'                                                  { RunStepCommand $3 $5 }
+      | exec FunVar '(' PfxLitArgs ')'                                                       { RunCommand $2 [] $4 }
+      | exec FunVar '{' HistLitArgs '}' '(' PfxLitArgs ')'                                   { RunCommand $2 $4 $7 }
+      | exec step FunVar '(' PfxLitArgs ')'                                                  { RunStepCommand $3 [] $5 }
+      | exec step FunVar '{' HistLitArgs '}' '(' PfxLitArgs ')'                              { RunStepCommand $3 $5 $8 }
       | quickcheck FunVar                                                                 { QuickCheckCommand $2 }
 
 Pgm   : {-empty-}                                                  { [] }
