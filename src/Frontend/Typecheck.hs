@@ -248,6 +248,19 @@ liftHistCheck e m = do
 dropVarsCtx :: Ctx v t -> CtxStruct t
 dropVarsCtx = ((\(CE _ t) -> t) <$>)
 
+{-
+checkElab is the main typechecking routine. Given a type to check against and a term, it returns
+(1) a partial order structure on the free variables in the term, such that x <= y if x is used before y.
+    at top level, we check that this partial order is consistent with the given context (i.e. if x : s ; y : t), then y is not used before x.
+(2) the minimum inertness of the term.
+(3) A template for a core term: a function, which if given values for the types in the term and the
+    macro parameter (if the term is a macro), stamps out a monomorphic version of the term to be run.
+    This is required because a program like  x : s |- wait x do e end : r requires a buffer on the wait
+    mapping x to emp(s). But if s is a type variable, we do not know s until we decide on a particular instantiation.
+
+CheckElab is run in the TckM monad, which handles the typing context and errors.
+
+-}
 checkElab :: (Buffer buf, TckM Elab.Term buf m) => OpenTy -> Elab.Term -> m (CheckElabResult buf)
 checkElab TyInt (Elab.TmLitR l@(LInt _)) = return $ CR P.empty Jumpy (return (Core.TmLitR l))
 checkElab TyBool (Elab.TmLitR l@(LBool _)) = return $ CR P.empty Jumpy (return (Core.TmLitR l))
@@ -363,10 +376,14 @@ checkElab r e@(Elab.TmStarCase z e1 x xs e2) = do
         return (Core.TmStarCase rho r' s' z me1' x xs me2')
 
 checkElab r e@(Elab.TmCut x e1 e2) = do
+    -- Typcheck the scrutinee, ensuring that it is inert.
     IR s p i be1 <- inferElab e1
     guard (i == Inert) (NonInertCut x e1 e2)
+    -- Typcheck the continuation
     CR p' i' be2 <- withBind x s (checkElab r e2)
+    -- Ensure disjoint sets of variables are used in the scruitinee and continuation
     reThrow (handleReUse e) (P.checkDisjoint p p')
+    -- The usage partial order for this term is p'[p/x]: all of the variables in e1 are "used" in the place x was used in e2.
     p'' <- reThrow (handleOrderErr (Elab.TmCut x e1 e2)) $ P.substSing p' p x
     return (CR p'' i' (Core.TmCut x <$> be1 <*> be2))
 
@@ -380,10 +397,14 @@ checkElab r e@(Elab.TmRec ms es) = do
     return (CR p i (Core.TmRec ms <$> args))
 
 checkElab r e@(Elab.TmWait x e') = do
+    -- Get the empty environment of the current context type.
     m_rho <- asks (emptyBufOfType . argsTypes)
     s <- lookupTy e x
+    -- Typecheck the body of the term, with x historically bound to s.
     CR p _ e'' <- withBindHist x s (checkElab r e')
+    -- Ensure that x isn't used as a streaming variable in e'
     reThrow (handleContUse e) (P.checkNotIn x p)
+    -- Waits are inert if the type we're wiating on is not nullable.
     let i = if not (isNull s) then Inert else Jumpy
     return $ CR (P.insert p x x) i $ do
         rho <- m_rho
@@ -402,21 +423,29 @@ checkElab r e@(Elab.TmFunCall f ts ms es) = do
     fr <- lookupFunMacRecord f
     case fr of
         PolyFun {funTyVars = tvs, funHistCtx = o, funCtx = g, funTy = r', funMonoTerm = me, funInert = i} -> do
+            -- Ensure the type variables for this function are saturated.
             when (length ts /= length tvs) $ error "Unsaturated type args for function call"
+            -- Compute the return type r'[tv] and context g'[tv] of the called function, under the substitution defined by tvs |-> ts.
             let repar_map = foldr (uncurry M.insert) M.empty (zip tvs ts)
             g' <- reThrow handleReparErr (reparameterizeCtx repar_map g)
             r'' <- reThrow handleReparErr (reparameterizeTy repar_map r')
+            -- TODO: ensure r' == r.
             (p,i',margs) <- elabRec (dropVarsCtx g') es
+            -- Function arguments must be inert because semantically they introduce a cut.
             when (i' /= Inert) $ throwError (NonInertArgs es)
+            -- Ensure the historical arguments are saturated, and they all have the proper types.
             when (length o /= length ms) (throwError (UnsaturatedHistArgs o ms e))
             liftHistCheck e $ forM_ (zip ms o) (\(hp,(_,t)) -> Hist.check hp t)
             return $ CR p i $ do
+                -- Monomorphize everything in sight
                 g_mono <- monomorphizeCtx g'
                 r_mono <- monomorphizeTy r''
                 o_mono <- forM o (\(x,t) -> (x,) <$> monomorphizeTy t)
                 args <- margs
-                e <- reparameterizeTemplate repar_map me
-                case e of
+                e0 <- reparameterizeTemplate repar_map me
+                -- Take the term for the function being called, stamp out the monomorphic version,
+                -- and add the arguments as defined by the function call.
+                case e0 of
                     Core.TmFix _ _ _ _ _ e' -> return (Core.TmFix ms o_mono args g_mono r_mono e')
                     _ -> error "Top level definition isn't a fix"
         _ -> error "..."
@@ -442,7 +471,8 @@ checkElab s' (Elab.TmMacroParamUse f' ms args) = do
 -- TODO: fix ms in macro use
 checkElab t (Elab.TmMacroUse macName ts f ms args) = do
     mr <- lookupFunMacRecord macName
-    mf <- lookupFunMacRecord f
+    -- TODO: allow for f itself to be a macro parameter.
+    mf <- lookupFunMacRecord f 
     case mr of
         PolyMac {macTyVars = m_tvs, macCtx = m_g, macTy = m_r, macMonoTerm = mac_me, macInert = i_mac, macParam = Surf.MP _ mp_g mp_r} -> do
             when (length ts /= length m_tvs) $ error "Unsaturated type args for macro use" -- not saturated type arguments for recursive call.

@@ -235,7 +235,9 @@ lowerSurf (Surf.TmFunCall f ts ms mf_macro_arg es) = do
         case mf_macro_arg of
             Nothing -> error $ "macro call to " ++ pp f ++ " needs macro arg"
             Just f_macro_arg ->
-                if (not (f_macro_arg `elem` tlFs)) then (error "macro call needs top level fun arg.") else TmMacroUse f ts f_macro_arg ms <$> mapM lowerSurf es
+                -- TODO: Allow macro calls to be macro parameters: mac foo<f : (s) -> t>(xs : s*) : t* = map<f>(xs)
+                if (not (f_macro_arg `elem` tlFs)) then (error "macro call needs top level fun arg.") else
+                    TmMacroUse f ts f_macro_arg ms <$> mapM lowerSurf es
     else TmFunCall f ts ms <$> mapM lowerSurf es
 
 freshUnshadowVar :: (UnshadowM m) => m Var
