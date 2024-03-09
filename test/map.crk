@@ -1,4 +1,4 @@
-mac map [s,t] <f : (s) -> t> (xs : s*) : t* =
+fun map [s,t] <f : (s) -> t> (xs : s*) : t* =
     case xs of
       nil => nil
     | y::ys => f(y) :: map(ys)

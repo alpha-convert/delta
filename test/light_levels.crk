@@ -20,7 +20,7 @@ fun averageRun(w : Int . Int*) : Int =
     {(k + x) / (n + 1)}
   end
 
-mac map <f : (Int . Int*) -> Int> (z : (Int.Int*)*) : Int* =
+fun map <f : (Int . Int*) -> Int> (z : (Int.Int*)*) : Int* =
     case z of
       nil => nil
     | x::xs => (f(x))::(map(xs))

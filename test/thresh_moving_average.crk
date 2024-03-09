@@ -7,7 +7,7 @@ fun zip[s,t](xs : s*, ys : t*) : (s || t)* =
                                 {(x',y')} :: zip(xs',ys')
                               end
 
-mac map <f : (Int || Int) -> Int>(xs : (Int || Int)*) : Int* =
+fun map <f : (Int || Int) -> Int>(xs : (Int || Int)*) : Int* =
     case xs of
       nil => nil
     | y::ys => f(y) :: map(ys)
@@ -62,7 +62,7 @@ fun concat(xs : Int*; ys : Int*) : Int* =
     nil => ys
   | x::zs => x :: concat(zs;ys)
 
-mac concatMap <f : (Int*) -> Int*> (z : Int**) : Int* =
+fun concatMap <f : (Int*) -> Int*> (z : Int**) : Int* =
     case z of
       nil => nil
     | x::xs => concat(f(x);(concatMap(xs)))

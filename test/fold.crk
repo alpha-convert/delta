@@ -1,4 +1,4 @@
-mac fold [s,t] <f : (t ; s) -> t> (y : t; xs : s*) : t =
+fun fold [s,t] <f : (t ; s) -> t> (y : t; xs : s*) : t =
   case xs of
     nil => y
   | u :: us => fold(f(y;u);us)
