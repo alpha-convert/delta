@@ -32,6 +32,7 @@ import qualified HistPgm as Hist
       int             { TokenInt $$ }
       var             { TokenVar (Var.Var $$) }
       if              { TokenIf }
+      as              { TokenAs }
       then            { TokenThen }
       else            { TokenElse }
       tyInt           { TokenTyInt }
@@ -86,7 +87,7 @@ Exp   : let '(' WildVar ';' WildVar ')' '=' Exp in Exp             { TmCatL $3 $
       | inr Exp1                                                   { TmInr $2 }
       | case Exp of inl WildVar '=>' Exp '|' inr WildVar '=>' Exp  { TmPlusCase $2 $5 $7 $10 $12}
       | case Exp of nil '=>' Exp '|' WildVar '::' WildVar '=>' Exp { TmStarCase $2 $6 $8 $10 $12}
-      | wait VarList do Exp end                                    { TmWait $2 $4 }
+      | wait WaitList do Exp end                                    { TmWait $2 $4 }
       | if '{' HistPgm '}' then Exp else Exp                       { TmIte $3 $6 $8 }
       | Exp1 '::' Exp                                              { TmCons $1 $3 }
       | Exp1                                                       { $1 }
@@ -168,6 +169,12 @@ Ty4   : tyInt                                                     { TyInt }
       | TyVar                                                     { Types.TyVar $1 }
       | '(' Ty ')'                                                { $2 }
 
+WaitList : {-empty-}                                              { [] }
+         | Var                                                    { [ Left $1 ] }
+         | Exp as Var                                             { [ Right ($1,$3) ] }
+         | Var ',' WaitList                                       { (Left $1) : $3 }
+         | Exp as Var ',' WaitList                                { (Right ($1,$3)) : $5 }
+
 VarList : {-empty-}                                               { [] }
         | Var                                                     { [$1] }
         | Var ',' VarList                                         { $1 : $3 }
@@ -200,7 +207,8 @@ VarCtx1     : Var ':' Ty                                          { SngCtx (CE $
             | '(' VarCtx ')'                                      { $2 }
           
 
-MacroParam : FunVar ':' '(' MacroParamCtx ')' '-' '>' Ty                     { MP $1 $4 $8 }
+MacroParam : FunVar ':' '(' MacroParamCtx ')' '-' '>' Ty                     { MP $1 [] $4 $8 }
+           | FunVar ':' '{' MacroParamHistCtx '}' '(' MacroParamCtx ')' '-' '>' Ty { MP $1 $4 $7 $11 }
 
 -- MacroParamList  : {-empty-}                                           { [] }
             -- | MacroParam                                              { [$1] }
@@ -213,6 +221,11 @@ MacroParamCtx   : MacroParamCtx1 ',' MacroParamCtx                              
 MacroParamCtx1     : Ty                                                 { SngCtx $1 }
             | '(' MacroParamCtx ')'                                      { $2 }
  
+MacroParamHistCtx : Ty                                          { [$1] }
+                   | Ty ',' MacroParamHistCtx1                   { $1 : $3 }
+
+MacroParamHistCtx1 : {-empty-}                                           { [] }
+            | Ty ',' MacroParamHistCtx1                                  { $1 : $3 }
 
 Pfx   : '(' Pfx ';' ')'                                           { CatPA $2 }
       | '(' Pfx ';' Pfx ')'                                       { CatPB $2 $4 }
@@ -244,8 +257,8 @@ HistLitArgs1 : {-empty-}                                                { [] }
              | Pfx ',' HistLitArgs1                                     { $1 : $3 }
 
 
-Cmd   : fun FunVar TyVarListBracketed HistVarCtx '(' VarCtx ')' ':' Ty '=' Exp            { FunDef $2 $3 $4 $6 $9 $11 }
-      | mac FunVar TyVarListBracketed '<' MacroParam '>' '(' VarCtx ')' ':' Ty '=' Exp    { MacroDef $2 $3 $5 $8 $11 $13 }
+Cmd   : fun FunVar TyVarListBracketed HistVarCtx '(' VarCtx ')' ':' Ty '=' Exp            { FunOrMacDef $2 $3 Nothing $4 $6 $9 $11 }
+      | fun FunVar TyVarListBracketed '<' MacroParam '>' '(' VarCtx ')' ':' Ty '=' Exp    { FunOrMacDef $2 $3 (Just $5) [] $8 $11 $13 }
       | specialize FunVar '[' TyList ']'                                                  { SpecializeCommand $2 $4 [] }
       | exec FunVar '(' PfxLitArgs ')'                                                       { RunCommand $2 [] $4 }
       | exec FunVar '{' HistLitArgs '}' '(' PfxLitArgs ')'                                   { RunCommand $2 $4 $7 }
@@ -268,6 +281,7 @@ data Token
       | TokenSink
       | TokenCase
       | TokenIf
+      | TokenAs
       | TokenThen
       | TokenElse
       | TokenOf
@@ -357,6 +371,7 @@ lexVar cs =
       ("let",rest) -> TokenLet : lexer rest
       ("in",rest)  -> TokenIn : lexer rest
       ("if",rest)  -> TokenIf : lexer rest
+      ("as",rest)  -> TokenAs : lexer rest
       ("then",rest)  -> TokenThen : lexer rest
       ("else",rest)  -> TokenElse : lexer rest
       ("sink",rest)  -> TokenSink : lexer rest

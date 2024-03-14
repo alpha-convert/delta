@@ -4,3 +4,8 @@ fun mapMaybe[s,t]<f : (s) -> t + Eps>(xs : s*) : t* =
     | y::ys => case f(y) of
                  inl t => t::mapMaybe(ys)
                | inr _ => mapMaybe(ys)
+
+fun liftPred[s]<f : {s}(Eps) -> Bool>(x : s) : (s + Eps) =
+  wait x, f{x}(sink) as b do
+      if {b} then inl({x}) else inr(sink)
+  end

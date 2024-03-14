@@ -210,10 +210,14 @@ lowerSurf (Surf.TmStarCase e e1 mx mxs e2) = do
     z <- freshCutVar
     return $ TmCut z e' (TmStarCase z e1' x xs e2')
 lowerSurf (Surf.TmWait xs e) = do
-    go xs <$> lowerSurf e
+    e' <- lowerSurf e
+    go xs e'
     where
-        go [] e' = e'
-        go (x:xs') e' = TmWait x (go xs' e')
+        go [] e' = return e'
+        go ((Left x):xs') e' = TmWait x <$> go xs' e'
+        go ((Right (e0,x)):xs') e' = do
+            e0' <- lowerSurf e0
+            TmCut x e0' . TmWait x <$> go xs' e'
 lowerSurf (Surf.TmHistPgm he) = return (TmHistPgm he)
 lowerSurf (Surf.TmCut x e1 e2) = do
     e1' <- lowerSurf e1
@@ -360,7 +364,7 @@ elabSingle f mfa tlfs tlms e s = do
 
 doElab :: Surf.Program -> IO Program
 doElab xs = flip evalStateT ([],[]) $ flip mapM xs $ \case
-                    (Surf.FunDef f tvs hg g s e) -> do
+                    (Surf.FunOrMacDef f tvs Nothing hg g s e) -> do
                         let streamArgVars = M.keysSet $ ctxBindings g
                         let histArgVars = S.fromList (fst <$> hg)
                         () <- unless (S.disjoint streamArgVars histArgVars) $ error ("Function " ++ pp f ++ "has non-disjoint sets of stream and historical arguments, " ++ show streamArgVars ++ " and " ++ show histArgVars)
@@ -371,7 +375,7 @@ doElab xs = flip evalStateT ([],[]) $ flip mapM xs $ \case
                                 put (f:funsBound, macsBound)
                                 return (FunDef f tvs hg g s e')
                             Left err -> error (pp err)
-                    (Surf.MacroDef f tvs ma@(Surf.MP f_macparam _ _) g s e) -> do
+                    (Surf.FunOrMacDef f tvs (Just ma@(Surf.MP f_macparam _ _ _)) _ g s e) -> do
                         (fBound,macsBound) <- get
                         case elabSingle f (Just f_macparam) fBound macsBound e (M.keysSet $ ctxBindings g) of
                             Right e' -> do
