@@ -6,6 +6,7 @@ module Backend.Template (
     monomorphizeCtxStruct,
     reparameterizeTemplate,
     getMacParamReplacement,
+    getMacParamReplacement',
     withMacParamReplacement,
     runTemplate
 )
@@ -22,10 +23,12 @@ import Data.Void (Void)
 data TemplateErr =
     TyVarNotFound Var.TyVar
   | ReparErr Var.TyVar
+  | MissingMacParamReplacement
 
 instance PrettyPrint TemplateErr where
     pp (TyVarNotFound v) = "Could not find binding for type variable " ++ pp v ++ " while monomorphizing."
     pp (ReparErr v) = "Reparamaterize error: " ++ pp v ++ "."
+    pp (MissingMacParamReplacement) = "Expected the template to recieve a macro param replacement."
 
 data TempData a = TD { tyMap :: M.Map Var.TyVar Ty, macParamReplacement :: Maybe a }
 
@@ -39,6 +42,9 @@ getTy alpha = asks tyMap >>= maybe (throwError (TyVarNotFound alpha)) return . M
 
 getMacParamReplacement :: Template a (Maybe a)
 getMacParamReplacement = asks macParamReplacement
+
+getMacParamReplacement' :: Template a a
+getMacParamReplacement' = asks macParamReplacement >>= maybe (throwError MissingMacParamReplacement) return
 
 
 reThrowReparErr :: ExceptT Var.TyVar (Template t) a -> Template t a

@@ -486,22 +486,18 @@ checkElab t e@(Elab.TmMacroUse macName ts f ms args) = do
             when (i' /= Inert) $ throwError (NonInertArgs args)
             when (length m_hg /= length ms) (throwError (UnsaturatedHistArgs m_hg ms e))
             liftHistCheck e $ forM_ (zip ms m_hg) (\(hp,(_,t)) -> Hist.check hp t)
-            mf <- lookupFunMacRecord f
-            (case mf of
-                PolyFun {funTyVars = _, funCtx = g, funTy = r', funHistCtx = _, funMonoTerm = me, funInert = i_fun} -> do
-                    --TODO:JWC TYPECHECKING, figure out type variables!! need to reparameterize everything in the right way.
-                    return $ CR p i_mac $ do
-                        args <- margs
-                        g_mono <- monomorphizeCtx m_g
-                        r_mono <- monomorphizeTy m_r
-                        hg_mono <- mapM (\(x,t) -> (x,) <$> monomorphizeTy t) m_hg
-                        mac_param_term <- me
-                        mac_inlined <- withMacParamReplacement mac_param_term mac_me
-                        case mac_inlined of
-                            Core.TmFix _ _ _ _ _ e' -> return (Core.TmFix ms hg_mono args g_mono r_mono e')
-                            _ -> error "Macro definition isn't a fix"
-                PolyMac {} -> error "cannot call macro with another macro"
-                SpecFun {} -> error "cannot call macro with specified function")
+            me <- checkMacroArg f
+            return $ CR p i_mac $ do
+                args <- margs
+                g_mono <- monomorphizeCtx m_g
+                r_mono <- monomorphizeTy m_r
+                hg_mono <- mapM (\(x,t) -> (x,) <$> monomorphizeTy t) m_hg
+                mac_param_term <- me
+                mac_inlined <- withMacParamReplacement mac_param_term mac_me
+                case mac_inlined of
+                    Core.TmFix _ _ _ _ _ e' -> return (Core.TmFix ms hg_mono args g_mono r_mono e')
+                    _ -> error "Macro definition isn't a fix"
+
         SpecFun {} -> error "Macro use lookup resolved to specialized function... "
         PolyFun {} -> error "Macro use lookup resolved to polymorphic function... "
 
@@ -731,22 +727,17 @@ inferElab e@(Elab.TmMacroUse macName ts f ms args) = do
             when (i' /= Inert) (throwError (NonInertArgs args))
             when (length m_hg /= length ms) (throwError (UnsaturatedHistArgs m_hg ms e))
             liftHistCheck e $ forM_ (zip ms m_hg) (\(hp,(_,t)) -> Hist.check hp t)
-            mf <- lookupFunMacRecord f
-            (case mf of
-                PolyFun {funTyVars = _, funCtx = _, funHistCtx = _, funTy = _, funMonoTerm = me, funInert = _} ->
-                    return $ IR m_r p i_mac $ do
-                        args <- margs
-                        g_mono <- monomorphizeCtx m_g
-                        r_mono <- monomorphizeTy m_r
-                        hg_mono <- mapM (\(x,t) -> (x,) <$> monomorphizeTy t) m_hg
-                        mac_param_term <- me
-                        mac_inlined <- withMacParamReplacement mac_param_term mac_me
-                        case mac_inlined of
-                            Core.TmFix _ _ _ _ _ e' -> return (Core.TmFix ms hg_mono args g_mono r_mono e')
-                            _ -> error "Macro definition isn't a fix"
-
-                PolyMac {} -> error "cannot call macro with another macro"
-                SpecFun {} -> error "cannot call macro with specified function")
+            me <-  checkMacroArg f
+            return $ IR m_r p i_mac $ do
+                args <- margs
+                g_mono <- monomorphizeCtx m_g
+                r_mono <- monomorphizeTy m_r
+                hg_mono <- mapM (\(x,t) -> (x,) <$> monomorphizeTy t) m_hg
+                mac_param_term <- me
+                mac_inlined <- withMacParamReplacement mac_param_term mac_me
+                case mac_inlined of
+                    Core.TmFix _ _ _ _ _ e' -> return (Core.TmFix ms hg_mono args g_mono r_mono e')
+                    _ -> error "Macro definition isn't a fix"
         SpecFun {} -> error "Macro use lookup resolved to specialized function... "
         PolyFun {} -> error "Macro use lookup resolved to polymorphic function... "
 
@@ -835,9 +826,31 @@ checkUntypedPrefixCtx (CommaCtx g1 g2) (CommaCtx g1' g2') = do
 checkUntypedPrefixCtx g@(CommaCtx {}) g' = throwError (WrongArgShape g g')
 
 
--- checkMacroArg :: (Buffer buf, TckM Elab.Term buf m) => Elab.MacroArg -> m (Template (Term buf) (Term buf))
--- checkMacroArg (Elab.TopLevelFunMacroArg mf) = undefined
--- checkMacroArg (Elab.MacroUseMacroArg mf marg) = undefined
+checkMacroArg :: (Buffer buf, TckM Elab.Term buf m) => Elab.MacroArg -> m (Template (Term buf) (Term buf))
+checkMacroArg Elab.CurMacParamMacroArg = return getMacParamReplacement'
+checkMacroArg (Elab.TopLevelFunMacroArg f) = do
+    --TODO:JWC figure out type variables!! need to reparameterize everything in the right way.
+    mf <- lookupFunMacRecord f
+    case mf of
+        PolyFun {funTyVars = _, funCtx = g, funTy = _, funHistCtx = _, funMonoTerm = me, funInert = _}-> return me
+        PolyMac {} -> error "Expected toplevel function macro argument to be a function!"
+        SpecFun {} -> error "cannot call macro with specified function"
+checkMacroArg (Elab.MacroUseMacroArg macName marg) = do
+    mr <- lookupFunMacRecord macName
+    case mr of
+        PolyMac {macTyVars = m_tvs, macHistCtx = m_hg, macCtx = m_g, macTy = m_r, macMonoTerm = mac_me, macInert = i_mac} -> do
+            me <- checkMacroArg marg
+            return $ do
+                g_mono <- monomorphizeCtx m_g
+                r_mono <- monomorphizeTy m_r
+                hg_mono <- mapM (\(x,t) -> (x,) <$> monomorphizeTy t) m_hg
+                mac_param_term <- me
+                mac_inlined <- withMacParamReplacement mac_param_term mac_me
+                case mac_inlined of
+                    Core.TmFix ms _ args _ _ e' -> return (Core.TmFix ms hg_mono args g_mono r_mono e')
+                    _ -> error "Expected inlined macro argument to be a fixpoint"
+        PolyFun {} -> error "Expected macro use macro argument to be a macro!"
+        SpecFun {} -> error "cannot call macro with specified function"
 
 
 -- Doublecheck argument typechecks the resulting term, again.

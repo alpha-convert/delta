@@ -1,6 +1,6 @@
 {
 module Frontend.Parser(parseSurfaceSyntax, parseProgram, lexer) where
-import Frontend.SurfaceSyntax(Term(..), Cmd(..), UntypedPrefix(..), MacroParam(..))
+import Frontend.SurfaceSyntax(Term(..), Cmd(..), UntypedPrefix(..), MacroParam(..), MacroArg(..))
 import Values ( Lit(..))
 import Var
 import Types
@@ -78,6 +78,9 @@ Var     : var     { Var.Var $1 }
 TyVar     : var     { Var.TyVar $1 }
 FunVar     : var     { Var.FunVar $1 }
 
+MacroArg : FunVar                         { NamedMacroArg $1 }
+         | FunVar '<' MacroArg '>'        { MacroUseMacroArg $1 $3 }
+
 WildVar : '_'     { Nothing }
         | Var     { Just $1 }
 
@@ -102,10 +105,10 @@ Exp1  : int                                                       { TmLitR (LInt
       | FunVar '{' HistArgs '}' '(' Args ')'                      { TmFunCall $1 [] $3 Nothing $6 }
       | FunVar '[' TyList ']' '(' Args ')'                        { TmFunCall $1 $3 [] Nothing $6 }
       | FunVar '[' TyList ']' '{' HistArgs '}' '(' Args ')'       { TmFunCall $1 $3 $6 Nothing $9 }
-      | FunVar '<' FunVar '>' '(' Args ')'                        { TmFunCall $1 [] [] (Just $3) $6 }
-      | FunVar '{' HistArgs'}' '<' FunVar '>' '(' Args ')'        { TmFunCall $1 [] $3 (Just $6) $9 }
-      | FunVar '[' TyList ']' '<' FunVar '>' '(' Args ')'         { TmFunCall $1 $3 [] (Just $6) $9 }
-      | FunVar '[' TyList ']' '{' HistArgs '}' '<' FunVar '>' '(' Args ')' { TmFunCall $1 $3 $6 (Just $9) $12 }
+      | FunVar '<' MacroArg '>' '(' Args ')'                        { TmFunCall $1 [] [] (Just $3) $6 }
+      | FunVar '{' HistArgs'}' '<' MacroArg '>' '(' Args ')'        { TmFunCall $1 [] $3 (Just $6) $9 }
+      | FunVar '[' TyList ']' '<' MacroArg '>' '(' Args ')'         { TmFunCall $1 $3 [] (Just $6) $9 }
+      | FunVar '[' TyList ']' '{' HistArgs '}' '<' MacroArg '>' '(' Args ')' { TmFunCall $1 $3 $6 (Just $9) $12 }
       | '(' Exp ';' Exp ')'                                       { TmCatR $2 $4 }
       | '(' Exp ',' Exp ')'                                       { TmParR $2 $4 }
       | '(' Exp ')'                                               { $2 }

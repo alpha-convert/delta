@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleContexts, FlexibleInstances, BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
-module Frontend.ElabSyntax (doElab, Term(..), Program, Cmd(..), {-MacroArg(..)-}) where
+module Frontend.ElabSyntax (doElab, Term(..), Program, Cmd(..), MacroArg(..)) where
 
 import Values ( Lit(..) )
 import Var (Var(..), TyVar, FunVar)
@@ -41,13 +41,7 @@ and then replacing the shadowed name with the fresh name in the body.
 
 -}
 
-{-
-data MacroArg = TopLevelFunMacroArg Var.FunVar | MacroUseMacroArg Var.FunVar MacroArg deriving (Eq,Ord,Show)
 
-instance PrettyPrint MacroArg where
-    pp (TopLevelFunMacroArg f) = pp f
-    pp (MacroUseMacroArg f a) = pp f ++ "<" ++ pp a ++ ">"
--}
 
 data Term =
       TmLitR Lit
@@ -70,7 +64,7 @@ data Term =
     | TmFunCall Var.FunVar [TyF Var.TyVar] [Hist.Term] (CtxStruct Term)
     | TmRec [Hist.Term] (CtxStruct Term)
     | TmMacroParamUse Var.FunVar [Hist.Term] (CtxStruct Term)
-    | TmMacroUse Var.FunVar [TyF Var.TyVar] {- MacroArg-} Var.FunVar [Hist.Term] (CtxStruct Term)
+    | TmMacroUse Var.FunVar [TyF Var.TyVar] MacroArg [Hist.Term] (CtxStruct Term)
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint Term where
@@ -110,6 +104,16 @@ data Cmd =
 
 type Program = [Cmd]
 
+data MacroArg = TopLevelFunMacroArg Var.FunVar
+              | CurMacParamMacroArg
+              | MacroUseMacroArg Var.FunVar MacroArg deriving (Eq,Ord,Show)
+
+instance PrettyPrint MacroArg where
+    pp (TopLevelFunMacroArg f) = pp f
+    pp CurMacParamMacroArg = "cur_macro_param"
+    pp (MacroUseMacroArg f a) = pp f ++ "<" ++ pp a ++ ">"
+
+
 
 data ElabErr =
       UnboundVar Var
@@ -117,6 +121,7 @@ data ElabErr =
     | PolymorphicRec Var.FunVar
     | PolymorphicFunArgCall Var.FunVar
     | UnboundFunVar Var.FunVar
+    | MacroArgErr Var.FunVar
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint ElabErr where
@@ -125,6 +130,7 @@ instance PrettyPrint ElabErr where
     pp (PolymorphicRec f) = concat ["Polmorphic recursive calls not supported (function ",pp f,")"]
     pp (PolymorphicFunArgCall f) = concat ["Polmorphic calls to function arguments not supported (function ",pp f,"), function arguments are assumed to be monomorphic."]
     pp (UnboundFunVar f) = concat ["Function ", pp f, " is unbound."]
+    pp (MacroArgErr f) = "Could not find name " ++ pp f ++ " as part of macro argument."
 
 data UnshadowInput = EI {renaming :: M.Map Var Var, funName :: Var.FunVar }
 
@@ -157,6 +163,20 @@ sameBinder :: Maybe Var -> Maybe Var -> Maybe Var
 sameBinder Nothing _ = Nothing
 sameBinder _ Nothing = Nothing
 sameBinder (Just x) (Just y) = if x == y then Just x else Nothing
+
+lowerMacroArg :: (MonadState Int m, MonadReader LowerInp m, MonadError ElabErr m) => Surf.MacroArg -> m MacroArg
+lowerMacroArg (Surf.NamedMacroArg f) = do
+    curP <- asks macParamName
+    tlFs <- asks topLevelFunNames
+    if f `elem` tlFs then return (TopLevelFunMacroArg f)
+    else if f `elem` curP then return CurMacParamMacroArg
+    else throwError (MacroArgErr f)
+lowerMacroArg (Surf.MacroUseMacroArg mf marg) = do
+    macFs <- asks topLevelMacroNames
+    if mf `notElem` macFs then throwError (MacroArgErr mf)
+    else do
+        marg' <- lowerMacroArg marg
+        return (MacroUseMacroArg mf marg')
 
 data LowerInp = LI { lowerfunName :: Var.FunVar, macParamName :: Maybe Var.FunVar, topLevelFunNames :: [Var.FunVar], topLevelMacroNames :: [Var.FunVar]}
 
@@ -231,24 +251,22 @@ lowerSurf (Surf.TmCut x e1 e2) = do
     e2' <- lowerSurf e2
     return (TmCut x e1' e2')
 {-fix to prop histargs -}
-lowerSurf (Surf.TmFunCall f ts ms mf_macro_arg es) = do
+lowerSurf (Surf.TmFunCall f ts ms m_macro_arg es) = do
     curF <- asks lowerfunName
     macP <- asks macParamName
     macFs <- asks topLevelMacroNames
-    tlFs <- asks topLevelFunNames
     if f == curF then
-        if not (null ts && isNothing mf_macro_arg)
+        if not (null ts && isNothing m_macro_arg)
         then error "here!"
         else TmRec ms <$> mapM lowerSurf es
     else if f `elem` macP then
         if not (null ts) then error "Macro parameter cannot be called with type parameters --- its types are bound in the macro header" else TmMacroParamUse f ms <$> mapM lowerSurf es
     else if f `elem` macFs then
-        case mf_macro_arg of
+        case m_macro_arg of
             Nothing -> error $ "macro call to " ++ pp f ++ " needs macro arg"
-            Just f_macro_arg ->
-                -- TODO: Allow macro calls to be macro parameters: mac foo<f : (s) -> t>(xs : s*) : t* = map<f>(xs)
-                if (not (f_macro_arg `elem` tlFs)) then (error "macro call needs top level fun arg.") else
-                    TmMacroUse f ts {-(TopLevelFunMacroArg f_macro_arg)-} f_macro_arg ms <$> mapM lowerSurf es
+            Just macro_arg -> do
+                macro_arg' <- lowerMacroArg macro_arg
+                TmMacroUse f ts macro_arg' ms <$> mapM lowerSurf es
     else TmFunCall f ts ms <$> mapM lowerSurf es
 
 freshUnshadowVar :: (UnshadowM m) => m Var

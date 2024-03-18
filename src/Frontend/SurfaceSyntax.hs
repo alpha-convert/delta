@@ -4,12 +4,22 @@ module Frontend.SurfaceSyntax(
   Cmd(..),
   Program,
   UntypedPrefix(..),
-  MacroParam(..)
+  MacroParam(..),
+  MacroArg(..)
 ) where
 import Values ( Lit(..), Prefix)
 import qualified Var
 import Types
 import qualified HistPgm as Hist
+import Util.PrettyPrint
+
+data MacroArg = NamedMacroArg Var.FunVar
+              | MacroUseMacroArg Var.FunVar MacroArg deriving (Eq,Ord,Show)
+
+instance PrettyPrint MacroArg where
+    pp (NamedMacroArg f) = pp f
+    pp (MacroUseMacroArg f a) = pp f ++ "<" ++ pp a ++ ">"
+
 
 data Term =
       TmLitR Lit
@@ -29,7 +39,7 @@ data Term =
     | TmWait [Either (Var.Var) (Term,Var.Var)] Term
     | TmHistPgm Hist.Term
     | TmCut Var.Var Term Term
-    | TmFunCall Var.FunVar [TyF Var.TyVar] [Hist.Term] (Maybe Var.FunVar) (CtxStruct Term)
+    | TmFunCall Var.FunVar [TyF Var.TyVar] [Hist.Term] (Maybe MacroArg) (CtxStruct Term)
     deriving (Eq,Ord,Show)
   
   
