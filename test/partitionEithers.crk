@@ -1,0 +1,8 @@
+fun partitionEithers[s,t](xs : (s + t)*) : s* || t* =
+    case xs of
+        nil => (nil,nil)
+      | y::ys =>
+            let (a,b) = partitionEithers(ys) in
+            case y of
+                inl x => (x::a,b)
+              | inr x => (a,x::b)

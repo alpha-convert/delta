@@ -46,6 +46,7 @@ import qualified HistPgm as Hist
       wait            { TokenWait }
       do              { TokenDo }
       '='             { TokenEq }
+      '!'             { TokenBang }
       '('             { TokenOP }
       ')'             { TokenCP }
       '['             { TokenOS }
@@ -128,13 +129,16 @@ HP2         : HP3 '*' HP3                                         { Hist.TmBinOp
             | HP3 '/' HP3                                         { Hist.TmBinOp Hist.Div $1 $3 }
             | HP3                                                 { $1 }
 
-HP3         : int                                                 { Hist.TmValue (Hist.VInt $1) }
+HP3         : '!' HP4                                             { Hist.TmMonOp Hist.Not $2 }
+            | HP4                                                 { $1 }
+
+HP4         : int                                                 { Hist.TmValue (Hist.VInt $1) }
             | bool                                                { Hist.TmValue (Hist.VBool $1) }
             | nil                                                 { Hist.TmNil }
             | '('')'                                              { Hist.TmEps }
             | Var                                                 { Hist.TmVar $1 }
-            | '(' HistPgm ')'                                     { $2 }
             | '(' HistPgm ',' HistPgm ')'                         { Hist.TmPair $2 $4 }
+            | '(' HistPgm ')'                                     { $2 }
 
 HistArgs : {-empty-}                                              { [] }
          | HistPgm                                                { [$1] }
@@ -259,6 +263,7 @@ HistLitArgs1 : {-empty-}                                                { [] }
 
 Cmd   : fun FunVar TyVarListBracketed HistVarCtx '(' VarCtx ')' ':' Ty '=' Exp            { FunOrMacDef $2 $3 Nothing $4 $6 $9 $11 }
       | fun FunVar TyVarListBracketed '<' MacroParam '>' '(' VarCtx ')' ':' Ty '=' Exp    { FunOrMacDef $2 $3 (Just $5) [] $8 $11 $13 }
+      | fun FunVar TyVarListBracketed '<' MacroParam '>' HistVarCtx '(' VarCtx ')' ':' Ty '=' Exp    { FunOrMacDef $2 $3 (Just $5) $7 $9 $12 $14 }
       | specialize FunVar '[' TyList ']'                                                  { SpecializeCommand $2 $4 [] }
       | exec FunVar '(' PfxLitArgs ')'                                                       { RunCommand $2 [] $4 }
       | exec FunVar '{' HistLitArgs '}' '(' PfxLitArgs ')'                                   { RunCommand $2 $4 $7 }
@@ -312,6 +317,7 @@ data Token
       | TokenLeq
       | TokenGeq
       | TokenDot
+      | TokenBang
       | TokenStar
       | TokenDash
       | TokenSlash
@@ -346,6 +352,7 @@ lexer ('>':'=':cs) = TokenGeq : lexer cs
 lexer ('<':cs) = TokenLt : lexer cs
 lexer ('>':cs) = TokenGt : lexer cs
 lexer ('=':cs) = TokenEq : lexer cs
+lexer ('!':cs) = TokenBang : lexer cs
 lexer (',':cs) = TokenComma : lexer cs
 lexer ('.':cs) = TokenDot : lexer cs
 lexer ('+':cs) = TokenPlus : lexer cs

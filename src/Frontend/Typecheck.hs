@@ -121,7 +121,7 @@ data RecSig = Rec [(Var,OpenTy)] (Ctx Var OpenTy) OpenTy Inertness
 
 data FunMacRecord buf =
       PolyFun { funTyVars :: [Var.TyVar], funHistCtx :: [(Var,OpenTy)], funCtx :: Ctx Var OpenTy, funTy :: OpenTy, funInert :: Inertness, funMonoTerm :: Template (Core.Term buf) (Core.Term buf) } -- shoud really be void second param, but whatever.
-    | PolyMac { macTyVars :: [Var.TyVar], macCtx :: Ctx Var OpenTy, macTy :: OpenTy, macParam :: Surf.MacroParam , macInert :: Inertness, macMonoTerm :: Template (Core.Term buf) (Core.Term buf) }
+    | PolyMac { macTyVars :: [Var.TyVar], macHistCtx :: [(Var,OpenTy)], macCtx :: Ctx Var OpenTy, macTy :: OpenTy, macParam :: Surf.MacroParam , macInert :: Inertness, macMonoTerm :: Template (Core.Term buf) (Core.Term buf) }
     | SpecFun { specCtx :: Ctx Var Ty, specHistCtx :: [(Var,Ty)] }
 
 type FileInfo buf = M.Map Var.FunVar (FunMacRecord buf)
@@ -475,27 +475,26 @@ checkElab s' e@(Elab.TmMacroParamUse f' ms args) = do
 -- TODO: fix ms in macro use
 checkElab t e@(Elab.TmMacroUse macName ts f ms args) = do
     mr <- lookupFunMacRecord macName
-    -- TODO: allow for f itself to be a macro parameter.
-    mf <- lookupFunMacRecord f 
     case mr of
-        PolyMac {macTyVars = m_tvs, macCtx = m_g, macTy = m_r, macMonoTerm = mac_me, macInert = i_mac, macParam = Surf.MP _ m_o mp_g mp_r} -> do
+        PolyMac {macTyVars = m_tvs, macHistCtx = m_hg, macCtx = m_g, macTy = m_r, macMonoTerm = mac_me, macInert = i_mac, macParam = Surf.MP _ m_o mp_g mp_r} -> do
             when (length ts /= length m_tvs) $ error "Unsaturated type args for macro use" -- not saturated type arguments for recursive call.
             let repar_map = foldr (uncurry M.insert) M.empty (zip m_tvs ts)
             m_g' <- reThrow handleReparErr (reparameterizeCtx repar_map m_g)
             m_r' <- reThrow handleReparErr (reparameterizeTy repar_map m_r)
+            when (length ts /= length m_tvs) $ error "Unsaturated type args for macro use" -- not saturated type arguments for recursive call.
+            (p,i',margs) <- elabRec (dropVarsCtx m_g) args
+            when (i' /= Inert) $ throwError (NonInertArgs args)
+            when (length m_hg /= length ms) (throwError (UnsaturatedHistArgs m_hg ms e))
+            liftHistCheck e $ forM_ (zip ms m_hg) (\(hp,(_,t)) -> Hist.check hp t)
+            mf <- lookupFunMacRecord f
             (case mf of
-                PolyFun {funTyVars = tvs, funCtx = g, funTy = r', funHistCtx = hg, funMonoTerm = me, funInert = i_fun} -> do
-                    when (length ts /= length m_tvs) $ error "Unsaturated type args for macro use" -- not saturated type arguments for recursive call.
-                    (p,i',margs) <- elabRec (dropVarsCtx m_g) args
-                    when (i' /= Inert) $ throwError (NonInertArgs args)
-                    when (length hg /= length ms) (throwError (UnsaturatedHistArgs hg ms e))
-                    liftHistCheck e $ forM_ (zip ms hg) (\(hp,(_,t)) -> Hist.check hp t)
+                PolyFun {funTyVars = _, funCtx = g, funTy = r', funHistCtx = _, funMonoTerm = me, funInert = i_fun} -> do
                     --TODO:JWC TYPECHECKING, figure out type variables!! need to reparameterize everything in the right way.
                     return $ CR p i_mac $ do
                         args <- margs
                         g_mono <- monomorphizeCtx m_g
                         r_mono <- monomorphizeTy m_r
-                        hg_mono <- mapM (\(x,t) -> (x,) <$> monomorphizeTy t) hg
+                        hg_mono <- mapM (\(x,t) -> (x,) <$> monomorphizeTy t) m_hg
                         mac_param_term <- me
                         mac_inlined <- withMacParamReplacement mac_param_term mac_me
                         case mac_inlined of
@@ -726,21 +725,20 @@ inferElab e@(Elab.TmMacroParamUse f' ms args) = do
 -- TODO: macro usage histargs
 inferElab e@(Elab.TmMacroUse macName ts f ms args) = do
     mr <- lookupFunMacRecord macName
-    mf <- lookupFunMacRecord f
     case mr of
-        PolyMac {macTyVars = m_tvs, macCtx = m_g, macTy = m_r, macMonoTerm = mac_me, macInert = i_mac} ->
+        PolyMac {macTyVars = m_tvs, macHistCtx = m_hg, macCtx = m_g, macTy = m_r, macMonoTerm = mac_me, macInert = i_mac} -> do
+            (p,i',margs) <- elabRec (dropVarsCtx m_g) args
+            when (i' /= Inert) (throwError (NonInertArgs args))
+            when (length m_hg /= length ms) (throwError (UnsaturatedHistArgs m_hg ms e))
+            liftHistCheck e $ forM_ (zip ms m_hg) (\(hp,(_,t)) -> Hist.check hp t)
+            mf <- lookupFunMacRecord f
             (case mf of
-                PolyFun {funTyVars = tvs, funCtx = g, funHistCtx = hg, funTy = r', funMonoTerm = me, funInert = i_fun} -> do
-                    (p,i',margs) <- elabRec (dropVarsCtx m_g) args
-                    when (i' /= Inert) (throwError (NonInertArgs args))
-                    --TODO:JWC TYPECHECKING, figure out type variables!! need to reparameterize everything in the right way.
-                    when (length hg /= length ms) (throwError (UnsaturatedHistArgs hg ms e))
-                    liftHistCheck e $ forM_ (zip ms hg) (\(hp,(_,t)) -> Hist.check hp t)
+                PolyFun {funTyVars = _, funCtx = _, funHistCtx = _, funTy = _, funMonoTerm = me, funInert = _} ->
                     return $ IR m_r p i_mac $ do
                         args <- margs
                         g_mono <- monomorphizeCtx m_g
                         r_mono <- monomorphizeTy m_r
-                        hg_mono <- mapM (\(x,t) -> (x,) <$> monomorphizeTy t) hg
+                        hg_mono <- mapM (\(x,t) -> (x,) <$> monomorphizeTy t) m_hg
                         mac_param_term <- me
                         mac_inlined <- withMacParamReplacement mac_param_term mac_me
                         case mac_inlined of
@@ -837,6 +835,11 @@ checkUntypedPrefixCtx (CommaCtx g1 g2) (CommaCtx g1' g2') = do
 checkUntypedPrefixCtx g@(CommaCtx {}) g' = throwError (WrongArgShape g g')
 
 
+-- checkMacroArg :: (Buffer buf, TckM Elab.Term buf m) => Elab.MacroArg -> m (Template (Term buf) (Term buf))
+-- checkMacroArg (Elab.TopLevelFunMacroArg mf) = undefined
+-- checkMacroArg (Elab.MacroUseMacroArg mf marg) = undefined
+
+
 -- Doublecheck argument typechecks the resulting term, again.
 doCheckElabTm :: (Buffer buf, MonadIO m) => FileInfo buf -> [Var.TyVar] -> (Maybe Surf.MacroParam) ->  [(Var,OpenTy)] -> Ctx Var OpenTy -> OpenTy -> Inertness -> Elab.Term -> m (Template (Core.Term buf) (Core.Term buf))
 doCheckElabTm fi tvs mmp o g t i e = do
@@ -886,18 +889,19 @@ doCheckElabPgm xs = fst <$> runStateT (mapMaybeM go xs) M.empty
             liftIO $ putStrLn $ "Function " ++ pp f ++ " typechecked OK."
             put (M.insert f (PolyFun {funTyVars = tvs, funHistCtx = hg, funCtx = g, funTy = t, funMonoTerm = e', funInert = Inert}) fi)
             return $ Just (Core.FunDef f tvs (mapM (\(x,t) -> (x,) <$> monomorphizeTy t) hg) (monomorphizeCtx g) (monomorphizeTy t) e')
-        go (Elab.MacroDef f tvs mp@(Surf.MP f_mp o_mp g_mp t_mp) g t e) = do
+        go (Elab.MacroDef f tvs mp@(Surf.MP f_mp o_mp g_mp t_mp) hg g t e) = do
             -- Check that type type and context are well-formed with the type variables
             unless (wfCtx tvs g) $ error $ "Context " ++ pp g ++ " ill-formed with type variables " ++ (intercalate "," $ pp <$> tvs)
             unless (wfTy tvs t) $ error $ "Type " ++ pp t ++ " ill-formed with type variables " ++ (intercalate "," $ pp <$> tvs)
             unless (all (wfTy tvs) g_mp) $ error $ "Macro Parameter Context " ++ pp g ++ " ill-formed with type variables " ++ (intercalate "," $ pp <$> tvs)
             unless (wfTy tvs t_mp) $ error $ "Macro Parameter Return Type " ++ pp t ++ " ill-formed with type variables " ++ (intercalate "," $ pp <$> tvs)
             unless (all (wfTy tvs) o_mp) $ error $ "Macro Parameter Historical Context {" ++ intercalate "," (map pp o_mp) ++ "} ill-formed with type variables " ++ (intercalate "," $ pp <$> tvs)
+            unless (length hg == length (nub (map fst hg))) $ error $ "Historical context {" ++ intercalate "," (map (\(x,t) -> pp x ++ " : " ++ pp t) hg) ++ "} has duplicate variables."
             fi <- get
             -- Typecheck the function
-            e' <- lift $ doCheckElabTm fi tvs (Just mp) [] g t Inert e
+            e' <- lift $ doCheckElabTm fi tvs (Just mp) hg g t Inert e
             liftIO $ putStrLn $ "Macro " ++ pp f ++ " typechecked OK."
-            put (M.insert f (PolyMac {macTyVars = tvs, macCtx = g, macTy = t, macParam = mp, macMonoTerm = e', macInert = Inert}) fi)
+            put (M.insert f (PolyMac {macTyVars = tvs, macHistCtx = hg, macCtx = g, macTy = t, macParam = mp, macMonoTerm = e', macInert = Inert}) fi)
             return Nothing
         go (Elab.SpecializeCommand f ts _) = do
             fr <- gets (M.lookup f) >>= maybe (error $ "Can not specialize unbound function " ++ pp f) return

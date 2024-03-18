@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleContexts, FlexibleInstances, BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
-module Frontend.ElabSyntax (doElab, Term(..), Program, Cmd(..)) where
+module Frontend.ElabSyntax (doElab, Term(..), Program, Cmd(..), {-MacroArg(..)-}) where
 
 import Values ( Lit(..) )
 import Var (Var(..), TyVar, FunVar)
@@ -41,6 +41,13 @@ and then replacing the shadowed name with the fresh name in the body.
 
 -}
 
+{-
+data MacroArg = TopLevelFunMacroArg Var.FunVar | MacroUseMacroArg Var.FunVar MacroArg deriving (Eq,Ord,Show)
+
+instance PrettyPrint MacroArg where
+    pp (TopLevelFunMacroArg f) = pp f
+    pp (MacroUseMacroArg f a) = pp f ++ "<" ++ pp a ++ ">"
+-}
 
 data Term =
       TmLitR Lit
@@ -63,7 +70,7 @@ data Term =
     | TmFunCall Var.FunVar [TyF Var.TyVar] [Hist.Term] (CtxStruct Term)
     | TmRec [Hist.Term] (CtxStruct Term)
     | TmMacroParamUse Var.FunVar [Hist.Term] (CtxStruct Term)
-    | TmMacroUse Var.FunVar [TyF Var.TyVar] Var.FunVar [Hist.Term] (CtxStruct Term)
+    | TmMacroUse Var.FunVar [TyF Var.TyVar] {- MacroArg-} Var.FunVar [Hist.Term] (CtxStruct Term)
     deriving (Eq, Ord, Show)
 
 instance PrettyPrint Term where
@@ -94,7 +101,7 @@ instance PrettyPrint Term where
 
 data Cmd =
       FunDef Var.FunVar [Var.TyVar] [(Var,OpenTy)] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
-    | MacroDef Var.FunVar [Var.TyVar] Surf.MacroParam (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
+    | MacroDef Var.FunVar [Var.TyVar] Surf.MacroParam [(Var,OpenTy)] (Ctx Var.Var (TyF Var.TyVar)) (TyF Var.TyVar) Term
     | SpecializeCommand Var.FunVar [Ty] [Var.FunVar]
     | RunCommand Var.FunVar [Surf.UntypedPrefix] (Ctx Var Surf.UntypedPrefix)
     | RunStepCommand Var.FunVar [Surf.UntypedPrefix] (Ctx Var Surf.UntypedPrefix)
@@ -241,7 +248,7 @@ lowerSurf (Surf.TmFunCall f ts ms mf_macro_arg es) = do
             Just f_macro_arg ->
                 -- TODO: Allow macro calls to be macro parameters: mac foo<f : (s) -> t>(xs : s*) : t* = map<f>(xs)
                 if (not (f_macro_arg `elem` tlFs)) then (error "macro call needs top level fun arg.") else
-                    TmMacroUse f ts f_macro_arg ms <$> mapM lowerSurf es
+                    TmMacroUse f ts {-(TopLevelFunMacroArg f_macro_arg)-} f_macro_arg ms <$> mapM lowerSurf es
     else TmFunCall f ts ms <$> mapM lowerSurf es
 
 freshUnshadowVar :: (UnshadowM m) => m Var
@@ -375,13 +382,16 @@ doElab xs = flip evalStateT ([],[]) $ flip mapM xs $ \case
                                 put (f:funsBound, macsBound)
                                 return (FunDef f tvs hg g s e')
                             Left err -> error (pp err)
-                    (Surf.FunOrMacDef f tvs (Just ma@(Surf.MP f_macparam _ _ _)) _ g s e) -> do
+                    (Surf.FunOrMacDef f tvs (Just ma@(Surf.MP f_macparam _ _ _)) hg g s e) -> do
+                        let streamArgVars = M.keysSet $ ctxBindings g
+                        let histArgVars = S.fromList (fst <$> hg)
+                        () <- unless (S.disjoint streamArgVars histArgVars) $ error ("Function " ++ pp f ++ "has non-disjoint sets of stream and historical arguments, " ++ show streamArgVars ++ " and " ++ show histArgVars)
                         (fBound,macsBound) <- get
-                        case elabSingle f (Just f_macparam) fBound macsBound e (M.keysSet $ ctxBindings g) of
+                        case elabSingle f (Just f_macparam) fBound macsBound e (S.union streamArgVars histArgVars) of
                             Right e' -> do
                                 lift (putStrLn $ "Function " ++ pp f ++ " elaborated OK. Elab term: " ++ pp e' ++ "\n")
                                 put (fBound,f:macsBound)
-                                return (MacroDef f tvs ma g s e')
+                                return (MacroDef f tvs ma hg g s e')
                             Left err -> error (pp err)
                     (Surf.SpecializeCommand f ts fs) -> case mapM closeTy ts of
                                                        Left x -> error $ "Tried to specialize function " ++ pp f ++ ", but provided type with type variable " ++ pp x

@@ -51,7 +51,7 @@ data MonOp = Neg | Not
 
 instance PrettyPrint MonOp where
     pp Neg = "-"
-    pp Not = "!!"
+    pp Not = "!"
 
 
 data BinOp = Add | Sub | Mul | Div | Or | And | Lt | Gt | Leq | Geq | Eq | Mod
